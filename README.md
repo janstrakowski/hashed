@@ -48,4 +48,4 @@ let
 ```
 
 # Donate
-You can support me by a donation via: [a bank transfer](https://buymeacoffee.com/janstrakowski) or [BuyMeACoffie](https://janstrakowski.github.io/jansdonations/).
+You can support me by a donation via: [a bank transfer](https://janstrakowski.github.io/jansdonations/) or [BuyMeACoffie](https://buymeacoffee.com/janstrakowski).
