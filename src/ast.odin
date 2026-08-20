@@ -1,0 +1,32 @@
+EXPR :: enum {
+  Name,
+  Implicit,
+  DotOp,
+  BracketOp,
+  DoubleArrowOp,
+  DoubleDotOp,
+  MapConstruct,
+  ArrayConstruct,
+  VariantConstruct,
+  AsteriskOp,
+  SlashOp,
+  PercentOp,
+  PlusOp,
+  MinusOp,
+  EqEqOp,
+  GtOp,
+  GtEqOp,
+  LtOp,
+  LtEqOp,
+  PipePipeOp,
+  ApersandApersandOp,
+  ColonColonOp,
+}
+
+expr_t :: struct {
+  type: EXPR,
+  n: int,
+  e1: [^]expr_t,
+  e2: [^]expr_t,
+  s: [^]string,
+}
