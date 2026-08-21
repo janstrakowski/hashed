@@ -1,3 +1,5 @@
+package hashedbuild
+
 EXPR :: enum {
   Name,
   Implicit,
