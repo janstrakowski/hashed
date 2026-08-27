@@ -39,6 +39,10 @@ const browser = await puppeteer.launch({
 
 try {
   const page = await browser.newPage();
+  // CI runners are slower than a dev machine, and that difference already hid
+  // a real bug once (typing merged into a running command). Throttling makes
+  // the fast path stop flattering us.
+  if (process.env.THROTTLE) await page.emulateCPUThrottling(Number(process.env.THROTTLE));
   const problems = [];
   page.on("pageerror", (e) => problems.push("pageerror: " + e.message));
   page.on("console", (m) => { if (m.type() === "error") problems.push("console: " + m.text()); });
@@ -47,17 +51,14 @@ try {
   const screenText = () => page.$eval("#screen", (el) => el.textContent);
   const prompt = () => page.$eval("#prompt", (el) => el.textContent);
 
-  // Types a line and waits for the terminal to finish handling it. Each
-  // command instantiates the module, so waiting on the screen growing is the
-  // honest signal that it is done.
+  // Types a line and waits for the command to actually finish. The screen
+  // growing is not that signal - it grows the moment the command is echoed,
+  // before it runs. The prompt being enabled again is.
   const type = async (line) => {
-    const before = (await screenText()).length;
+    await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: 20000 });
     await page.type("#entry", line);
     await page.keyboard.press("Enter");
-    await page.waitForFunction(
-      (n) => document.getElementById("screen").textContent.length > n,
-      { timeout: 15000 }, before,
-    );
+    await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: 20000 });
   };
 
   // The last boot line differs between a fresh visit and a restored one, so

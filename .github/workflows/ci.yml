@@ -245,5 +245,9 @@ jobs:
       - name: WASI shim
         run: npm run test:shim
 
+      # Throttled, because the unthrottled run on a fast machine is what let a
+      # real input race through in the first place.
       - name: The page itself
+        env:
+          THROTTLE: 4
         run: npm run test:browser -- "$(command -v google-chrome || command -v chromium-browser || command -v chromium)"

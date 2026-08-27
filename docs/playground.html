@@ -332,6 +332,13 @@ function refreshPrompt() {
   promptEl.textContent = currentPrompt();
 }
 
+function setBusy(value) {
+  busy = value;
+  entry.disabled = value;
+  promptEl.textContent = value ? "  " : currentPrompt();
+  if (!value) entry.focus();
+}
+
 // ---- input --------------------------------------------------------------------
 
 let busy = false;
@@ -363,12 +370,15 @@ entry.addEventListener("keydown", async (event) => {
     historyIndex = history.length;
   }
 
-  busy = true;
+  // Lock the prompt while the command runs. Without this, anything typed
+  // meanwhile lands in the input and merges into the next command - which is
+  // exactly what a terminal must not do.
+  setBusy(true);
   try {
     if (repl) await runReplLine(line);
     else await runCommand(line);
   } finally {
-    busy = false;
+    setBusy(false);
     refreshPrompt();
     await saveState();
   }
