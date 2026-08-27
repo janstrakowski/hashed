@@ -5,3 +5,7 @@ SPEC.html
 hb.wasm
 .cache/
 hb-threads.wasm
+# docs/hb.wasm is the exception: GitHub Pages serves it, so it is committed.
+!docs/hb.wasm
+node_modules/
+package-lock.json

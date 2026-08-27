@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HashedBuild playground</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%23%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #EEF1F4;
+    --surface: #FFFFFF;
+    --text: #1B2430;
+    --text-dim: #5B6472;
+    --border: #D6DCE2;
+    --accent: #B96A1F;
+    --ok: #2F7D46;
+    --err: #B3392F;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151B; --surface: #191E26; --text: #E7E9EC; --text-dim: #8B95A3;
+      --border: #2B323C; --accent: #E0954A; --ok: #63B37B; --err: #E4776B;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12151B; --surface: #191E26; --text: #E7E9EC; --text-dim: #8B95A3;
+    --border: #2B323C; --accent: #E0954A; --ok: #63B37B; --err: #E4776B;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font-family: var(--sans); display: flex; flex-direction: column;
+  }
+  header {
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--accent);
+  }
+  header .spacer { flex: 1; }
+  header a { color: var(--accent); font-size: 13px; }
+  main {
+    flex: 1; display: grid; gap: 1px; background: var(--border);
+    grid-template-columns: 220px 1fr 1fr; min-height: 0;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--surface); display: flex; flex-direction: column; min-height: 0; }
+  .panel-head {
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-dim);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .panel-head .spacer { flex: 1; }
+  button {
+    font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer;
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 5px;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); color: #fff; }
+  textarea, pre {
+    flex: 1; margin: 0; padding: 14px; border: 0; resize: none;
+    font-family: var(--mono); font-size: 13px; line-height: 1.55;
+    background: transparent; color: var(--text); overflow: auto;
+  }
+  textarea:focus { outline: none; }
+  pre { white-space: pre-wrap; word-break: break-word; }
+  pre .err { color: var(--err); }
+  pre .meta { color: var(--text-dim); }
+  .files { flex: 1; overflow: auto; padding: 6px; }
+  .file {
+    width: 100%; text-align: left; border: 0; background: transparent;
+    font-family: var(--mono); font-size: 12px; padding: 5px 8px;
+    border-radius: 5px; color: var(--text); cursor: pointer;
+    display: flex; gap: 8px; align-items: baseline;
+  }
+  .file:hover { background: var(--bg); color: var(--text); }
+  .file.active { background: var(--bg); color: var(--accent); }
+  .file .kind { color: var(--text-dim); font-size: 10px; }
+  .file .size { margin-left: auto; color: var(--text-dim); font-size: 10px; }
+  footer {
+    padding: 8px 24px; border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--text-dim); display: flex; gap: 16px; flex-wrap: wrap;
+  }
+  footer .ok { color: var(--ok); }
+  footer .err { color: var(--err); }
+  kbd {
+    font-family: var(--mono); font-size: 11px; border: 1px solid var(--border);
+    border-bottom-width: 2px; border-radius: 4px; padding: 1px 4px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="eyebrow">HashedBuild</div>
+    <h1>Playground</h1>
+  </div>
+  <div class="spacer"></div>
+  <a href="index.html">Home</a>
+  <a href="https://github.com/janstrakowski/hashedbuild/blob/main/LANGUAGE.md">Language tour</a>
+  <a href="SPEC.html">Spec</a>
+</header>
+
+<main>
+  <section>
+    <div class="panel-head">
+      Files
+      <div class="spacer"></div>
+      <button id="reset" title="Restore the starting files and discard anything written">Reset</button>
+    </div>
+    <div class="files" id="files"></div>
+  </section>
+
+  <section>
+    <div class="panel-head">
+      Source
+      <div class="spacer"></div>
+      <button class="primary" id="run">Run ▸</button>
+    </div>
+    <textarea id="source" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
+  </section>
+
+  <section>
+    <div class="panel-head">Result</div>
+    <pre id="output"></pre>
+  </section>
+</main>
+
+<footer>
+  <span id="status">loading…</span>
+  <span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> runs</span>
+  <span>Everything runs in your browser; files persist here and nowhere else.</span>
+</footer>
+
+<script type="module">
+import { FileSystem, run } from "./wasi.js";
+
+// The files a fresh visitor starts with. Kept small and self-explanatory: the
+// point is to have something to read, edit and re-run immediately, not to
+// mirror examples/ wholesale.
+const STARTING_FILES = {
+  "examples/optiona.txt": "This is the payload for option A.\n",
+  "examples/optionb.txt": "This is the payload for option B.\n",
+  "examples/choice.txt": "option A",
+  "tour.hb": `// Welcome. This runs for real - the interpreter is compiled to
+// WebAssembly and running in this tab, nothing is sent anywhere.
+//
+// Ctrl+Enter (or Run) evaluates the buffer. A program is one
+// expression, and its value is the output.
+{
+  .arithmetic = 7 / 2,            // Integer division truncates
+  .float = 7.0 / 2,               // one Float promotes the whole thing
+  .text = "hello, " concat "world",
+  .table = { .a = 1 } concat { .b = 2 },
+  .pattern = (:.ok 42) is :.ok as payload then payload else 0,
+  .file = filetext (loadfile "/examples/optiona.txt"),
+}
+`,
+  "write-a-file.hb": `// createfile writes into the filesystem on the left, and it
+// persists across reloads - it lives in this browser, in
+// IndexedDB. Run it twice: the second run fails, because
+// createfile is exclusive (SPEC.md §16).
+createfile {
+  .path = "/greeting.txt",
+  .content = "written from the browser\\n",
+}
+`,
+  "guard-chain.hb": `// The canonical guard chain: pipe a value through a chain of
+// AND'd guards, bind a name partway, and branch on the result.
+5 as object
+  object |> (object > 0 and is n as p1 and p1 < 100) then p1 else 0
+`,
+};
+
+const els = {
+  files: document.getElementById("files"),
+  source: document.getElementById("source"),
+  output: document.getElementById("output"),
+  status: document.getElementById("status"),
+  run: document.getElementById("run"),
+  reset: document.getElementById("reset"),
+};
+
+let wasmBytes = null;
+let fs = null;
+let currentPath = "tour.hb";
+
+// ---- persistence: IndexedDB, one row, no schema to speak of -----------------
+//
+// The whole filesystem is a plain object (FileSystem#snapshot), so persisting
+// it is a single put. No server, no database to provision - the store is the
+// visitor's own browser, and clearing site data is the uninstall.
+
+const DB_NAME = "hashedbuild-playground";
+const STORE = "state";
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function loadState() {
+  try {
+    const db = await openDb();
+    return await new Promise((resolve, reject) => {
+      const req = db.transaction(STORE, "readonly").objectStore(STORE).get("state");
+      req.onsuccess = () => resolve(req.result ?? null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return null; // private window, blocked storage: fall back to a fresh start
+  }
+}
+
+async function saveState() {
+  try {
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).put({ files: fs.snapshot(), currentPath }, "state");
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    // Not being able to persist is survivable; the session still works.
+  }
+}
+
+function seedFilesystem() {
+  const seeded = new FileSystem();
+  const enc = new TextEncoder();
+  for (const [path, text] of Object.entries(STARTING_FILES)) {
+    seeded.writeFile("/" + path, enc.encode(text));
+  }
+  return seeded;
+}
+
+// ---- ui ---------------------------------------------------------------------
+
+function renderFiles() {
+  els.files.replaceChildren();
+  for (const entry of fs.list()) {
+    if (entry.type === "dir") continue;
+    const button = document.createElement("button");
+    button.className = "file" + (entry.path === currentPath ? " active" : "");
+    const name = document.createElement("span");
+    name.textContent = entry.path;
+    button.append(name);
+    if (entry.type === "symlink") {
+      const kind = document.createElement("span");
+      kind.className = "kind";
+      kind.textContent = "→ " + entry.target;
+      button.append(kind);
+    } else {
+      const size = document.createElement("span");
+      size.className = "size";
+      size.textContent = entry.data.length + "B";
+      button.append(size);
+    }
+    button.onclick = () => selectFile(entry.path);
+    els.files.append(button);
+  }
+}
+
+function fileText(path) {
+  const node = fs.lookup("/" + path);
+  if (!node || node.type !== "file") return "";
+  return new TextDecoder().decode(node.data);
+}
+
+function selectFile(path) {
+  saveBuffer();
+  currentPath = path;
+  els.source.value = fileText(path);
+  renderFiles();
+  saveState();
+}
+
+// The editor is the file: what is typed becomes the file's bytes, so a program
+// can loadfile something you just edited.
+function saveBuffer() {
+  if (!currentPath) return;
+  fs.writeFile("/" + currentPath, new TextEncoder().encode(els.source.value));
+}
+
+function setStatus(text, kind = "") {
+  els.status.className = kind;
+  els.status.textContent = text;
+}
+
+async function runProgram() {
+  if (!wasmBytes) return;
+  saveBuffer();
+
+  const chunks = [];
+  const started = performance.now();
+  let code = 0;
+  try {
+    code = await run({
+      wasmBytes,
+      fs,
+      args: ["hb", "/" + currentPath],
+      onStdout: (text) => chunks.push({ text }),
+      onStderr: (text) => chunks.push({ text, err: true }),
+    });
+  } catch (err) {
+    chunks.push({ text: `the module trapped: ${err.message}\n`, err: true });
+    code = -1;
+  }
+  const elapsed = Math.round(performance.now() - started);
+
+  els.output.replaceChildren();
+  for (const chunk of chunks) {
+    const span = document.createElement("span");
+    if (chunk.err) span.className = "err";
+    span.textContent = chunk.text;
+    els.output.append(span);
+  }
+  if (chunks.length === 0) {
+    const span = document.createElement("span");
+    span.className = "meta";
+    span.textContent = "(no output)";
+    els.output.append(span);
+  }
+
+  setStatus(code === 0 ? `ran in ${elapsed} ms` : `exited ${code} · ${elapsed} ms`,
+            code === 0 ? "ok" : "err");
+  renderFiles();   // a program may have written files
+  saveState();
+}
+
+els.run.onclick = runProgram;
+els.source.oninput = () => saveBuffer();
+els.source.onblur = () => saveState();
+els.reset.onclick = async () => {
+  fs = seedFilesystem();
+  currentPath = "tour.hb";
+  els.source.value = fileText(currentPath);
+  els.output.replaceChildren();
+  renderFiles();
+  await saveState();
+  setStatus("starting files restored");
+};
+
+document.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+    event.preventDefault();
+    runProgram();
+  }
+});
+
+// ---- boot -------------------------------------------------------------------
+
+(async () => {
+  const [response, saved] = await Promise.all([fetch("hb.wasm"), loadState()]);
+  if (!response.ok) {
+    setStatus(`could not load hb.wasm (${response.status})`, "err");
+    return;
+  }
+  wasmBytes = await response.arrayBuffer();
+
+  fs = saved?.files ? FileSystem.fromSnapshot(saved.files) : seedFilesystem();
+  currentPath = saved?.currentPath && fs.lookup("/" + saved.currentPath) ? saved.currentPath : "tour.hb";
+  if (!fs.lookup("/" + currentPath)) currentPath = fs.list().find((e) => e.type === "file")?.path ?? "tour.hb";
+
+  els.source.value = fileText(currentPath);
+  renderFiles();
+  setStatus(saved ? "restored from this browser" : "ready");
+})();
+</script>
+</body>
+</html>

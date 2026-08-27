@@ -320,6 +320,18 @@ Displayed paths are relative to that preopen, so a file shows as
 `scripts/wasi_smoke.sh` runs the examples on a wasm build and compares them
 against native; CI does it for both flavours on every push.
 
+## In a browser
+
+[**The playground**](https://janstrakowski.github.io/hashedbuild/playground.html)
+runs this same interpreter as WebAssembly in your own tab: edit a program, run
+it, and write files that persist between visits — in your browser's IndexedDB,
+with no server and nothing sent anywhere. It is the portable build, so `async`
+refuses there, and clearing site data is the uninstall.
+
+The page is `docs/playground.html`; the WASI host it runs on is `docs/wasi.js`,
+about 400 lines implementing the 21 preview1 calls the interpreter actually
+imports.
+
 ## Where to go next
 
 - **[GETTING_STARTED.md](GETTING_STARTED.md)** — installing, the REPL, the live
