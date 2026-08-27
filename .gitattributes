@@ -1,5 +1,13 @@
 * text eol=lf
 *.mp4 binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
 
 src/*.json linguist-generated
 src/parser.c linguist-generated
