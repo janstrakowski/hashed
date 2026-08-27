@@ -306,7 +306,22 @@ async function ensureTerminalEmulator() {
     Comma: ",", Period: ".",
   };
   term.attachCustomKeyEventHandler((event) => {
-    if (event.type !== "keydown" || !event.altKey || event.ctrlKey || event.metaKey) return true;
+    if (event.type !== "keydown" || !event.altKey || event.metaKey) return true;
+
+    // Ctrl+Alt+<letter> stands in for Ctrl+<letter>. Some control chords never
+    // reach a page at all: Ctrl+N opens a browser window and Ctrl+Q quits the
+    // browser, and both are handled by the browser's own UI before any
+    // keydown is dispatched - preventDefault cannot reclaim them. So the
+    // editor's Ctrl+N (step) and Ctrl+Q (quit) get a chord the browser does
+    // not want, translated here into the same control byte a terminal sends.
+    if (event.ctrlKey) {
+      const letter = /^Key([A-Z])$/.exec(event.code)?.[1];
+      if (!letter) return true;
+      event.preventDefault();
+      if (rawMode) sendToStdin(String.fromCharCode(letter.charCodeAt(0) - 64), false);
+      return false;
+    }
+
     const key = ALT_KEYS[event.code];
     if (!key) return true;
     event.preventDefault();
@@ -326,6 +341,12 @@ async function runInteractive(args) {
   term.clear();
   term.focus();
   rawMode = true;
+
+  // Said before the editor draws, because its own status line advertises the
+  // chords a terminal has and a browser tab does not.
+  term.write("\x1b[2mIn a browser Ctrl+N and Ctrl+Q belong to the browser - "
+    + "use Ctrl+Alt+N to step and Ctrl+Alt+Q to quit.\x1b[0m\r\n");
+  await new Promise((resolve) => setTimeout(resolve, 900));
 
   await ask({ type: "hb", args, tui: { columns: term.cols, rows: term.rows } });
 

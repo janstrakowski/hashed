@@ -209,11 +209,14 @@ means the behavior a user could rely on: the happy path, and the failure modes
 the code explicitly handles (a rejected path, a missing argument, a permission
 denial), not every branch. If the change makes something untestable-as-written,
 refactor it until it is testable — extracting a pure function out of `main` is
-cheaper than shipping a flag nobody can test. The two standing exceptions are
-the terminal UI (`editor.odin`, `debugger.odin`, `term_*.odin`), where driving a
-raw-mode TTY from `odin test` costs more than it's worth — though it is no
-longer untested: `scripts/playground_browser_test.mjs` drives it for real in a
-browser — and pure doc/comment edits.
+cheaper than shipping a flag nobody can test. The one standing exception is pure doc/comment edits. The terminal UI
+(`editor.odin`, `debugger.odin`, `term_*.odin`) used to be a second one, on the
+grounds that driving a raw-mode TTY costs more than it's worth; it isn't,
+`scripts/editor_keys_test.py` drives it through a pty in forty lines, and
+`scripts/playground_browser_test.mjs` drives it in a real browser. Both run in
+CI. What still cannot be tested is the browser's *own* keyboard handling —
+headless Chrome reserves none of the chords a real tab does, so a key the
+browser steals will pass CI and fail a visitor.
 Taking an exception means saying so in the commit body.
 
 ```sh

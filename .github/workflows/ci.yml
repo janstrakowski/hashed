@@ -59,6 +59,13 @@ jobs:
       - name: Test
         run: odin test src -out:/tmp/hbtest
 
+      # The terminal UI cannot be driven from `odin test`, but it can be driven
+      # from a pty - and these keys have broken twice without anything noticing.
+      - name: Editor keys
+        run: |
+          odin build src -out:hb
+          python3 scripts/editor_keys_test.py ./hb
+
   # The Odin suite only ever builds natively, so nothing in it can execute
   # fs_wasi.odin. This job builds the WASI target and checks the examples
   # produce the same values there as they do native - the one thing that

@@ -296,20 +296,36 @@ Key :: enum {
   Alt_1, Alt_2, Alt_3, Alt_4, Alt_5, Alt_Comma, Alt_Period,
 }
 
+// The Ctrl+<letter> chords the editor answers to, as the bytes a terminal
+// actually sends. Separate from read_key's switch because they arrive two
+// ways: on their own, and prefixed with ESC when Alt is held as well - and
+// Ctrl+Alt+<letter> has to work, because a browser tab keeps Ctrl+N and
+// Ctrl+Q for itself and the terminal there substitutes the Alt-prefixed form
+// (see docs/playground.html). Accepting both everywhere means one set of
+// keys, whichever the editor is running in.
+@(private = "file")
+control_key :: proc(b: u8) -> (Key, bool) {
+  switch b {
+  case 0x03: return .Ctrl_C, true
+  case 0x04: return .Ctrl_D, true
+  case 0x05: return .Ctrl_E, true
+  case 0x0e: return .Ctrl_N, true // debugger: step forward one "cut"
+  case 0x0f: return .Ctrl_O, true
+  case 0x11: return .Ctrl_Q, true
+  case 0x12: return .Ctrl_R, true // debugger: restart
+  case 0x13: return .Ctrl_S, true
+  }
+  return .None, false
+}
+
 @(private = "file")
 read_key :: proc() -> (key: Key, ch: u8) {
   b, ok := read_byte()
   if !ok do return .Ctrl_Q, 0 // EOF/error on the input stream - nothing left to do but exit
 
+  if key, is_control := control_key(b); is_control do return key, 0
+
   switch b {
-  case 0x03: return .Ctrl_C, 0
-  case 0x11: return .Ctrl_Q, 0
-  case 0x04: return .Ctrl_D, 0
-  case 0x13: return .Ctrl_S, 0
-  case 0x0f: return .Ctrl_O, 0
-  case 0x05: return .Ctrl_E, 0
-  case 0x0e: return .Ctrl_N, 0 // debugger: step forward one "cut"
-  case 0x12: return .Ctrl_R, 0 // debugger: restart
   case 0x09: return .Tab, 0
   case '\r', '\n':
     return .Enter, 0
@@ -320,6 +336,9 @@ read_key :: proc() -> (key: Key, ch: u8) {
     b2, ok2 := read_byte()
     if !ok2 do return .None, 0
     if b2 != '[' {
+      // ESC followed by a control byte is Ctrl+Alt+<letter>, which the
+      // browser terminal sends in place of the chords it cannot receive.
+      if key, is_control := control_key(b2); is_control do return key, 0
       switch b2 {
       case '1': return .Alt_1, 0
       case '2': return .Alt_2, 0
@@ -1165,8 +1184,14 @@ redraw_panels :: proc(e: ^Editor) {
   } else {
     path_label := e.current_path if e.current_path != "" else "(unsaved)"
     debug_suffix := " (done)" if debug_finished else ""
-    fmt.sbprintf(&b, "%s | ^S save ^O open ^E examples ^Q quit | ast %d/%d, debug %d steps%s (^N step ^R restart) | Alt+1-5 panel, Alt+,/. reorder\r\n",
-      path_label, e.ast_scroll + 1, max(len(ast_wrapped), 1), debug_steps_taken, debug_suffix)
+    // A browser tab keeps Ctrl+N and Ctrl+Q for itself - they open a window
+    // and quit the browser, before any page sees them - so on that target the
+    // host translates Ctrl+Alt+<key> instead, and the status line has to
+    // advertise the keys that actually work rather than the ones that would.
+    quit_key := "^Q" when ODIN_OS != .WASI else "^⌥Q"
+    step_key := "^N" when ODIN_OS != .WASI else "^⌥N"
+    fmt.sbprintf(&b, "%s | ^S save ^O open ^E examples %s quit | ast %d/%d, debug %d steps%s (%s step ^R restart) | Alt+1-5 panel, Alt+,/. reorder\r\n",
+      path_label, quit_key, e.ast_scroll + 1, max(len(ast_wrapped), 1), debug_steps_taken, debug_suffix, step_key)
   }
 
   os.write_string(os.stdout, strings.to_string(b))
