@@ -274,28 +274,45 @@ design; none of them run today.
 ## Running somewhere other than Linux
 
 The interpreter also builds for **WASI**, which is what lets it run in a
-browser or any wasm runtime:
+browser or any wasm runtime. There are two flavours, because no single module
+suits every host:
 
 ```sh
-odin build src -target:wasi_wasm32 -o:size -out:hb.wasm
+scripts/build_wasi.sh                      # portable -> hb.wasm
 wasmtime run --dir=. hb.wasm examples/tables-map.hb
+
+scripts/build_wasi.sh --threads            # wasi-threads -> hb-threads.wasm
+iwasm --max-threads=8 --dir=. hb-threads.wasm examples/async-table.hb
 ```
 
-Everything on this page behaves identically there, with two exceptions, both
-enforced by the target rather than chosen:
+**Portable** runs anywhere preview1 does, wasmtime included — but it has no
+threads, so `async` **fails** there rather than pretending:
 
-- **`async` doesn't run yet.** Threads have no WASI implementation in the
-  Odin runtime, so an `async` program aborts instead of evaluating.
-- **A program can only reach what the host preopened for it** — WASI has no
-  working directory and no absolute paths. `wasmtime run --dir=.` grants the
-  current directory; granting nothing makes every filesystem builtin fail,
-  which is `ctx.permissions.io` (§9) enforced by the runtime rather than by
-  the interpreter. Displayed paths are relative to that preopen, so the same
-  file shows as `/examples/optiona.txt` there and as its checkout path
-  natively.
+```
+error: async: this build has no thread support (see LANGUAGE.md on the WASI flavours)
+```
 
-`scripts/wasi_smoke.sh` runs the examples on both targets and compares them;
-CI does the same on every push.
+That is deliberate. `async` means *concurrently*; a build that quietly ran the
+task inline would hand back the right value having taken exactly the time the
+program was written to avoid, and nothing would say so.
+
+**Threaded** uses the wasi-threads proposal: shared linear memory, atomics,
+and an imported `wasi.thread-spawn`. `async` then runs on real OS threads, and
+the speedup is real - four independent `async` tasks measured 2.81s → 1.03s.
+It runs only on hosts implementing the proposal (WAMR, WasmEdge built with it);
+wasmtime removed its support in June 2026 and rejects the module over the
+unknown import.
+
+Either way, one thing differs from native, enforced by the target rather than
+chosen: **a program can only reach what the host preopened for it.** WASI has
+no working directory and no absolute paths, so `--dir=.` grants the current
+directory and granting nothing makes every filesystem builtin fail - which is
+`ctx.permissions.io` (§9) enforced by the runtime instead of the interpreter.
+Displayed paths are relative to that preopen, so a file shows as
+`/examples/optiona.txt` there and as its checkout path natively.
+
+`scripts/wasi_smoke.sh` runs the examples on a wasm build and compares them
+against native; CI does it for both flavours on every push.
 
 ## Where to go next
 

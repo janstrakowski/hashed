@@ -353,7 +353,11 @@ eval :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (ret_val: Value
 
   case .Async_Expr:
     inner := interp.ast.extra_children[n.children_start]
-    return spawn_async(interp, inner, env), true
+    h, spawned := spawn_async(interp, inner, env)
+    if !spawned {
+      return fail(interp, "async: this build has no thread support (see LANGUAGE.md on the WASI flavours)")
+    }
+    return h, true
 
   case .Cached_Expr, .Import_Expr, .Serialize_Expr, .SerializeFile_Expr, .Sha256_Expr:
     return fail(interp, fmt.tprintf("%v is not implemented by this evaluator yet", n.kind))

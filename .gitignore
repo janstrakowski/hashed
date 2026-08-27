@@ -4,3 +4,4 @@ SPEC.html
 .claude/
 hb.wasm
 .cache/
+hb-threads.wasm

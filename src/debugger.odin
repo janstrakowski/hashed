@@ -243,7 +243,7 @@ stop_debugger_run :: proc(dbg: ^Debugger_Run) {
       // never double-join the same underlying thread.
       sync.mutex_lock(&h.mu)
       if !h.awaited {
-        thread.join(h.th)
+        task_join(h.task)
         h.awaited = true
       }
       sync.mutex_unlock(&h.mu)
