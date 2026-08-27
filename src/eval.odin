@@ -52,6 +52,11 @@ Interpreter :: struct {
   // has_base_dir == false.
   base_dir_path: string,
 
+  // Every `async` task this run has started (eval_async.odin). Shared with
+  // each task's own Interpreter so that one run's tasks are all drained
+  // together before it ends, however it ends.
+  async_registry: ^Async_Registry,
+
   // Step-by-step trace (off by default - zero-cost for every caller that
   // doesn't set enable_trace, e.g. all the existing tests and the REPL).
   // `trace_depth` is bookkeeping for `eval`'s own instrumentation, not meant

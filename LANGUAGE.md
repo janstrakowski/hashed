@@ -258,6 +258,12 @@ One rule catches people out: if a branch of a `then`/`else` contains `async`,
 the **untaken** branch still runs to completion — only its value is discarded.
 A started side effect can't be safely abandoned mid-flight.
 
+The same reasoning applies at the end of a program: **a run waits for every
+task it started**, including tasks nothing ever awaited, and including runs
+that end in a fatal failure. So a program that dies partway through cannot
+leave a `createfile` half-written — the failure is still fatal and still
+uncatchable, but the work already in flight finishes first.
+
 → `examples/async-basics.hb`, `examples/async-table.hb`,
 `examples/async-branching.hb` (§2)
 

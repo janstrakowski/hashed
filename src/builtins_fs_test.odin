@@ -89,7 +89,9 @@ eval_with_builtins :: proc(src: string, extra_name: string, extra_val: Value, ca
   env := make_global_env()
   if extra_name != "" do env_bind(env, extra_name, extra_val)
 
-  val, ok = eval(&interp, ast.root, env)
+  // eval_program, like every real entry point: it awaits a bare top-level
+  // async and drains any task nothing awaited (eval_async.odin).
+  val, ok = eval_program(&interp, ast.root, env)
   return val, ok, interp.error_message
 }
 
@@ -463,4 +465,25 @@ test_clean_path_handles_roots_and_relatives :: proc(t: ^testing.T) {
     defer delete(got)
     testing.expect_value(t, got, c.want)
   }
+}
+
+// A fatal failure ends the program wherever it happens (§8), but §2 has
+// already started any async work in reach - including down branches whose
+// value gets discarded. The run therefore waits for those tasks before it
+// ends, so a program can't exit with a createfile half-written. Here the
+// `error` fires while the write is still in flight, and the file must exist
+// afterwards regardless.
+@(test)
+test_async_work_finishes_even_when_the_program_fails :: proc(t: ^testing.T) {
+  sd := make_scratch_dir(t, "async_drain_dir")
+  defer remove_scratch_dir(sd)
+
+  src := `(async (createfile { .dir = d, .path = "written.txt", .content = "survived" })) as pending  error "fatal"`
+  _, ok, err := eval_with_builtins(src, "d", sd.handle)
+  testing.expect(t, !ok, "the error must still be fatal")
+  testing.expect(t, strings.contains(err, "fatal"))
+
+  content, read_err := os.read_entire_file(fmt.tprintf("%s/written.txt", sd.path), context.temp_allocator)
+  testing.expect(t, read_err == nil, "the async write must have completed before the program ended")
+  if read_err == nil do testing.expect_value(t, string(content), "survived")
 }
