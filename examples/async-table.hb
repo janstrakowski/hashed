@@ -2,7 +2,8 @@
 // §2) - so these three independent `async` computations actually run
 // concurrently with each other, not one after another, even though nothing
 // in the syntax says "concurrent" beyond the `async` keyword itself.
-// Evaluates to { a: 2, b: 6, c: "This is the payload for option A." }.
+// Evaluates to { a: 2, b: 6, c: "This is the payload for option A.\n" } -
+// the c entry is optiona.txt verbatim, trailing newline included.
 {
   .a = async (1 + 1),
   .b = async (2 * 3),
