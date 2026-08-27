@@ -1,0 +1,18 @@
+// Variants (SPEC.md §5) are a Table convention rather than separate syntax:
+// a single-entry Table whose key is the tag.
+//
+//   :.ok <value>     tag with a literal name
+//   ::<expr> <value> tag with a computed key
+//   !.ok             extract that tag's payload, or fail
+//   !:<expr>         the same, with a computed key
+//   is :.ok as v     test the tag and bind the payload, without failing
+//
+// `present` (optional.hb) is just this with the tag `present`. Evaluates to
+// { literal: 42, computed: "green", tested: 42, other_tag: "not err" }.
+"status" as key
+  {
+    .literal = (:.ok 42) !. ok,
+    .computed = (::key "green") !: key,
+    .tested = (:.ok 42) is :.ok as payload then payload else 0,
+    .other_tag = (:.ok 42) is :.err as e then "err" else "not err",
+  }

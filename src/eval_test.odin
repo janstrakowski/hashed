@@ -538,3 +538,50 @@ test_eval_error_with_and_without_message :: proc(t: ^testing.T) {
   testing.expect(t, !ok2)
   testing.expect_value(t, err2, "boom")
 }
+
+// A `[expr]` key is evaluated; a `.name` key is the name's own spelling
+// (SPEC.md §5). The two look identical in the tree once the expression is a
+// bare identifier, which is exactly the case that used to silently produce
+// the literal key "k" for `[k] = ...`.
+@(test)
+test_eval_table_computed_key_is_evaluated :: proc(t: ^testing.T) {
+  src := `"sha256" as k { [k] = 1, .k = 2, [1 + 1] = 3 }`
+  ast := parse_src(src)
+  defer ast_destroy(&ast)
+  val, ok, err := eval_top(&ast, src)
+  testing.expect(t, ok, err)
+  table, is_table := val.(^Table_Value)
+  testing.expect(t, is_table)
+
+  computed, computed_found := table_find(table, "sha256")
+  testing.expect(t, computed_found, "[k] must use the value k is bound to")
+  testing.expect_value(t, computed.(i64), i64(1))
+
+  literal, literal_found := table_find(table, "k")
+  testing.expect(t, literal_found, ".k must use the identifier's own spelling")
+  testing.expect_value(t, literal.(i64), i64(2))
+
+  arithmetic, arithmetic_found := table_find(table, i64(2))
+  testing.expect(t, arithmetic_found, "a non-identifier computed key still evaluates")
+  testing.expect_value(t, arithmetic.(i64), i64(3))
+}
+
+// `:.tag as name` binds the payload, the same way §8's `present as name`
+// does - it just parses the other way round (the bind lands inside the
+// variant pattern, against an omitted payload pattern), which used to make
+// it evaluate that omitted slot as an expression and fail.
+@(test)
+test_eval_variant_tag_pattern_binds_payload :: proc(t: ^testing.T) {
+  src := `(:.ok 42) is :.ok as payload then payload else 0`
+  ast := parse_src(src)
+  defer ast_destroy(&ast)
+  val, ok, err := eval_top(&ast, src)
+  expect_int(t, val, ok, err, 42)
+
+  // A different tag is an ordinary non-match, not a failure.
+  src2 := `(:.ok 42) is :.err as payload then payload else -1`
+  ast2 := parse_src(src2)
+  defer ast_destroy(&ast2)
+  val2, ok2, err2 := eval_top(&ast2, src2)
+  expect_int(t, val2, ok2, err2, -1)
+}
