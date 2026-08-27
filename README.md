@@ -16,9 +16,9 @@ See also [NixOS](https://nixos.org/) and [Guix](https://guix.gnu.org/).
 
 # Progress
 
-<video src="docs/media/showcase.mp4" controls muted playsinline width="100%">
-  A short tour of what's working today: the parser, the evaluator, real concurrency, the pausable debugger, and the live terminal editor, each demonstrated for real - see docs/media/showcase.mp4.
-</video>
+GitHub strips `<video>` embeds from rendered READMEs, so click through to actually watch it:
+
+[![A short tour of what's working today: the parser, the evaluator, real concurrency, the pausable debugger, and the live terminal editor, each demonstrated for real.](docs/media/showcase-poster.png)](https://raw.githubusercontent.com/janstrakowski/hashedbuild/main/docs/media/showcase.mp4)
 
 Want to try any of that yourself? **[GETTING_STARTED.md](GETTING_STARTED.md)** walks through setting up, running, and experimenting with everything shown above.
 
