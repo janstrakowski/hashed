@@ -122,7 +122,7 @@ jobs:
           scripts/build_wasi.sh -out:hb.wasm
 
       - name: Examples agree on both targets
-        run: scripts/wasi_smoke.sh ./hb ./hb.wasm "$(command -v wasmtime)"
+        run: scripts/wasi_smoke.sh --no-threads ./hb ./hb.wasm "$(command -v wasmtime)"
 
   # The threaded WASI build can't be exercised by the job above: it imports
   # wasi.thread-spawn, which wasmtime dropped in June 2026, so it needs an

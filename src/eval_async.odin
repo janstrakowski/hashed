@@ -57,7 +57,7 @@ run_async_body :: proc(data: rawptr) {
 // debug run see into `async` at all, as one more task in the same shared,
 // single-tree log (see debugger.odin) rather than a black box that just
 // silently finishes in the background.
-spawn_async :: proc(interp: ^Interpreter, body: Node_Idx, env: ^Env) -> ^Async_Handle {
+spawn_async :: proc(interp: ^Interpreter, body: Node_Idx, env: ^Env) -> (^Async_Handle, bool) {
   h := new(Async_Handle)
   h.body = body
   h.env = env
@@ -76,15 +76,17 @@ spawn_async :: proc(interp: ^Interpreter, body: Node_Idx, env: ^Env) -> ^Async_H
   spawned: bool
   h.task, spawned = task_spawn(run_async_body, h)
   if !spawned {
-    // No threads on this target (see task.odin): evaluate here and now. The
-    // handle still behaves like one - await_value finds the result already
-    // sitting in it - so §2's rules hold exactly, including an untaken
-    // branch's async work still running. Only the concurrency is missing.
-    run_async_body(h)
-    h.awaited = true
+    // No threads on this target (see task.odin). Reported as a failure at
+    // the `async` itself rather than quietly evaluated inline: `async` means
+    // concurrently, and a build that cannot do that should say so where the
+    // program asks for it, not silently hand back a value that took the time
+    // it was written to avoid.
+    delete(h.interp.arg_stack)
+    free(h)
+    return nil, false
   }
   if interp.debugger != nil do register_debugger_task(interp.debugger, h)
-  return h
+  return h, true
 }
 
 // Resolves `v` into a concrete value: joins and unpacks an `^Async_Handle`

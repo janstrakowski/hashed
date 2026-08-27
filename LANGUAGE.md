@@ -285,9 +285,16 @@ scripts/build_wasi.sh --threads            # wasi-threads -> hb-threads.wasm
 iwasm --max-threads=8 --dir=. hb-threads.wasm examples/async-table.hb
 ```
 
-**Portable** runs anywhere preview1 does, wasmtime included. `async` still
-obeys §2 exactly - every task runs, untaken branches included, and the values
-are identical - but it evaluates inline, so nothing is concurrent.
+**Portable** runs anywhere preview1 does, wasmtime included — but it has no
+threads, so `async` **fails** there rather than pretending:
+
+```
+error: async: this build has no thread support (see LANGUAGE.md on the WASI flavours)
+```
+
+That is deliberate. `async` means *concurrently*; a build that quietly ran the
+task inline would hand back the right value having taken exactly the time the
+program was written to avoid, and nothing would say so.
 
 **Threaded** uses the wasi-threads proposal: shared linear memory, atomics,
 and an imported `wasi.thread-spawn`. `async` then runs on real OS threads, and
