@@ -16,6 +16,16 @@ odin test src             # full suite
 actually run, so rebuild it as part of every completed feature, not just at the
 end of a session.
 
+CI (`.github/workflows/ci.yml`) builds and runs the suite on every push to
+`main` and every PR, using the pinned `ODIN_VERSION` — deliberately not on
+`dev`, which is allowed to be red. It is a net under the rules below, not a
+substitute for running the suite yourself before landing.
+
+Tests must not hardcode an absolute path: `repo_root()` (`builtins_fs_test.odin`)
+derives the checkout location from `#directory` at compile time, because CI
+checks out somewhere else and `odin test` promises no particular working
+directory.
+
 ## Git workflow
 
 `main` holds only working features. Its history is linear (no merge commits,

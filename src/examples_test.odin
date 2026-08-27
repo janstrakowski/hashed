@@ -11,11 +11,9 @@ import "core:testing"
 // evaluator, async, and the filesystem builtins all at once - and it keeps
 // the examples from rotting silently as the language moves underneath them.
 //
-// Paths are absolute because `odin test` doesn't promise a working
-// directory, same as the fs builtin tests.
-
-@(private = "file")
-REPO :: "/home/janst/hashedbuild"
+// Paths are built from repo_root() (builtins_fs_test.odin), which resolves at
+// compile time from the source location - `odin test` promises no particular
+// working directory, and CI checks out somewhere else entirely.
 
 @(private = "file")
 Example_Case :: struct {
@@ -25,7 +23,7 @@ Example_Case :: struct {
 
 @(test)
 test_examples_evaluate_to_their_documented_values :: proc(t: ^testing.T) {
-  cache := REPO + "/.examples_test_cache"
+  cache := fmt.tprintf("%s/.examples_test_cache", repo_root())
   defer remove_dir_and_entries(cache)
   // async-branching writes a marker for every branch it walks (§2), and
   // createfile is exclusive (§16), so leftovers from a previous run would
@@ -46,7 +44,7 @@ test_examples_evaluate_to_their_documented_values :: proc(t: ^testing.T) {
   }
 
   for c in cases {
-    path := fmt.tprintf("%s/examples/%s", REPO, c.file)
+    path := fmt.tprintf("%s/examples/%s", repo_root(), c.file)
     formatted, err_msg, ok := eval_source_file(path, false, cache)
     if !testing.expect(t, ok, fmt.tprintf("%s failed to evaluate: %s", c.file, err_msg)) do continue
     defer delete(formatted)
@@ -59,10 +57,10 @@ test_examples_evaluate_to_their_documented_values :: proc(t: ^testing.T) {
 // content-addressed path (§3/§16) under whatever --cache-dir was given.
 @(test)
 test_example_option_picker_writes_into_the_cache :: proc(t: ^testing.T) {
-  cache := REPO + "/.examples_test_picker_cache"
+  cache := fmt.tprintf("%s/.examples_test_picker_cache", repo_root())
   defer remove_dir_and_entries(cache)
 
-  path := REPO + "/examples/option-picker.hb"
+  path := fmt.tprintf("%s/examples/option-picker.hb", repo_root())
   formatted, err_msg, ok := eval_source_file(path, false, cache)
   testing.expect(t, ok, err_msg)
   if !ok do return
@@ -101,6 +99,6 @@ remove_dir_and_entries :: proc(dir: string) {
 @(private = "file")
 clear_branch_markers :: proc() {
   for branch in ([]string{"negative", "high", "medium", "low"}) {
-    os.remove(fmt.tprintf("%s/examples/branch-%s.marker", REPO, branch))
+    os.remove(fmt.tprintf("%s/examples/branch-%s.marker", repo_root(), branch))
   }
 }
