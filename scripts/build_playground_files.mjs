@@ -1,9 +1,11 @@
 // Generates docs/repo-files.json: the repository as the playground's starting
 // filesystem, so the terminal opens on what you would have after cloning.
 //
-// Everything git tracks goes in, minus the things that would only bloat the
-// download: docs/media (1.4MB of video and gif) and docs/hb.wasm, which the
-// page fetches separately anyway - it is the interpreter, not a file to read.
+// Everything git tracks goes in, minus what would only bloat the download
+// without being anything to read: docs/media (1.4MB of video), docs/hb.wasm
+// (the interpreter, fetched separately), and docs/vendor (xterm.js, which the
+// page loads when the editor opens). Source, docs, examples and scripts - the
+// things someone would actually `cat` - all stay.
 //
 // Usage: node scripts/build_playground_files.mjs [--check]
 //   --check verifies the committed manifest is current instead of writing it.
@@ -15,7 +17,7 @@ import { dirname, join } from "node:path";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(repo, "docs", "repo-files.json");
-const SKIP = [/^docs\/media\//, /^docs\/hb\.wasm$/, /^docs\/repo-files\.json$/];
+const SKIP = [/^docs\/media\//, /^docs\/vendor\//, /^docs\/hb\.wasm$/, /^docs\/repo-files\.json$/];
 
 // --cached --others --exclude-standard: everything a clone of this commit
 // will contain, whether or not it has been `git add`ed yet. Plain `ls-files`
