@@ -655,7 +655,9 @@ eval_table_construct :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) ->
       value_idx := interp.ast.extra_children[child.children_start + 1]
       key_node := interp.ast.nodes[key_idx]
       key: Value
-      if key_node.kind == .Identifier {
+      // `.name = v` uses the identifier's own spelling as the key; `[name]
+      // = v` (Computed_Key, §5) evaluates it like any other expression.
+      if key_node.kind == .Identifier && .Computed_Key not_in child.flags {
         key = node_text(interp, key_idx)
       } else {
         k, kok := eval_slot(interp, key_idx, env)
@@ -1007,6 +1009,15 @@ match_pattern :: proc(interp: ^Interpreter, pattern_node: Node_Idx, value: Value
     bound_env := env_make_child(sub_env)
     env_bind(bound_env, node_text(interp, name_idx), bind_val)
     return true, bound_env, true
+
+  case .Hole:
+    // An omitted pattern - §7's blank operand, in pattern position. It shows
+    // up as the payload slot of `:.ok as v`, which parses as the variant
+    // pattern `:.ok` with `<nothing> as v` inside it (`present as v` takes
+    // the other shape, binding on the outside, which is why only the
+    // explicit-tag spelling reached here). Matches anything and binds
+    // nothing; the enclosing Pattern_Bind does the binding.
+    return true, env, true
 
   case .Identifier:
     // A bare name in pattern position is a fresh binder: it matches any

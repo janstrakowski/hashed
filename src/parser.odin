@@ -736,7 +736,10 @@ parse_table_element :: proc(p: ^Parser) -> (Node_Idx, Table_Shape) {
     if !vok do value = push_missing(p, p.cur.span, "expected a value after '='")
     span := Span{open.span.start, p.ast.nodes[value].span.end}
     start, count := push_children(p.ast, []Node_Idx{key, value})
-    flags := node_flags(p.ast, key, value)
+    // Computed_Key marks this as the `[expr]` form: `[name]` and `.name`
+    // both leave an Identifier in the key slot, and only the flag tells the
+    // evaluator to look the name up instead of using its spelling (§5).
+    flags := node_flags(p.ast, key, value) + {.Computed_Key}
     if !eq_ok do flags += {.Has_Error}
     return push_node(p.ast, Node{kind = .Table_Entry, flags = flags, span = span, children_start = start, children_count = count}), .Map
   }

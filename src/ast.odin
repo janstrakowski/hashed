@@ -100,8 +100,15 @@ Node_Kind :: enum u16 {
 }
 
 Node_Flags :: bit_set[enum {
-  Has_Error,   // True if this node OR any descendant contains an error
-  Is_Missing,  // Synthesized node (zero length in source text)
+  Has_Error,    // True if this node OR any descendant contains an error
+  Is_Missing,   // Synthesized node (zero length in source text)
+  // Set on a Table_Entry written as `[expr] = value` rather than
+  // `.name = value` (SPEC.md §5). Both forms hold [key, value] children, and
+  // a bare `[name]` key parses to the same Identifier leaf a `.name` key
+  // does - so without this flag the evaluator can't tell "the key is the
+  // literal text `name`" from "the key is whatever the variable `name`
+  // holds", and silently picks the former.
+  Computed_Key,
 }]
 
 Span :: struct {
