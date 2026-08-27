@@ -3,3 +3,4 @@ SPEC.html
 /hb
 .claude/
 hb.wasm
+.cache/
