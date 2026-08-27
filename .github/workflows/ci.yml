@@ -48,7 +48,8 @@ jobs:
       - name: Ensure clang is present
         run: |
           if ! command -v clang >/dev/null; then
-            sudo apt-get update && sudo apt-get install -y clang
+            sudo apt-get update || echo "apt-get update reported errors; continuing anyway"
+            sudo apt-get install -y clang
           fi
 
       - run: odin version
@@ -104,7 +105,12 @@ jobs:
           command -v clang >/dev/null || missing="$missing clang"
           command -v wasm-ld >/dev/null || missing="$missing lld"
           if [ -n "$missing" ]; then
-            sudo apt-get update && sudo apt-get install -y $missing
+            # The runner image carries third-party apt sources (azure-cli, for
+            # one) that intermittently return 403. `apt-get update` then fails
+            # wholesale and takes the job with it, over a repository nothing
+            # here needs. Let it fail; the install is what decides.
+            sudo apt-get update || echo "apt-get update reported errors; continuing anyway"
+            sudo apt-get install -y $missing
           fi
           wasm-ld --version
 
@@ -168,7 +174,12 @@ jobs:
           command -v clang >/dev/null || missing="$missing clang"
           command -v wasm-ld >/dev/null || missing="$missing lld"
           if [ -n "$missing" ]; then
-            sudo apt-get update && sudo apt-get install -y $missing
+            # The runner image carries third-party apt sources (azure-cli, for
+            # one) that intermittently return 403. `apt-get update` then fails
+            # wholesale and takes the job with it, over a repository nothing
+            # here needs. Let it fail; the install is what decides.
+            sudo apt-get update || echo "apt-get update reported errors; continuing anyway"
+            sudo apt-get install -y $missing
           fi
 
       - name: Cache iwasm
@@ -234,7 +245,12 @@ jobs:
           command -v clang >/dev/null || missing="$missing clang"
           command -v wasm-ld >/dev/null || missing="$missing lld"
           if [ -n "$missing" ]; then
-            sudo apt-get update && sudo apt-get install -y $missing
+            # The runner image carries third-party apt sources (azure-cli, for
+            # one) that intermittently return 403. `apt-get update` then fails
+            # wholesale and takes the job with it, over a repository nothing
+            # here needs. Let it fail; the install is what decides.
+            sudo apt-get update || echo "apt-get update reported errors; continuing anyway"
+            sudo apt-get install -y $missing
           fi
 
       # The shim test compares the wasm against the native build, example by
