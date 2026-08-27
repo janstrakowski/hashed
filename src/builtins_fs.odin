@@ -177,6 +177,23 @@ resolve_target :: proc(interp: ^Interpreter, t: ^Table_Value, path_str: string, 
   return Resolved_Path{fd = parent_fd, basename = basename, needs_close = parent_fd != dir_file.dir_fd}, "", true
 }
 
+// ---- display path (§3) -------------------------------------------------------------
+
+// The absolute path an open fd currently refers to, asked of the kernel via
+// /proc/self/fd/<n>. Every File carries one for display (SPEC.md §3): the
+// path a call site writes is relative to the process's cwd, the running
+// source file's directory, or a contained .dir handle, so only the kernel
+// knows the whole of it. Falls back to the call site's own spelling if /proc
+// isn't there to ask.
+@(private = "file")
+display_path_for :: proc(fd: linux.Fd, fallback: string) -> string {
+  link := strings.clone_to_cstring(fmt.tprintf("/proc/self/fd/%d", fd), context.temp_allocator)
+  buf := make([]u8, 4096, context.temp_allocator)
+  n, errno := linux.readlinkat(linux.AT_FDCWD, link, buf)
+  if errno != .NONE || n <= 0 do return strings.clone(fallback)
+  return strings.clone(string(buf[:n]))
+}
+
 // ---- loadfile ---------------------------------------------------------------------
 
 @(private = "file")
@@ -199,6 +216,7 @@ open_and_load :: proc(interp: ^Interpreter, dir_fd: linux.Fd, path: string, no_f
     fv := new(File_Value)
     fv.kind = .Directory
     fv.dir_fd = dir_fd2
+    fv.display_path = display_path_for(dir_fd2, path)
     return fv, true
   }
 
@@ -214,6 +232,7 @@ open_and_load :: proc(interp: ^Interpreter, dir_fd: linux.Fd, path: string, no_f
   fv := new(File_Value)
   fv.kind = .Regular
   fv.content = content[:total]
+  fv.display_path = display_path_for(fd, path)
   return fv, true
 }
 
@@ -305,6 +324,7 @@ builtin_createfile :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value
   fv := new(File_Value)
   fv.kind = .Regular
   fv.content = slice.clone(content_bytes)
+  fv.display_path = display_path_for(fd, r.basename)
   return fv, true
 }
 
@@ -378,7 +398,7 @@ createfile_in_cache :: proc(interp: ^Interpreter, cache: ^Cache_Value, content: 
   fv := new(File_Value)
   fv.kind = .Regular
   fv.content = slice.clone(content)
-  fv.cache_display_path = strings.concatenate({cache.dir_path, "/", name})
+  fv.display_path = strings.concatenate({cache.dir_path, "/", name})
   return fv, true
 }
 
