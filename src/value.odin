@@ -47,12 +47,13 @@ File_Value :: struct {
   kind:               File_Kind,
   content:            []u8,     // Regular only
   dir_fd:             linux.Fd, // Directory only
-  // Set only for a Regular file returned by writing into ctx.cache (§16/§9):
-  // format_value shows this absolute path instead of the generic "<file: N
-  // bytes>" - purely for human-facing display. There's no builtin that lets
-  // HashedBuild source read this field back out, by design - the program
-  // itself never learns where in the cache its data actually landed.
-  cache_display_path: string,
+  // Where this File was actually read from or written to, resolved through
+  // /proc/self/fd so it's absolute regardless of how the call named it (§3's
+  // display rule). format_value shows it; nothing else does. There's no
+  // builtin that lets HashedBuild source read this field back out, by design
+  // - a program holds the handle without ever learning where its data lives.
+  // Empty only if that resolution failed (see builtins_fs.odin's path_of_fd).
+  display_path:       string,
 }
 
 // SPEC.md §9's ctx.cache: a write-only, content-addressed blob store rooted

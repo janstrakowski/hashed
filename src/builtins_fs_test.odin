@@ -37,9 +37,15 @@ fmt_scratch_path :: proc(name: string) -> string {
 @(private = "file")
 remove_scratch_dir :: proc(s: Scratch_Dir) {
   linux.close(s.handle.dir_fd)
-  // best-effort cleanup - the directory may still have entries in it, which
-  // os.remove won't recurse into; that's fine for a short-lived test scratch
-  // area, not worth pulling in a recursive-delete helper for.
+  // Best-effort cleanup, one level deep: os.remove won't take a non-empty
+  // directory, and a leftover scratch directory makes the *next* run of the
+  // same test fail (createfile is exclusive, §16). Tests here only ever put
+  // entries directly inside, so no recursion needed.
+  if handle, err := os.open(s.path); err == nil {
+    entries, _ := os.read_dir(handle, -1, context.temp_allocator)
+    for entry in entries do os.remove(fmt.tprintf("%s/%s", s.path, entry.name))
+    os.close(handle)
+  }
   os.remove(s.path)
 }
 
@@ -119,6 +125,32 @@ test_builtin_createfile_sandboxed_to_dir :: proc(t: ^testing.T) {
   // .. must be rejected before ever touching the filesystem.
   _, ok2, _ := eval_with_builtins(`createfile { .dir = d, .path = "../escape.txt", .content = "x" }`, "d", sd.handle)
   testing.expect(t, !ok2, "createfile must reject a path that escapes its directory")
+}
+
+// ---- display (§3) ---------------------------------------------------------------
+
+// SPEC.md §3: every File displays its actual filesystem path, not its size
+// or content - and an absolute one, even when the call site named it
+// relative to a .dir handle.
+@(test)
+test_file_display_shows_path :: proc(t: ^testing.T) {
+  sd := make_scratch_dir(t, "display_dir")
+  defer remove_scratch_dir(sd)
+
+  made, ok1, err1 := eval_with_builtins(`createfile { .dir = d, .path = "made.txt", .content = "x" }`, "d", sd.handle)
+  testing.expect(t, ok1, err1)
+  testing.expect_value(t, format_value(made), fmt.tprintf("<file: %s/made.txt>", sd.path))
+
+  loaded, ok2, err2 := eval_with_builtins(`loadfile { .dir = d, .path = "made.txt" }`, "d", sd.handle)
+  testing.expect(t, ok2, err2)
+  testing.expect_value(t, format_value(loaded), fmt.tprintf("<file: %s/made.txt>", sd.path))
+
+  load_dir_src := fmt.aprintf(`loadfile "%s"`, sd.path)
+  defer delete(load_dir_src)
+  dir_val, ok3, err3 := eval_with_builtins(load_dir_src, "", nil)
+  testing.expect(t, ok3, err3)
+  testing.expect_value(t, format_value(dir_val), fmt.tprintf("<directory: %s>", sd.path))
+  if dfv, is_file := dir_val.(^File_Value); is_file do linux.close(dfv.dir_fd)
 }
 
 // ---- symlink / readlink ---------------------------------------------------------
@@ -275,15 +307,15 @@ test_builtin_cache_write_and_dedup :: proc(t: ^testing.T) {
   testing.expect(t, is_file1)
   testing.expect_value(t, fv1.kind, File_Kind.Regular)
   testing.expect_value(t, string(fv1.content), "cached content")
-  testing.expect(t, fv1.cache_display_path != "")
-  testing.expect(t, strings.contains(fv1.cache_display_path, "sha256_"))
+  testing.expect(t, fv1.display_path != "")
+  testing.expect(t, strings.contains(fv1.display_path, "sha256_"))
 
   // Writing the exact same content again dedupes - same display path, and
   // still only one file on disk (not an error, not a second entry).
   val2, ok2, err2 := eval_with_builtins(`createfile { .dir = ctx.cache, .content = "cached content" }`, "", nil, "cache_dedup")
   testing.expect(t, ok2, err2)
   fv2 := val2.(^File_Value)
-  testing.expect_value(t, fv1.cache_display_path, fv2.cache_display_path)
+  testing.expect_value(t, fv1.display_path, fv2.display_path)
 
   dir := fmt_scratch_path("cache_dedup")
   handle, derr := os.open(dir)
@@ -303,7 +335,7 @@ test_builtin_cache_different_content_gets_different_name :: proc(t: ^testing.T) 
   testing.expect(t, ok2)
   fv1 := val1.(^File_Value)
   fv2 := val2.(^File_Value)
-  testing.expect(t, fv1.cache_display_path != fv2.cache_display_path)
+  testing.expect(t, fv1.display_path != fv2.display_path)
 }
 
 @(test)

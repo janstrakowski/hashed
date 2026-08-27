@@ -33,13 +33,15 @@ write_value :: proc(b: ^strings.Builder, val: Value) {
   case ^Function_Value:
     fmt.sbprint(b, "<function>")
   case ^File_Value:
-    switch {
-    case v.cache_display_path != "":
-      fmt.sbprintf(b, "<file: %s>", v.cache_display_path)
-    case v.kind == .Directory:
-      fmt.sbprint(b, "<directory>")
-    case:
-      fmt.sbprintf(b, "<file: %d bytes>", len(v.content))
+    // SPEC.md §3: a File displays its filesystem path, however it was
+    // obtained - content (or a byte count) is deliberately not what a human
+    // sees here. A path-less File shouldn't happen; show the kind alone
+    // rather than inventing something if it ever does.
+    kind_word := v.kind == .Directory ? "directory" : "file"
+    if v.display_path == "" {
+      fmt.sbprintf(b, "<%s>", kind_word)
+    } else {
+      fmt.sbprintf(b, "<%s: %s>", kind_word, v.display_path)
     }
   case ^Cache_Value:
     fmt.sbprint(b, "<cache>")
