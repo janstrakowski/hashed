@@ -175,6 +175,7 @@ eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) ->
   if dir_errno == .NONE {
     interp.base_dir_fd = dir_fd
     interp.has_base_dir = true
+    interp.base_dir_path = absolute_dir_path(dir_path)
   }
   defer if dir_errno == .NONE do linux.close(dir_fd)
 

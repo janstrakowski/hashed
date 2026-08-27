@@ -26,6 +26,11 @@ make_scratch_dir :: proc(t: ^testing.T, name: string) -> Scratch_Dir {
   h := new(File_Value)
   h.kind = .Directory
   h.dir_fd = fd
+  // Same as loadfile would set: a directory handle carries the path it was
+  // reached by, and everything opened through it displays relative to that
+  // (§3). Without it the handle is real but anonymous, and Files opened
+  // through it would display a bare basename.
+  h.display_path = path
   return Scratch_Dir{path = path, handle = h}
 }
 
@@ -416,4 +421,44 @@ test_check_and_error_are_not_caught_by_else :: proc(t: ^testing.T) {
   _, error_ok, error_err := eval_with_builtins(`(error "boom") then 1 else 2`, "", nil)
   testing.expect(t, !error_ok, "an error must not be caught by an else")
   testing.expect(t, strings.contains(error_err, "boom"))
+}
+
+// ---- display path construction (§3) -----------------------------------------
+
+// A File's displayed path is now built as the value is, rather than read back
+// off /proc/self/fd, because WASI can't turn a descriptor into a path at all.
+// These pin the lexical rules that replaced the kernel's normalisation.
+@(test)
+test_display_join_cleans_paths_lexically :: proc(t: ^testing.T) {
+  Case :: struct{ dir, name, want: string }
+  for c in ([]Case{
+    {"/a/b", "c.txt", "/a/b/c.txt"},
+    {"/a/b", ".", "/a/b"},              // `loadfile "."` - a directory handle on itself
+    {"/a/b", "./c.txt", "/a/b/c.txt"},
+    {"/a/b", "../c.txt", "/a/c.txt"},   // only reachable unsandboxed; .dir rejects ".."
+    {"/a/b", "/elsewhere", "/elsewhere"}, // an absolute name replaces the directory
+    {"/a//b", "c", "/a/b/c"},
+    {"", "c.txt", "c.txt"},             // no base directory known
+  }) {
+    got := display_join(c.dir, c.name)
+    defer delete(got)
+    testing.expect_value(t, got, c.want)
+  }
+}
+
+@(test)
+test_clean_path_handles_roots_and_relatives :: proc(t: ^testing.T) {
+  Case :: struct{ path, want: string }
+  for c in ([]Case{
+    {"/a/b/../..", "/"},   // popping past the root stops at the root
+    {"/..", "/"},
+    {"a/../b", "b"},
+    {"a/../..", ".."},     // a relative path has no known parent, so ".." survives
+    {".", "."},
+    {"/a/./b/", "/a/b"},
+  }) {
+    got := clean_path(c.path)
+    defer delete(got)
+    testing.expect_value(t, got, c.want)
+  }
 }

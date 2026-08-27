@@ -46,6 +46,12 @@ Interpreter :: struct {
   // what the REPL wants, since there's no source file to be relative to.
   base_dir_fd:  linux.Fd,
   has_base_dir: bool,
+  // The same directory as a path, kept alongside the handle because a File
+  // displays the path it was reached by (SPEC.md §3) and an fd can't be
+  // turned back into one portably - Linux could ask /proc/self/fd, WASI has
+  // no equivalent at all. Empty means "use the process's cwd", matching
+  // has_base_dir == false.
+  base_dir_path: string,
 
   // Step-by-step trace (off by default - zero-cost for every caller that
   // doesn't set enable_trace, e.g. all the existing tests and the REPL).

@@ -689,6 +689,7 @@ setup_interp_base_dir :: proc(interp: ^Interpreter, current_path: string) {
   if errno == .NONE {
     interp.base_dir_fd = dir_fd
     interp.has_base_dir = true
+    interp.base_dir_path = absolute_dir_path(dir_path)
   }
 }
 
