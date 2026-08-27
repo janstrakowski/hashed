@@ -6,9 +6,10 @@
 // Usage: node scripts/playground_browser_test.mjs [chrome-path]
 // Needs puppeteer-core installed and a Chrome/Chromium binary.
 
-import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, extname } from "node:path";
 import puppeteer from "puppeteer-core";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,10 +31,41 @@ const check = (name, actual, expected) => {
   }
 };
 
-const server = spawn("python3", ["-m", "http.server", String(PORT)], {
-  cwd: join(repo, "docs"), stdio: "ignore",
-});
-await new Promise((r) => setTimeout(r, 1200));
+// Two servers, because the page can get cross-origin isolation two ways and
+// both are worth knowing about:
+//
+//   isolated  sends COOP/COEP itself, the way a host that can set headers
+//             would. Deterministic, and what the bulk of the test runs on.
+//   plain     sends nothing, so isolation has to come from
+//             coi-serviceworker - which is the GitHub Pages situation, and is
+//             checked on its own below rather than underneath every assertion.
+const TYPES = {
+  ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
+  ".json": "application/json", ".wasm": "application/wasm",
+};
+
+function serve(port, isolated) {
+  const server = createServer(async (req, res) => {
+    const path = join(repo, "docs", decodeURIComponent(req.url.split("?")[0]));
+    try {
+      const body = await readFile(path);
+      const headers = { "Content-Type": TYPES[extname(path)] ?? "application/octet-stream" };
+      if (isolated) {
+        headers["Cross-Origin-Opener-Policy"] = "same-origin";
+        headers["Cross-Origin-Embedder-Policy"] = "require-corp";
+        headers["Cross-Origin-Resource-Policy"] = "cross-origin";
+      }
+      res.writeHead(200, headers).end(body);
+    } catch {
+      res.writeHead(404).end("not found");
+    }
+  });
+  server.listen(port);
+  return server;
+}
+
+const server = serve(PORT, true);
+const plainServer = serve(PORT + 1, false);
 
 const browser = await puppeteer.launch({
   executablePath: CHROME,
@@ -184,10 +216,25 @@ try {
   await page.waitForFunction(() => !document.body.classList.contains("tui"), { timeout: WAIT });
   check("quitting returns to the shell", await screenText(), (t) => t.includes("left the editor"));
 
+  // The service-worker route to isolation, on its own: this is how the page
+  // gets there on GitHub Pages, which cannot set headers. A separate browser
+  // context so it starts without the service worker already installed.
+  const swContext = await browser.createBrowserContext();
+  const swPage = await swContext.newPage();
+  await swPage.goto(`http://localhost:${PORT + 1}/playground.html`, { waitUntil: "networkidle0" });
+  let isolatedViaWorker = false;
+  for (let i = 0; i < 30 && !isolatedViaWorker; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    isolatedViaWorker = await swPage.evaluate(() => self.crossOriginIsolated).catch(() => false);
+  }
+  check("coi-serviceworker reaches isolation without header support", isolatedViaWorker, true);
+  await swContext.close();
+
   check("no page errors", problems.join(" | "), "");
 } finally {
   await browser.close();
-  server.kill();
+  server.close();
+  plainServer.close();
 }
 
 console.log(failures === 0 ? "\nall terminal checks passed" : `\n${failures} terminal checks failed`);
