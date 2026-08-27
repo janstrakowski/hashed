@@ -1,0 +1,26 @@
+// SPEC.md §2's branching rule made visible: ordinarily a `then`/`else` only
+// evaluates the branch actually taken, but when a branch contains `async`
+// anywhere, the untaken one still has to be started and awaited to
+// completion (only its *value* gets thrown away) - a real side effect (a
+// download, a write) can't be safely abandoned mid-flight. Every branch
+// below is `async (createfile {...} as _ "label")` - the write and the
+// label live *inside* the same async body specifically so awaiting the
+// branch's value (which the untaken-branch rule and the taken branch's own
+// consumption both do) is guaranteed to wait for the write too; binding the
+// write to an unused name *outside* the async wouldn't give anything a
+// reason to wait for it before the program exits.
+//
+// Run this (`hb examples/async-branching.hb`), then `ls examples/branch-*
+// .marker` - you'll find one from every branch that was ever walked, not
+// just the one whose value came out on top. (Delete them before re-running -
+// createfile is exclusive, SPEC.md §16.) Evaluates to "medium" (score = 55:
+// not negative, not over 80, but over 40).
+55 as score
+  score < 0 then
+    async ((createfile { .path = "branch-negative.marker", .content = "ran" }) as _ "negative")
+  else score > 80 then
+    async ((createfile { .path = "branch-high.marker", .content = "ran" }) as _ "high")
+  else score > 40 then
+    async ((createfile { .path = "branch-medium.marker", .content = "ran" }) as _ "medium")
+  else
+    async ((createfile { .path = "branch-low.marker", .content = "ran" }) as _ "low")
