@@ -20,7 +20,19 @@ See also [NixOS](https://nixos.org/) and [Guix](https://guix.gnu.org/).
 
 (Looping preview above - for the full-quality, pausable version, [download the mp4](https://raw.githubusercontent.com/janstrakowski/hashedbuild/main/docs/media/showcase.mp4).)
 
-Want to try any of that yourself? **[GETTING_STARTED.md](GETTING_STARTED.md)** walks through setting up, running, and experimenting with everything shown above.
+Want to try it without installing anything? **[Open the terminal in your browser](https://janstrakowski.github.io/hashedbuild/playground.html)** - it is this CLI compiled to WebAssembly, with this repository as its filesystem:
+
+```
+$ ls                                the repo: src/, examples/, SPEC.md, ...
+$ hb examples/guard-chain.hb        run a program
+$ hb -e '1 + 2 * 3'                 evaluate an expression
+$ hb                                the REPL
+$ hb -i                             the live editor, panes and all
+```
+
+The REPL is the interpreter's own loop reading what you type, `async` runs on real threads (Web Workers sharing one WebAssembly memory), and files you create persist in your browser between visits. There is no server: nothing you type leaves the tab.
+
+Prefer it locally? **[GETTING_STARTED.md](GETTING_STARTED.md)** walks through setting up, running, and experimenting with everything shown above.
 
 A real parser and tree-walking evaluator exist now (`src/`, with a full test suite), covering the core expression language - functions, pattern matching, guard chains, real concurrency (`async`, running on actual OS threads) - plus a small set of filesystem builtins with capability-scoped permissions and a live, self-hosted terminal editor with a genuinely pausable/resumable debugger. Unlike the aspirational examples further down, the program below actually runs:
 
@@ -48,7 +60,7 @@ loadfile "choice.txt" |> filetext as choice
 
 Run it with `./hb examples/option-picker.hb` (from anywhere - its paths resolve relative to the script itself, not your shell's current directory), or explore it live with `./hb -i` - a two-to-four-pane terminal editor with a built-in examples picker, a live AST view, and a step-by-step evaluation trace. This one example touches a few of the language's actual design points: files are ordinary values (`loadfile`/`createfile`), branching is built from general composable operators rather than bespoke syntax (`then`/`else` chains into an if/else-if/else), and `error` is a genuinely unrecoverable failure - unlike a failed `then`, no enclosing `else` catches it.
 
-**[LANGUAGE.md](LANGUAGE.md)** is the tour of everything that works today, feature by feature, with a runnable snippet for each and an explicit list of what isn't built yet. **[examples/](examples/)** has a runnable file per feature - all of them executed by the test suite, so they can't drift from the implementation. `SPEC.md` is the full design, including the parts that don't run yet. You can also **[run the CLI in your browser](https://janstrakowski.github.io/hashedbuild/playground.html)** - a web terminal with the REPL, `hb <file>`, and a filesystem that persists in your own browser. Nothing is sent anywhere.
+**[LANGUAGE.md](LANGUAGE.md)** is the tour of everything that works today, feature by feature, with a runnable snippet for each and an explicit list of what isn't built yet. **[examples/](examples/)** has a runnable file per feature - all of them executed by the test suite, so they can't drift from the implementation. `SPEC.md` is the full design, including the parts that don't run yet.
 
 # Examples
 

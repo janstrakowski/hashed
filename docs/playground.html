@@ -292,6 +292,26 @@ async function ensureTerminalEmulator() {
   term.onData((data) => {
     if (rawMode) sendToStdin(data, false);
   });
+
+  // Alt+1..5 toggle the editor's panels and Alt+,/. reorder them - but a
+  // browser wants Alt+number for switching tabs, and takes it before the page
+  // ever sees the key. Claiming them here (preventDefault, then sending the
+  // escape sequence ourselves) is what makes the editor's own bindings work
+  // in a tab. Keyed on event.code, so it holds on layouts where Alt+3 does
+  // not produce "3".
+  const ALT_KEYS = {
+    Digit1: "1", Digit2: "2", Digit3: "3", Digit4: "4", Digit5: "5",
+    Comma: ",", Period: ".",
+  };
+  term.attachCustomKeyEventHandler((event) => {
+    if (event.type !== "keydown" || !event.altKey || event.ctrlKey || event.metaKey) return true;
+    const key = ALT_KEYS[event.code];
+    if (!key) return true;
+    event.preventDefault();
+    // "meta sends escape", the convention the editor's key parser reads.
+    if (rawMode) sendToStdin("\x1b" + key, false);
+    return false;
+  });
   return term;
 }
 
