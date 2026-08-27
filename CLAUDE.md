@@ -38,6 +38,18 @@ fast-forward `main`. Run the suite in that exact final squashed state, not just
 somewhere along the way. Do this when the work is green rather than asking first;
 say in the reply that it landed.
 
+**A green commit needs reasonable test coverage, not just a green suite.** A
+feature lands with tests that would fail if the feature were reverted — passing
+116 existing tests that never touch the new code is not coverage. Reasonable
+means the behavior a user could rely on: the happy path, and the failure modes
+the code explicitly handles (a rejected path, a missing argument, a permission
+denial), not every branch. If the change makes something untestable-as-written,
+refactor it until it is testable — extracting a pure function out of `main` is
+cheaper than shipping a flag nobody can test. The two standing exceptions are
+the terminal UI (`editor.odin`, `debugger.odin`, `term_linux.odin`), where
+driving a raw-mode TTY costs more than it's worth, and pure doc/comment edits.
+Taking an exception means saying so in the commit body.
+
 ```sh
 git switch dev
 git rebase main                  # only if main moved; never merge
