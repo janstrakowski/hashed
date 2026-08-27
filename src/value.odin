@@ -1,7 +1,6 @@
 package hashedbuild
 
 import "core:slice"
-import "core:sys/linux"
 
 // Runtime values (SPEC.md §3/§5/§6). `Bytes` has no literal syntax yet - the
 // only way to produce one today would be a builtin that hands one back, and
@@ -46,7 +45,7 @@ File_Kind :: enum { Regular, Directory }
 File_Value :: struct {
   kind:               File_Kind,
   content:            []u8,     // Regular only
-  dir_fd:             linux.Fd, // Directory only
+  dir_fd:             Fs_Fd,   // Directory only
   // Where this File was actually read from or written to, resolved through
   // /proc/self/fd so it's absolute regardless of how the call named it (§3's
   // display rule). format_value shows it; nothing else does. There's no
@@ -63,7 +62,7 @@ File_Value :: struct {
 // The underlying directory is created lazily, on the first actual write.
 Cache_Value :: struct {
   dir_path: string,  // absolute path - display-only, same as File_Value's
-  dir_fd:   linux.Fd,
+  dir_fd:   Fs_Fd,
   opened:   bool,
 }
 

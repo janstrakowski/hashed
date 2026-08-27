@@ -1,9 +1,11 @@
+// Tests run natively, never in a WASI build: core:testing pulls in
+// core:log and core:terminal, neither of which compiles for wasm32.
+#+build linux
 package hashedbuild
 
 import "core:fmt"
 import "core:os"
 import "core:strings"
-import "core:sys/linux"
 import "core:testing"
 
 // A fresh scratch directory (removed afterward) plus a File_Value directory
@@ -20,8 +22,8 @@ make_scratch_dir :: proc(t: ^testing.T, name: string) -> Scratch_Dir {
   err := os.make_directory(path)
   testing.expect(t, err == nil, "could not create scratch test directory")
 
-  fd, ferr := linux.openat(linux.AT_FDCWD, strings.clone_to_cstring(path, context.temp_allocator), {.DIRECTORY})
-  testing.expect(t, ferr == .NONE, "could not open scratch test directory")
+  fd, ferr := fs_open_dir_path(path)
+  testing.expect(t, ferr == .None, "could not open scratch test directory")
 
   h := new(File_Value)
   h.kind = .Directory
@@ -52,7 +54,7 @@ fmt_scratch_path :: proc(name: string) -> string {
 
 @(private = "file")
 remove_scratch_dir :: proc(s: Scratch_Dir) {
-  linux.close(s.handle.dir_fd)
+  fs_close(s.handle.dir_fd)
   // Best-effort cleanup, one level deep: os.remove won't take a non-empty
   // directory, and a leftover scratch directory makes the *next* run of the
   // same test fail (createfile is exclusive, §16). Tests here only ever put
@@ -166,7 +168,7 @@ test_file_display_shows_path :: proc(t: ^testing.T) {
   dir_val, ok3, err3 := eval_with_builtins(load_dir_src, "", nil)
   testing.expect(t, ok3, err3)
   testing.expect_value(t, format_value(dir_val), fmt.tprintf("<directory: %s>", sd.path))
-  if dfv, is_file := dir_val.(^File_Value); is_file do linux.close(dfv.dir_fd)
+  if dfv, is_file := dir_val.(^File_Value); is_file do fs_close(dfv.dir_fd)
 }
 
 // ---- symlink / readlink ---------------------------------------------------------
@@ -219,7 +221,7 @@ test_builtin_loadfile_unsandboxed_file_and_directory :: proc(t: ^testing.T) {
   dfv, is_dir_file := dir_val.(^File_Value)
   testing.expect(t, is_dir_file)
   testing.expect_value(t, dfv.kind, File_Kind.Directory)
-  if is_dir_file do linux.close(dfv.dir_fd)
+  if is_dir_file do fs_close(dfv.dir_fd)
 }
 
 @(test)

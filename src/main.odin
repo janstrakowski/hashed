@@ -5,7 +5,6 @@ import "core:os"
 import "core:path/filepath"
 import "core:strings"
 import "core:bufio"
-import "core:sys/linux"
 
 VERSION :: "0.1.0"
 
@@ -111,11 +110,19 @@ main :: proc() {
   case .Eval:
     eval_once(opts.eval_expr, opts.show_ast, opts.cache_dir)
   case .Editor:
-    if !term_is_tty() {
-      fmt.eprintln("error: -i/--interactive requires an interactive terminal")
+    // The editor and debugger drive a raw-mode TTY, which only exists on the
+    // native target - a WASI build has no terminal to take over (see
+    // TUI_AVAILABLE in source.odin).
+    when TUI_AVAILABLE {
+      if !term_is_tty() {
+        fmt.eprintln("error: -i/--interactive requires an interactive terminal")
+        os.exit(1)
+      }
+      run_live_editor(opts.cache_dir)
+    } else {
+      fmt.eprintln("error: this build has no interactive editor")
       os.exit(1)
     }
-    run_live_editor(opts.cache_dir)
   case .File:
     run_file(opts.file_path, opts.show_ast, opts.cache_dir)
   case .Repl:
@@ -145,9 +152,8 @@ run_file :: proc(path_str: string, show_ast: bool, cache_dir: string) {
 // editor evaluate under. Split out of run_file so the examples can be run
 // end to end as tests (examples_test.odin).
 eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) -> (formatted: string, err_msg: string, ok: bool) {
-  path := strings.clone_to_cstring(path_str, context.temp_allocator)
-  source, errno := load_source_file(linux.AT_FDCWD, path)
-  if errno != .NONE {
+  source, errno := load_source_file(path_str)
+  if errno != .None {
     return "", fmt.tprintf("could not read %s (%v)", path_str, errno), false
   }
   defer free_source_file(source)
@@ -171,13 +177,13 @@ eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) ->
   // component, which openat would reject, so normalize that case explicitly.
   dir_path := filepath.dir(path_str)
   if dir_path == "" do dir_path = "."
-  dir_fd, dir_errno := linux.openat(linux.AT_FDCWD, strings.clone_to_cstring(dir_path, context.temp_allocator), {.DIRECTORY})
-  if dir_errno == .NONE {
+  dir_fd, dir_errno := fs_open_dir_path(dir_path)
+  if dir_errno == .None {
     interp.base_dir_fd = dir_fd
     interp.has_base_dir = true
     interp.base_dir_path = absolute_dir_path(dir_path)
   }
-  defer if dir_errno == .NONE do linux.close(dir_fd)
+  defer if dir_errno == .None do fs_close(dir_fd)
 
   val, eval_ok := eval(&interp, ast.root, make_global_env())
   if eval_ok do val, eval_ok = await_value(&interp, val) // resolve a bare top-level `async <expr>` (§2)

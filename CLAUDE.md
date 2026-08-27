@@ -7,10 +7,19 @@ change to behavior means changing both in the same commit.
 ## Build and test
 
 ```sh
-odin build src -out:hb    # the CLI (also the shipped binary, kept current)
-odin test src             # full suite
-./hb -e '<expr>'          # evaluate one expression, like a REPL submission
+odin build src -out:hb                        # the CLI (the shipped binary, kept current)
+odin test src                                 # full suite
+./hb -e '<expr>'                              # evaluate one expression
+odin build src -target:wasi_wasm32 -out:hb.wasm   # the WASI build
+scripts/wasi_smoke.sh ./hb ./hb.wasm wasmtime     # both targets agree
 ```
+
+**Two targets.** Anything touching the filesystem goes through `fs.odin`,
+implemented by `fs_linux.odin` and `fs_wasi.odin`; nothing above them names a
+syscall. Odin picks the file by suffix, so a `_linux.odin` file simply isn't
+compiled for WASI - which is also why the terminal UI and the test files are
+named or tagged that way. `odin test` only ever builds natively, so the WASI
+backend is covered by the smoke script above, not by the suite.
 
 `./hb` is gitignored, not tracked — but it is the binary you and any hand-testing
 actually run, so rebuild it as part of every completed feature, not just at the

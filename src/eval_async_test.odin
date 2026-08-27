@@ -1,3 +1,6 @@
+// Tests run natively, never in a WASI build: core:testing pulls in
+// core:log and core:terminal, neither of which compiles for wasm32.
+#+build linux
 package hashedbuild
 
 import "core:testing"

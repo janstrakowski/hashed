@@ -271,6 +271,32 @@ Also absent: `true`/`false` literals, loops and recursion of any kind, a
 the `#context` implicit name. `SPEC.md` describes several of these as settled
 design; none of them run today.
 
+## Running somewhere other than Linux
+
+The interpreter also builds for **WASI**, which is what lets it run in a
+browser or any wasm runtime:
+
+```sh
+odin build src -target:wasi_wasm32 -out:hb.wasm
+wasmtime run --dir=. hb.wasm examples/tables-map.hb
+```
+
+Everything on this page behaves identically there, with two exceptions, both
+enforced by the target rather than chosen:
+
+- **`async` doesn't run yet.** Threads have no WASI implementation in the
+  Odin runtime, so an `async` program aborts instead of evaluating.
+- **A program can only reach what the host preopened for it** — WASI has no
+  working directory and no absolute paths. `wasmtime run --dir=.` grants the
+  current directory; granting nothing makes every filesystem builtin fail,
+  which is `ctx.permissions.io` (§9) enforced by the runtime rather than by
+  the interpreter. Displayed paths are relative to that preopen, so the same
+  file shows as `/examples/optiona.txt` there and as its checkout path
+  natively.
+
+`scripts/wasi_smoke.sh` runs the examples on both targets and compares them;
+CI does the same on every push.
+
 ## Where to go next
 
 - **[GETTING_STARTED.md](GETTING_STARTED.md)** — installing, the REPL, the live

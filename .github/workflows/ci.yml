@@ -58,3 +58,56 @@ jobs:
 
       - name: Test
         run: odin test src -out:/tmp/hbtest
+
+  # The Odin suite only ever builds natively, so nothing in it can execute
+  # fs_wasi.odin. This job builds the WASI target and checks the examples
+  # produce the same values there as they do native - the one thing that
+  # actually covers the second backend.
+  wasi:
+    runs-on: ubuntu-latest
+    env:
+      ODIN_VERSION: dev-2026-08
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache Odin
+        id: cache-odin
+        uses: actions/cache@v6
+        with:
+          path: ~/odin
+          key: odin-linux-amd64-${{ env.ODIN_VERSION }}
+
+      - name: Install Odin ${{ env.ODIN_VERSION }}
+        if: steps.cache-odin.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/odin"
+          curl -fsSL "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/odin-linux-amd64-${ODIN_VERSION}.tar.gz" \
+            | tar xz -C "$HOME/odin" --strip-components=1
+
+      - name: Put Odin on PATH
+        run: echo "$HOME/odin" >> "$GITHUB_PATH"
+
+      - name: Ensure clang is present
+        run: |
+          if ! command -v clang >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y clang
+          fi
+
+      # Pinned like Odin is: a runtime upgrade should be its own commit, not a
+      # surprise on an unrelated PR.
+      - name: Install wasmtime
+        env:
+          WASMTIME_VERSION: v48.0.1
+        run: |
+          mkdir -p "$HOME/wasmtime"
+          curl -fsSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/wasmtime-${WASMTIME_VERSION}-x86_64-linux.tar.xz" \
+            | tar xJ -C "$HOME/wasmtime" --strip-components=1
+          echo "$HOME/wasmtime" >> "$GITHUB_PATH"
+
+      - name: Build both targets
+        run: |
+          odin build src -out:hb
+          odin build src -target:wasi_wasm32 -out:hb.wasm
+
+      - name: Examples agree on both targets
+        run: scripts/wasi_smoke.sh ./hb ./hb.wasm "$(command -v wasmtime)"
