@@ -1165,8 +1165,14 @@ redraw_panels :: proc(e: ^Editor) {
   } else {
     path_label := e.current_path if e.current_path != "" else "(unsaved)"
     debug_suffix := " (done)" if debug_finished else ""
-    fmt.sbprintf(&b, "%s | ^S save ^O open ^E examples ^Q quit | ast %d/%d, debug %d steps%s (^N step ^R restart) | Alt+1-5 panel, Alt+,/. reorder\r\n",
-      path_label, e.ast_scroll + 1, max(len(ast_wrapped), 1), debug_steps_taken, debug_suffix)
+    // A browser tab keeps Ctrl+N and Ctrl+Q for itself - they open a window
+    // and quit the browser, before any page sees them - so on that target the
+    // host translates Ctrl+Alt+<key> instead, and the status line has to
+    // advertise the keys that actually work rather than the ones that would.
+    quit_key := "^Q" when ODIN_OS != .WASI else "^⌥Q"
+    step_key := "^N" when ODIN_OS != .WASI else "^⌥N"
+    fmt.sbprintf(&b, "%s | ^S save ^O open ^E examples %s quit | ast %d/%d, debug %d steps%s (%s step ^R restart) | Alt+1-5 panel, Alt+,/. reorder\r\n",
+      path_label, quit_key, e.ast_scroll + 1, max(len(ast_wrapped), 1), debug_steps_taken, debug_suffix, step_key)
   }
 
   os.write_string(os.stdout, strings.to_string(b))

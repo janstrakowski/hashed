@@ -228,8 +228,26 @@ try {
   check("the debugger panel is live", await tuiRows(),
     (t) => t.includes("debug") && !t.includes("no thread support"));
 
-  // Ctrl+Q leaves the editor and hands the shell back.
-  await page.keyboard.down("Control"); await page.keyboard.press("KeyQ"); await page.keyboard.up("Control");
+  // Ctrl+N and Ctrl+Q never reach a page - the browser opens a window and
+  // quits, respectively, before dispatching anything - so the editor's step
+  // and quit keys are reachable here only as Ctrl+Alt chords.
+  check("the status line advertises the browser's keys", await tuiRows(),
+    (t) => t.includes("^⌥N step") && t.includes("^⌥Q quit"));
+
+  const ctrlAlt = async (code) => {
+    await page.keyboard.down("Control"); await page.keyboard.down("Alt");
+    await page.keyboard.press(code);
+    await page.keyboard.up("Alt"); await page.keyboard.up("Control");
+    await settle(1200);
+  };
+  await ctrlAlt("KeyN");
+  await ctrlAlt("KeyN");
+  check("Ctrl+Alt+N steps the debugger", await tuiRows(), (t) => /debug [1-9]\d* steps/.test(t));
+
+  // Ctrl+Alt+Q leaves the editor and hands the shell back.
+  await page.keyboard.down("Control"); await page.keyboard.down("Alt");
+  await page.keyboard.press("KeyQ");
+  await page.keyboard.up("Alt"); await page.keyboard.up("Control");
   await page.waitForFunction(() => !document.body.classList.contains("tui"), { timeout: WAIT });
   check("quitting returns to the shell", await screenText(), (t) => t.includes("left the editor"));
 

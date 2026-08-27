@@ -346,9 +346,13 @@ end-of-input.
 on a real terminal, re-parsing and re-evaluating on every keystroke, with the
 examples picker (Ctrl+E) listing the repository and the debugger stepping a
 paused run. It draws ANSI into xterm.js, which the page loads only when you ask
-for it. Its `Alt`+number panel toggles work there too, which takes explicit
-effort: a browser claims `Alt`+number for switching tabs, so the page has to
-take those keys before the browser does.
+for it. Its keys need a word of explanation, because a browser tab is not a terminal:
+`Alt`+number is the browser's tab switcher, so the page takes those keys back
+before the browser acts on them — and `Ctrl+N` and `Ctrl+Q` cannot be taken
+back at all (they open a window and quit the browser, decided before any page
+sees the key), so there they are **`Ctrl+Alt+N`** to step the debugger and
+**`Ctrl+Alt+Q`** to quit. The editor's own status line says so when it is
+running in a browser.
 
 **`async` runs on real threads there**, which is the same wasi-threads build the
 CLI uses — the browser just implements the proposal itself: `thread-spawn`
