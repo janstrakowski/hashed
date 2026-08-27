@@ -6,6 +6,11 @@
 <title>HashedBuild terminal</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%3E%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<!-- The interpreter runs in a worker so its REPL can block on stdin, which
+     needs SharedArrayBuffer, which needs cross-origin isolation. GitHub Pages
+     cannot set COOP/COEP headers, so this service worker supplies them; it
+     reloads the page once, on the first visit. -->
+<script src="coi-serviceworker.js"></script>
 <style>
   :root {
     --bg: #EEF1F4; --surface: #FFFFFF; --text: #1B2430; --text-dim: #5B6472;
@@ -92,52 +97,40 @@
 </footer>
 
 <script type="module">
-import { FileSystem, run } from "./wasi.js";
-
-// The files a fresh visitor lands with - enough to `cat` something, run
-// something, and have loadfile find something.
-const STARTING_FILES = {
-  "examples/optiona.txt": "This is the payload for option A.\n",
-  "examples/optionb.txt": "This is the payload for option B.\n",
-  "examples/choice.txt": "option A",
-  "tour.hb": `// A program is one expression, and its value is the output.
-{
-  .arithmetic = 7 / 2,            // Integer division truncates
-  .float = 7.0 / 2,               // one Float promotes the whole thing
-  .text = "hello, " concat "world",
-  .table = { .a = 1 } concat { .b = 2 },
-  .pattern = (:.ok 42) is :.ok as payload then payload else 0,
-  .file = filetext (loadfile "/examples/optiona.txt"),
-}
-`,
-  "write-a-file.hb": `// createfile writes into this browser's filesystem, and it stays
-// there between visits. Run it twice: the second run fails, because
-// createfile is exclusive (SPEC.md §16).
-createfile {
-  .path = "/greeting.txt",
-  .content = "written from the browser\\n",
-}
-`,
-};
+// The page is the terminal; the interpreter lives in terminal-worker.js. The
+// split is what makes `hb` genuinely interactive: its REPL blocks on stdin,
+// and only a worker can block without freezing the tab.
 
 const screen = document.getElementById("screen");
 const entry = document.getElementById("entry");
 const promptEl = document.getElementById("prompt");
 
-let wasmBytes = null;
-let fs = null;
+// Shared with the worker: [0] is the state it waits on, [1] the byte length.
+// Created only once the page is cross-origin isolated - on the first visit it
+// is not, and SharedArrayBuffer does not exist at all, so touching it here
+// would kill the module before it could explain itself.
+const STATE_EMPTY = 0, STATE_DATA = 1, STATE_EOF = 2;
+let control, inputBuffer, controlView, inputView, worker;
+
+function startWorker() {
+  control = new SharedArrayBuffer(8);
+  inputBuffer = new SharedArrayBuffer(8192);
+  controlView = new Int32Array(control);
+  inputView = new Uint8Array(inputBuffer);
+
+  worker = new Worker("terminal-worker.js", { type: "module" });
+  worker.onmessage = onWorkerMessage;
+  setRunning(true);
+  worker.postMessage({ type: "boot", control, input: inputBuffer });
+}
+
 let history = [];
 let historyIndex = 0;
+let running = false;        // a command is executing
+let awaitingInput = false;  // ...and it is blocked reading stdin
+let resolveCommand = null;
 
-// Bare `hb` puts the terminal in REPL mode. The interpreter's own REPL reads
-// stdin in a loop, which a wasm module cannot do in a browser without blocking
-// the thread - but it evaluates every submission with a *fresh* interpreter
-// and environment (see run_eval_repl/eval_and_print in main.odin), so running
-// one instance per submission behaves exactly the same. The prompts below are
-// the ones that loop prints.
-let repl = null; // null, or { buffer: [] }
-
-// ---- output ------------------------------------------------------------------
+// ---- output ---------------------------------------------------------------
 
 function write(text, cls) {
   const span = document.createElement("span");
@@ -149,125 +142,116 @@ function write(text, cls) {
 
 const writeLine = (text = "", cls) => write(text + "\n", cls);
 
-function echo(prompt, command) {
-  write(prompt, "accent");
-  writeLine(command);
+// ---- talking to the worker -------------------------------------------------
+
+function onWorkerMessage(event) {
+  const message = event.data;
+  switch (message.type) {
+    case "ready":
+      history = message.history ?? [];
+      historyIndex = history.length;
+      writeLine(message.restored
+        ? "Restored your files from this browser."
+        : "This is the repository, as if you had cloned it. Type `help`, or `ls`.", "dim");
+      writeLine();
+      setRunning(false);
+      break;
+
+    case "stdout": write(message.text); break;
+    case "stderr": write(message.text, "err"); break;
+
+    // The program is blocked reading stdin: hand the prompt back so the
+    // visitor can answer it. The interpreter has already printed its own
+    // prompt ("hb> ") by this point.
+    case "waiting-for-input":
+      awaitingInput = true;
+      setRunning(false, "");
+      break;
+
+    case "done":
+      awaitingInput = false;
+      finishCommand();
+      break;
+
+    case "listing":
+      if (message.entries.length === 0) writeLine("(nothing here)", "dim");
+      for (const entry of message.entries) {
+        const pad = " ".repeat(Math.max(1, 40 - entry.path.length));
+        writeLine(`  ${entry.path}${pad}${entry.detail}`, entry.kind === "dir" ? "dim" : undefined);
+      }
+      finishCommand();
+      break;
+
+    case "cat":
+      if (message.error) writeLine(`cat: ${message.error}`, "err");
+      else {
+        write(message.text);
+        if (message.text.length && !message.text.endsWith("\n")) writeLine();
+      }
+      finishCommand();
+      break;
+
+    case "reset-done":
+      history = [];
+      writeLine("starting files restored", "dim");
+      finishCommand();
+      break;
+  }
 }
 
-// ---- persistence: IndexedDB, one row, no schema ------------------------------
+function finishCommand() {
+  if (resolveCommand) resolveCommand();
+  resolveCommand = null;
+  setRunning(false);
+}
 
-const DB_NAME = "hashedbuild-playground";
-const STORE = "state";
-
-function openDb() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+function ask(message) {
+  return new Promise((resolve) => {
+    resolveCommand = resolve;
+    setRunning(true);
+    worker.postMessage(message);
   });
 }
 
-async function loadState() {
-  try {
-    const db = await openDb();
-    return await new Promise((resolve, reject) => {
-      const req = db.transaction(STORE, "readonly").objectStore(STORE).get("state");
-      req.onsuccess = () => resolve(req.result ?? null);
-      req.onerror = () => reject(req.error);
-    });
-  } catch {
-    return null; // private window, blocked storage: start fresh, still works
-  }
+// Writes a line into the shared buffer and wakes the worker, which is sitting
+// in Atomics.wait inside its stdin read.
+function sendToStdin(line) {
+  const bytes = new TextEncoder().encode(line + "\n");
+  inputView.set(bytes.subarray(0, inputView.length));
+  Atomics.store(controlView, 1, Math.min(bytes.length, inputView.length));
+  Atomics.store(controlView, 0, STATE_DATA);
+  Atomics.notify(controlView, 0);
 }
 
-async function saveState() {
-  try {
-    const db = await openDb();
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).put({ files: fs.snapshot(), history: history.slice(-100) }, "state");
-      tx.oncomplete = resolve;
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch {
-    // Not being able to persist is survivable; the session still works.
-  }
+function sendEof() {
+  Atomics.store(controlView, 0, STATE_EOF);
+  Atomics.notify(controlView, 0);
 }
 
-function seedFilesystem() {
-  const seeded = new FileSystem();
-  const enc = new TextEncoder();
-  for (const [path, text] of Object.entries(STARTING_FILES)) seeded.writeFile("/" + path, enc.encode(text));
-  return seeded;
-}
+// ---- the shell -------------------------------------------------------------
 
-// ---- running the interpreter --------------------------------------------------
+const HELP = `This is the HashedBuild CLI, compiled to WebAssembly. The filesystem is the
+repository as it stands, and anything you write to it stays in this browser.
 
-// One fresh instance per invocation, which is what a CLI is: argv in, output
-// out, exit code, gone. The filesystem is the thing that survives.
-async function hb(args) {
-  if (!wasmBytes) return 1;
-  let code = 0;
-  try {
-    code = await run({
-      wasmBytes, fs, args: ["hb", ...args],
-      onStdout: (text) => write(text),
-      onStderr: (text) => write(text, "err"),
-    });
-  } catch (err) {
-    writeLine(`the module trapped: ${err.message}`, "err");
-    code = -1;
-  }
-  await saveState();
-  return code;
-}
-
-// ---- the shell ----------------------------------------------------------------
-
-const HELP = `Commands
-
-  hb                 start the REPL (an expression, then a blank line)
-  hb <file>          run a program
+  hb                 the REPL - an expression, then a blank line, ':q' to quit
+  hb <file>          run a program, e.g. hb examples/guard-chain.hb
   hb -e '<expr>'     evaluate one expression
   hb -a <file>       print the AST before evaluating
   hb --help          the interpreter's own usage
   ls [path]          list files
-  cat <file>         print a file
+  cat <file>         print a file, e.g. cat SPEC.md
   clear              clear the screen
-  reset              restore the starting files, discard everything else
+  reset              restore the repository, discarding anything written
 
-Everything runs here, in this tab. Files written with createfile persist in
-this browser and nowhere else.`;
+Programs written with createfile land in the filesystem; ctx.cache writes to
+/cache/hashedbuild. Ctrl+D sends end-of-input to a running program.`;
 
-// Splits a command line, honouring quotes so `hb -e '1 + 1'` arrives as one
-// argument rather than three.
 function tokenize(line) {
   const out = [];
   const re = /'([^']*)'|"([^"]*)"|(\S+)/g;
   let m;
   while ((m = re.exec(line)) !== null) out.push(m[1] ?? m[2] ?? m[3]);
   return out;
-}
-
-function listFiles(prefix) {
-  const entries = fs.list().filter((e) => e.type !== "dir");
-  const wanted = prefix ? entries.filter((e) => ("/" + e.path).startsWith(prefix.replace(/\/$/, ""))) : entries;
-  if (wanted.length === 0) return writeLine("(nothing here)", "dim");
-  for (const entry of wanted) {
-    const size = entry.type === "symlink" ? `-> ${entry.target}` : `${entry.data.length}B`;
-    writeLine(`  /${entry.path}${" ".repeat(Math.max(1, 32 - entry.path.length))}${size}`);
-  }
-}
-
-function catFile(path) {
-  const full = path.startsWith("/") ? path : "/" + path;
-  const node = fs.lookup(full);
-  if (!node) return writeLine(`cat: ${path}: no such file`, "err");
-  if (node.type === "dir") return writeLine(`cat: ${path}: is a directory`, "err");
-  if (node.type === "symlink") return writeLine(`cat: ${path}: is a symlink to ${node.target}`, "err");
-  write(new TextDecoder().decode(node.data));
-  if (node.data.length && node.data[node.data.length - 1] !== 10) writeLine();
 }
 
 async function runCommand(line) {
@@ -277,76 +261,43 @@ async function runCommand(line) {
   switch (args[0]) {
     case "help": writeLine(HELP); return;
     case "clear": screen.replaceChildren(); return;
-    case "ls": listFiles(args[1]); return;
+    case "ls": await ask({ type: "ls", path: args[1] }); return;
     case "cat":
       if (!args[1]) return writeLine("cat: needs a file", "err");
-      catFile(args[1]);
+      await ask({ type: "cat", path: args[1] });
       return;
-    case "reset":
-      fs = seedFilesystem();
-      await saveState();
-      writeLine("starting files restored", "dim");
-      return;
-    case "hb":
-      if (args.length === 1) {
-        // The banner the real REPL prints, because this is that REPL.
-        repl = { buffer: [] };
-        writeLine("HashedBuild REPL");
-        writeLine("Type an expression, then an empty line to evaluate it. ':q' to quit.");
-        writeLine();
-        return;
-      }
-      await hb(args.slice(1));
-      return;
-    default:
-      writeLine(`${args[0]}: not a command. Try \`help\`.`, "err");
+    case "reset": await ask({ type: "reset" }); return;
+    case "hb": await ask({ type: "hb", args: args.slice(1) }); return;
+    default: writeLine(`${args[0]}: not a command. Try \`help\`.`, "err");
   }
 }
 
-// A REPL submission: accumulate lines until a blank one, then evaluate the lot.
-async function runReplLine(line) {
-  const trimmed = line.trim();
-  if (repl.buffer.length === 0) {
-    if (trimmed === ":q" || trimmed === ":quit" || trimmed === ":exit") {
-      repl = null;
-      writeLine();
-      return;
-    }
-    if (trimmed === "") return;
-  }
-  if (trimmed === "") {
-    const source = repl.buffer.join("\n");
-    repl.buffer = [];
-    await hb(["-e", source]);
-    return;
-  }
-  repl.buffer.push(line);
-}
+// ---- input -----------------------------------------------------------------
 
-function currentPrompt() {
-  if (!repl) return "$ ";
-  return repl.buffer.length === 0 ? "hb> " : "... ";
-}
-
-function refreshPrompt() {
-  promptEl.textContent = currentPrompt();
-}
-
-function setBusy(value) {
-  busy = value;
+function setRunning(value, promptText) {
+  running = value;
   entry.disabled = value;
-  promptEl.textContent = value ? "  " : currentPrompt();
+  promptEl.textContent = value ? "  " : (promptText ?? "$ ");
   if (!value) entry.focus();
 }
-
-// ---- input --------------------------------------------------------------------
-
-let busy = false;
 
 entry.addEventListener("keydown", async (event) => {
   if (event.ctrlKey && event.key.toLowerCase() === "l") {
     event.preventDefault();
     screen.replaceChildren();
+    return;
+  }
+
+  // Ctrl+D: end-of-input for whatever is reading stdin, exactly as it would be
+  // in a real terminal.
+  if (event.ctrlKey && event.key.toLowerCase() === "d") {
+    event.preventDefault();
+    if (awaitingInput) {
+      writeLine();
+      awaitingInput = false;
+      setRunning(true);
+      sendEof();
+    }
     return;
   }
 
@@ -359,57 +310,62 @@ entry.addEventListener("keydown", async (event) => {
     return;
   }
 
-  if (event.key !== "Enter" || busy) return;
+  if (event.key !== "Enter" || running) return;
   event.preventDefault();
 
   const line = entry.value;
   entry.value = "";
-  echo(currentPrompt(), line);
+
+  // While a program is reading stdin, the line belongs to it - the program is
+  // printing its own prompts, so the page only echoes what was typed.
+  if (awaitingInput) {
+    writeLine(line);
+    awaitingInput = false;
+    setRunning(true);
+    sendToStdin(line);
+    return;
+  }
+
+  write("$ ", "accent");
+  writeLine(line);
   if (line.trim()) {
     history.push(line);
     historyIndex = history.length;
+    worker.postMessage({ type: "history", history: history.slice(-100) });
   }
-
-  // Lock the prompt while the command runs. Without this, anything typed
-  // meanwhile lands in the input and merges into the next command - which is
-  // exactly what a terminal must not do.
-  setBusy(true);
-  try {
-    if (repl) await runReplLine(line);
-    else await runCommand(line);
-  } finally {
-    setBusy(false);
-    refreshPrompt();
-    await saveState();
-  }
+  await runCommand(line);
 });
 
-// Clicking anywhere in the scrollback focuses the prompt, the way a terminal
-// behaves - but not while text is being selected for copying.
 screen.addEventListener("mouseup", () => {
   if (!window.getSelection().toString()) entry.focus();
 });
 
-// ---- boot ---------------------------------------------------------------------
+// ---- boot ------------------------------------------------------------------
 
-(async () => {
-  writeLine("HashedBuild — the interpreter, compiled to WebAssembly, running here.", "dim");
-  const [response, saved] = await Promise.all([fetch("hb.wasm"), loadState()]);
-  if (!response.ok) {
-    writeLine(`could not load hb.wasm (${response.status})`, "err");
-    return;
+writeLine("HashedBuild — the CLI, compiled to WebAssembly, running here.", "dim");
+
+// Cross-origin isolation is what makes SharedArrayBuffer - and therefore
+// blocking stdin - available at all. coi-serviceworker installs the headers
+// and reloads once, but it skips that reload while the service worker itself
+// is updating (it leaves "coiReloadedBySelf: updatefound" behind and waits for
+// the *next* load), which would otherwise strand the page on a dead prompt.
+// So retry here too, capped, and say something honest if it never arrives.
+const RETRY_KEY = "hb-isolation-retries";
+if (self.crossOriginIsolated) {
+  sessionStorage.removeItem(RETRY_KEY);
+  startWorker();
+} else {
+  const tries = Number(sessionStorage.getItem(RETRY_KEY) ?? "0");
+  setRunning(true, "  ");
+  if (tries < 3) {
+    sessionStorage.setItem(RETRY_KEY, String(tries + 1));
+    writeLine("Setting up (the page reloads itself once)…", "dim");
+    setTimeout(() => location.reload(), 400);
+  } else {
+    writeLine("This browser will not enable cross-origin isolation, which the terminal needs "
+      + "for interactive input (SharedArrayBuffer). Nothing can run here.", "err");
   }
-  wasmBytes = await response.arrayBuffer();
-
-  fs = saved?.files ? FileSystem.fromSnapshot(saved.files) : seedFilesystem();
-  history = saved?.history ?? [];
-  historyIndex = history.length;
-
-  writeLine(saved ? "Restored your files from this browser." : "Type `help` for commands, or `hb tour.hb` to run something.", "dim");
-  writeLine();
-  refreshPrompt();
-  entry.focus();
-})();
+}
 </script>
 </body>
 </html>

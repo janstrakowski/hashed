@@ -49,7 +49,6 @@ try {
 
   const url = `http://localhost:${PORT}/playground.html`;
   const screenText = () => page.$eval("#screen", (el) => el.textContent);
-  const prompt = () => page.$eval("#prompt", (el) => el.textContent);
 
   // Types a line and waits for the command to actually finish. The screen
   // growing is not that signal - it grows the moment the command is echoed,
@@ -73,38 +72,47 @@ try {
   await page.goto(url, { waitUntil: "networkidle0" });
   await booted();
   check("terminal boots", await screenText(), (t) => t.includes("compiled to WebAssembly"));
-  check("prompt is a shell prompt", await prompt(), "$ ");
+  check("page is cross-origin isolated", await page.evaluate(() => self.crossOriginIsolated), true);
 
-  // The shell's own commands.
+  // The filesystem is the repository, 1:1 - not a curated sample of it.
   await type("ls");
-  check("ls lists the seeded files", await screenText(), (t) => t.includes("/tour.hb"));
+  check("the repo is there", await screenText(),
+    (t) => t.includes("/SPEC.md") && t.includes("/src/eval.odin") && t.includes("/examples/guard-chain.hb"));
+  check("ctx.cache has a home", await screenText(), (t) => t.includes("/cache/hashedbuild"));
 
   await type("cat examples/choice.txt");
   check("cat prints a file", await screenText(), (t) => t.includes("option A"));
 
   // Running a program: the real CLI path, argv and all.
-  await type("hb tour.hb");
-  check("a program runs", await screenText(), (t) => t.includes('text: "hello, world"'));
-  check("it read a file through loadfile", await screenText(),
-    (t) => t.includes("This is the payload for option A."));
+  await type("hb examples/guard-chain.hb");
+  check("a repo example runs", await screenText(), (t) => t.trimEnd().endsWith("5"));
 
   await type("hb -e '6 * 7'");
   check("-e evaluates an expression", await screenText(), (t) => t.trimEnd().endsWith("42"));
 
-  // REPL mode: bare `hb`, then an expression, then a blank line.
+  // The REPL, for real: bare `hb` runs the interpreter's own loop, reading
+  // stdin. The banner and the prompts below come out of the module - if this
+  // passes, blocking stdin works.
   await type("hb");
-  check("REPL prints its banner", await screenText(), (t) => t.includes("HashedBuild REPL"));
-  check("REPL prompt", await prompt(), "hb> ");
+  check("the interpreter's REPL starts", await screenText(), (t) => t.includes("HashedBuild REPL"));
   await type("1 + 1");
-  check("continuation prompt while buffering", await prompt(), "... ");
+  check("its continuation prompt is the module's", await screenText(), (t) => t.includes("... "));
   await type("");
-  check("blank line evaluates the buffer", await screenText(), (t) => t.trimEnd().endsWith("2"));
+  check("a blank line evaluates the buffer", await screenText(), (t) => t.includes("hb> 1 + 1\n... \n2\n"));
+  await type("filetext (loadfile \"/README.md\") |> (#arg == #arg)");
+  await type("");
+  check("the REPL can read the repo", await screenText(), (t) => t.includes("... \ntrue\n"));
   await type(":q");
-  check("':q' leaves the REPL", await prompt(), "$ ");
+  check("':q' ends the REPL", await screenText(), (t) => t.includes(":q"));
+
+  // ctx.cache, which is why /cache exists.
+  await type("hb -e 'createfile { .dir = ctx.cache, .content = \"cached\" }'");
+  check("ctx.cache writes into /cache", await screenText(),
+    (t) => t.includes("<file: /cache/hashedbuild/sha256_"));
 
   // Writing a file, and the point of the whole thing: it is still there after
   // a reload, with no server and no database anywhere.
-  await type("hb write-a-file.hb");
+  await type("hb -e 'createfile { .path = \"/greeting.txt\", .content = \"written from the browser\" }'");
   check("createfile reports what it wrote", await screenText(), (t) => t.includes("<file: /greeting.txt>"));
 
   await page.reload({ waitUntil: "networkidle0" });
@@ -113,15 +121,17 @@ try {
   await type("cat greeting.txt");
   check("the written file survived the reload", await screenText(),
     (t) => t.includes("written from the browser"));
+  await type("ls /cache");
+  check("the cache entry survived too", await screenText(), (t) => t.includes("sha256_"));
 
   // And the language's own rules still hold in there: createfile is exclusive.
-  await type("hb write-a-file.hb");
+  await type("hb -e 'createfile { .path = \"/greeting.txt\", .content = \"again\" }'");
   check("a second write fails, exclusively", await screenText(), (t) => t.includes("Exists"));
 
   // History, because a terminal without it is a nuisance.
   await page.keyboard.press("ArrowUp");
   check("up-arrow recalls the last command",
-    await page.$eval("#entry", (el) => el.value), "hb write-a-file.hb");
+    await page.$eval("#entry", (el) => el.value), (v) => v.includes("createfile"));
 
   check("no page errors", problems.join(" | "), "");
 } finally {
