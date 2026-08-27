@@ -10,7 +10,7 @@ change to behavior means changing both in the same commit.
 odin build src -out:hb                        # the CLI (the shipped binary, kept current)
 odin test src                                 # full suite
 ./hb -e '<expr>'                              # evaluate one expression
-odin build src -target:wasi_wasm32 -out:hb.wasm   # the WASI build
+odin build src -target:wasi_wasm32 -o:size -out:hb.wasm  # the WASI build
 scripts/wasi_smoke.sh ./hb ./hb.wasm wasmtime     # both targets agree
 ```
 
@@ -50,6 +50,13 @@ rediscover and the compiler's message doesn't always point at the fix:
   stack frame. Make it a file-scope `X := []T{...}` value.
 - **`os.read_entire_file` returns an `Error`, not a `bool`** (`err != nil`,
   not `!ok`) in the Odin this project tracks.
+- **The WASI build needs `-o:size`** (or `-o:none`/`-o:speed`). Odin's default
+  for wasm32 is `-o:minimal`, which on `dev-2026-08` emits a module that fails
+  validation — `Invalid input WebAssembly code: type mismatch: expected i64,
+  found i32`, inside one arbitrary function. It is a codegen bug, not ours:
+  the same source builds valid wasm at every other optimisation level, and on
+  a newer compiler at `-o:minimal` too. Linking also needs `wasm-ld`, which
+  comes from `lld`, not from clang.
 
 ## Changing the language
 

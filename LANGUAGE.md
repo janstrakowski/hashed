@@ -277,7 +277,7 @@ The interpreter also builds for **WASI**, which is what lets it run in a
 browser or any wasm runtime:
 
 ```sh
-odin build src -target:wasi_wasm32 -out:hb.wasm
+odin build src -target:wasi_wasm32 -o:size -out:hb.wasm
 wasmtime run --dir=. hb.wasm examples/tables-map.hb
 ```
 

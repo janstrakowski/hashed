@@ -112,10 +112,14 @@ jobs:
             | tar xJ -C "$HOME/wasmtime" --strip-components=1
           echo "$HOME/wasmtime" >> "$GITHUB_PATH"
 
+      # -o:size, not the default: Odin's default for this target is
+      # -o:minimal, which on dev-2026-08 emits a wasm module that fails
+      # validation (a type mismatch inside eval_check). -o:none/-o:size/
+      # -o:speed are all fine, and size is what a browser wants anyway.
       - name: Build both targets
         run: |
           odin build src -out:hb
-          odin build src -target:wasi_wasm32 -out:hb.wasm
+          odin build src -target:wasi_wasm32 -o:size -out:hb.wasm
 
       - name: Examples agree on both targets
         run: scripts/wasi_smoke.sh ./hb ./hb.wasm "$(command -v wasmtime)"
