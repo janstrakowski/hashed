@@ -124,13 +124,11 @@ check("readlink returns the stored target",
   check("-e exits cleanly", code, 0);
 }
 
-// --- the committed wasm still is the current interpreter ---------------------
+// --- the wasm behaves like the interpreter it was built from -----------------
 //
-// docs/hb.wasm is committed so Pages can serve it, which makes it exactly the
-// kind of artifact that goes stale. Bytes can't be compared - Odin's wasm
-// output isn't reproducible run to run (the type section reorders) - so
-// behaviour is: every example, through this shim, against the native build.
-// A language change with a forgotten rebuild shows up here as a mismatch.
+// Every example, through this shim, against the native build. Bytes can't be
+// compared - Odin's wasm output isn't reproducible run to run (the type
+// section reorders) - so behaviour is the comparison.
 
 const nativeHb = join(repo, "hb");
 if (existsSync(nativeHb)) {

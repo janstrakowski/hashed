@@ -16,14 +16,21 @@ scripts/build_wasi.sh --threads-web -out:docs/hb.wasm  # what the browser runs
 scripts/wasi_smoke.sh ./hb ./hb.wasm wasmtime     # both targets agree
 ```
 
-**The playground carries two generated artifacts.** `docs/hb.wasm` is the
-interpreter Pages serves, and `docs/repo-files.json` is the repository as the
-terminal's filesystem - so *any* commit can make the manifest stale, and a
-change to `src/` makes the wasm stale. `.githooks/pre-commit` regenerates the
-manifest (enable it once with `git config core.hooksPath .githooks`); rebuild
-the wasm with `scripts/build_wasi.sh --threads-web -out:docs/hb.wasm` when the
-interpreter changes - the browser runs the *threaded* flavour, which imports
-its memory so every spawned thread can share one heap. CI checks both.
+**The playground's two artifacts are generated, never committed.**
+`docs/hb.wasm` is the interpreter and `docs/repo-files.json` is the repository
+as the terminal's filesystem; both are built by `.github/workflows/pages.yml`
+on the way to deploying, and by CI before the playground tests run. To work on
+the page locally, build them the same way:
+
+```sh
+scripts/build_wasi.sh --threads-web -out:docs/hb.wasm
+node scripts/build_playground_files.mjs
+```
+
+They used to be committed, which coupled every tracked file to a build
+product: editing any documentation left the manifest stale and turned CI red
+until someone regenerated it. A documentation change should be a documentation
+change.
 
 **Two targets.** Anything touching the filesystem goes through `fs.odin`
 (`fs_linux.odin` / `fs_wasi.odin`) and anything spawning a thread through
