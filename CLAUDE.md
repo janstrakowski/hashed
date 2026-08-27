@@ -42,6 +42,26 @@ rediscover and the compiler's message doesn't always point at the fix:
 - **`os.read_entire_file` returns an `Error`, not a `bool`** (`err != nil`,
   not `!ok`) in the Odin this project tracks.
 
+## Changing the language
+
+**The language is the user's call. Ask before changing it.** Syntax, semantics,
+what a builtin does, what a value displays as, what fails and how — none of it
+changes without asking first, however obvious the change looks, and however
+much a port or a refactor seems to force it. Present the options and what each
+costs; don't pick one and report it afterwards.
+
+What doesn't need asking: implementation work that leaves observable behaviour
+identical, and fixing code that contradicts `SPEC.md` — there the spec already
+decided, and the code is simply wrong (see the top of this file).
+
+The edge worth naming, because it has already come up: when `SPEC.md`
+contradicts *itself*, resolving it is a design decision, not a bug fix. If one
+reading is clearly stale — superseded by a later dated resolution, or
+self-contradictory in its own sentence — say so and fix it. If both readings
+are coherent and pick out different behaviour, stop and ask; the §8/§16
+resolution went the first way, and a case like it that went the second way
+would be the user's to settle.
+
 ## Docs and examples
 
 `main` is public. Anyone who finds this repo should be able to see what the
