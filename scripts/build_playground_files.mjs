@@ -10,6 +10,7 @@
 // Usage: node scripts/build_playground_files.mjs [--check]
 //   --check verifies the committed manifest is current instead of writing it.
 
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, lstatSync, readlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -48,7 +49,11 @@ for (const path of tracked) {
   files[path] = { type: "file", text };
 }
 
-const manifest = JSON.stringify({ files }, null, 1) + "\n";
+// A version the page can compare against what it last seeded, so a returning
+// visitor's copy of the repository gets refreshed when the repository moves -
+// without touching anything they wrote themselves.
+const version = createHash("sha256").update(JSON.stringify(files)).digest("hex").slice(0, 16);
+const manifest = JSON.stringify({ version, files }, null, 1) + "\n";
 
 if (process.argv.includes("--check")) {
   const current = readFileSync(OUT, "utf8");
@@ -56,8 +61,8 @@ if (process.argv.includes("--check")) {
     console.error("docs/repo-files.json is stale - regenerate it with node scripts/build_playground_files.mjs");
     process.exit(1);
   }
-  console.log(`docs/repo-files.json is current (${Object.keys(files).length} files)`);
+  console.log(`docs/repo-files.json is current (${Object.keys(files).length} files, version ${version})`);
 } else {
   writeFileSync(OUT, manifest);
-  console.log(`wrote ${Object.keys(files).length} files, ${(manifest.length / 1024).toFixed(0)}KB`);
+  console.log(`wrote ${Object.keys(files).length} files, ${(manifest.length / 1024).toFixed(0)}KB, version ${version}`);
 }

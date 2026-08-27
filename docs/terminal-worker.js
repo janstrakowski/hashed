@@ -60,7 +60,7 @@ async function saveState(extra = {}) {
     const previous = (await loadState()) ?? {};
     await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).put({ ...previous, ...extra, files: fs.snapshot() }, "state");
+      tx.objectStore(STORE).put({ ...previous, ...extra, seedVersion, files: fs.snapshot() }, "state");
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error);
     });
@@ -71,18 +71,43 @@ async function saveState(extra = {}) {
 
 // ---- the starting filesystem: the repository, as if cloned ----------------------
 
-async function seedFilesystem() {
-  const manifest = await (await fetch("repo-files.json")).json();
-  const seeded = new FileSystem();
+// What the manifest was when this filesystem was last seeded. Persisted with
+// the files, so a returning visitor can be told apart from a first one.
+let seedVersion = null;
+
+function applyManifest(target, manifest) {
   const enc = new TextEncoder();
   for (const [path, entry] of Object.entries(manifest.files)) {
-    if (entry.type === "symlink") seeded.symlink("/" + path, entry.target);
-    else seeded.writeFile("/" + path, enc.encode(entry.text));
+    if (entry.type === "symlink") target.symlink("/" + path, entry.target);
+    else target.writeFile("/" + path, enc.encode(entry.text));
   }
   // ctx.cache's directory, so it is visible from the start rather than
   // appearing out of nowhere the first time a program writes into it.
-  seeded.mkdirp("/cache/hashedbuild");
-  return seeded;
+  target.mkdirp("/cache/hashedbuild");
+}
+
+// A returning visitor keeps their filesystem, but the repository half of it
+// has to keep up: someone who first opened this before examples/ existed would
+// otherwise have an examples picker that lists nothing, forever, with no way
+// to know why. So when the manifest's version differs from the one their copy
+// was seeded at, the repository's own files are written over the top - and
+// everything else they have (writes, ctx.cache, anything they made) is left
+// exactly where it is.
+async function bootFilesystem(saved) {
+  const manifest = await (await fetch("repo-files.json")).json();
+
+  if (!saved?.files) {
+    fs = new FileSystem();
+    applyManifest(fs, manifest);
+    seedVersion = manifest.version;
+    return { restored: false, refreshed: false };
+  }
+
+  fs = FileSystem.fromSnapshot(saved.files);
+  const refreshed = saved.seedVersion !== manifest.version;
+  if (refreshed) applyManifest(fs, manifest);
+  seedVersion = manifest.version;
+  return { restored: true, refreshed };
 }
 
 // ---- running a program ------------------------------------------------------
@@ -225,8 +250,9 @@ self.onmessage = async (event) => {
       // should cost a copy, not the whole terminal.
       compiled = await WebAssembly.compile(await (await fetch("hb.wasm")).arrayBuffer());
       const saved = await loadState();
-      fs = saved?.files ? FileSystem.fromSnapshot(saved.files) : await seedFilesystem();
-      post({ type: "ready", restored: Boolean(saved?.files), history: saved?.history ?? [] });
+      const { restored, refreshed } = await bootFilesystem(saved);
+      if (refreshed) await saveState();
+      post({ type: "ready", restored, refreshed, history: saved?.history ?? [] });
       return;
     }
     case "hb":
@@ -238,7 +264,8 @@ self.onmessage = async (event) => {
     case "ls": post({ type: "listing", entries: listing(message.path) }); return;
     case "cat": post({ type: "cat", ...fileText(message.path) }); return;
     case "reset":
-      fs = await seedFilesystem();
+      fs = new FileSystem();
+      applyManifest(fs, await (await fetch("repo-files.json")).json());
       await saveState({ history: [] });
       post({ type: "reset-done" });
       return;

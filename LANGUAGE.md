@@ -360,7 +360,9 @@ the answer, without copying anything.
 
 Anything a program writes stays in your browser's IndexedDB: `createfile` lands
 in the filesystem, `ctx.cache` writes to `/cache/hashedbuild`, and both survive
-a reload. No server, nothing sent anywhere, and clearing site data is the
+a reload. When the repository itself moves on, a returning visitor's copy of it
+is written over to match — anything you made is left alone, and `reset` puts
+everything back. No server, nothing sent anywhere, and clearing site data is the
 uninstall.
 
 The page is `docs/playground.html`; `docs/terminal-worker.js` owns the

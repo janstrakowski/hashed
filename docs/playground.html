@@ -160,7 +160,9 @@ function onWorkerMessage(event) {
       history = message.history ?? [];
       historyIndex = history.length;
       writeLine(message.restored
-        ? "Restored your files from this browser."
+        ? (message.refreshed
+            ? "Restored your files from this browser; the repository was updated to match."
+            : "Restored your files from this browser.")
         : "This is the repository, as if you had cloned it. Type `help`, or `ls`.", "dim");
       writeLine();
       setRunning(false);
