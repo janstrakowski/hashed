@@ -22,89 +22,133 @@ Options:
   -h, --help           Print this help and exit
       --version        Print the version and exit`
 
-main :: proc() {
+// What the CLI was asked to do, parsed out of argv as a plain value: no
+// printing and no os.exit in here, so main stays a thin dispatch over the
+// result and the whole flag surface is testable (main_test.odin).
+Cli_Mode :: enum {
+  Repl,    // no file and no -e: the read-eval-print loop
+  File,    // run a source file
+  Eval,    // -e/--eval: evaluate one expression, then exit
+  Editor,  // -i/--interactive: the two-pane live editor
+  Help,
+  Version,
+}
+
+Cli_Options :: struct {
+  mode:      Cli_Mode,
+  show_ast:  bool,
+  file_path: string,
+  cache_dir: string, // "" means resolve the XDG default (SPEC.md §9/§16) instead
+  eval_expr: string,
+}
+
+// -h/--version win wherever they appear (`hb -i --help` prints help rather
+// than opening the editor), which is what exiting on sight used to do.
+parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: bool) {
   interactive := false
-  show_ast := false
-  file_path := ""
-  cache_dir := "" // "" means resolve the XDG default (SPEC.md §9/§16) instead
-  eval_expr := ""
   has_eval := false
-  args := os.args[1:]
+  want_help := false
+  want_version := false
+
   for i := 0; i < len(args); i += 1 {
     switch args[i] {
     case "-h", "--help":
-      fmt.println(USAGE)
-      os.exit(0)
+      want_help = true
     case "--version":
-      fmt.println("hb", VERSION)
-      os.exit(0)
+      want_version = true
     case "-i", "--interactive":
       interactive = true
     case "-a", "--ast":
-      show_ast = true
+      opts.show_ast = true
     case "--cache-dir":
       i += 1
-      if i >= len(args) {
-        fmt.eprintln("error: --cache-dir requires a path argument")
-        os.exit(1)
-      }
-      cache_dir = args[i]
+      if i >= len(args) do return opts, "--cache-dir requires a path argument", false
+      opts.cache_dir = args[i]
     case "-e", "--eval":
       i += 1
-      if i >= len(args) {
-        fmt.eprintln("error: -e/--eval requires an expression argument")
-        os.exit(1)
-      }
-      eval_expr = args[i]
+      if i >= len(args) do return opts, "-e/--eval requires an expression argument", false
+      opts.eval_expr = args[i]
       has_eval = true
     case:
       if strings.has_prefix(args[i], "-") {
-        fmt.eprintfln("error: unknown option %s (see --help)", args[i])
-        os.exit(1)
+        return opts, fmt.tprintf("unknown option %s (see --help)", args[i]), false
       }
-      if file_path == "" do file_path = args[i]
+      if opts.file_path == "" do opts.file_path = args[i] // extra positionals are ignored
     }
   }
 
-  if has_eval {
-    if interactive {
-      fmt.eprintln("error: -e/--eval cannot be combined with -i/--interactive")
-      os.exit(1)
-    }
-    if file_path != "" {
-      fmt.eprintln("error: -e/--eval cannot be combined with a file argument")
-      os.exit(1)
-    }
-    eval_once(eval_expr, show_ast, cache_dir)
-    return
+  switch {
+  case want_help:
+    opts.mode = .Help
+  case want_version:
+    opts.mode = .Version
+  case has_eval:
+    if interactive do return opts, "-e/--eval cannot be combined with -i/--interactive", false
+    if opts.file_path != "" do return opts, "-e/--eval cannot be combined with a file argument", false
+    opts.mode = .Eval
+  case interactive:
+    opts.mode = .Editor
+  case opts.file_path != "":
+    opts.mode = .File
+  case:
+    opts.mode = .Repl
+  }
+  return opts, "", true
+}
+
+main :: proc() {
+  opts, err_msg, ok := parse_args(os.args[1:])
+  if !ok {
+    fmt.eprintfln("error: %s", err_msg)
+    os.exit(1)
   }
 
-  if interactive {
+  switch opts.mode {
+  case .Help:
+    fmt.println(USAGE)
+  case .Version:
+    fmt.println("hb", VERSION)
+  case .Eval:
+    eval_once(opts.eval_expr, opts.show_ast, opts.cache_dir)
+  case .Editor:
     if !term_is_tty() {
       fmt.eprintln("error: -i/--interactive requires an interactive terminal")
       os.exit(1)
     }
-    run_live_editor(cache_dir)
-    return
+    run_live_editor(opts.cache_dir)
+  case .File:
+    run_file(opts.file_path, opts.show_ast, opts.cache_dir)
+  case .Repl:
+    run_eval_repl(opts.show_ast, opts.cache_dir)
   }
-
-  if file_path != "" {
-    run_file(file_path, show_ast, cache_dir)
-    return
-  }
-
-  run_eval_repl(show_ast, cache_dir)
 }
 
-// Runs a HashedBuild source file as a real program: the global scope has the
-// filesystem builtins (§16) bound in, and the root context grants `io` by
-// default (§9) - same environment the REPL and live editor evaluate under.
+// Runs a HashedBuild source file as a real program, printing the result -
+// `hb <file>`. Every failure here is fatal to the process; eval_source_file
+// below is the same work without the printing or the exiting.
 run_file :: proc(path_str: string, show_ast: bool, cache_dir: string) {
+  formatted, err_msg, ok := eval_source_file(path_str, show_ast, cache_dir)
+  if !ok {
+    // An empty message means the parse errors were already printed as part
+    // of the AST, which is the only way to make sense of them.
+    if err_msg != "" do fmt.eprintfln("error: %s", err_msg)
+    os.exit(1)
+  }
+  defer delete(formatted)
+  fmt.println(formatted)
+}
+
+// Read, parse, evaluate, format - the whole of running a source file, minus
+// the two things a test can't live with (printing and os.exit). The global
+// scope has the filesystem builtins (§16) bound in and the root context
+// grants `io` by default (§9) - the same environment the REPL and the live
+// editor evaluate under. Split out of run_file so the examples can be run
+// end to end as tests (examples_test.odin).
+eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) -> (formatted: string, err_msg: string, ok: bool) {
   path := strings.clone_to_cstring(path_str, context.temp_allocator)
   source, errno := load_source_file(linux.AT_FDCWD, path)
   if errno != .NONE {
-    fmt.eprintfln("error: could not read %s (%v)", path_str, errno)
-    os.exit(1)
+    return "", fmt.tprintf("could not read %s (%v)", path_str, errno), false
   }
   defer free_source_file(source)
 
@@ -117,7 +161,7 @@ run_file :: proc(path_str: string, show_ast: bool, cache_dir: string) {
   }
   if len(ast.errors) > 0 {
     if !show_ast do print_ast(&ast, src) // errors always need the tree to make sense of them
-    os.exit(1)
+    return "", "", false
   }
 
   interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(cache_dir)}
@@ -132,17 +176,14 @@ run_file :: proc(path_str: string, show_ast: bool, cache_dir: string) {
     interp.base_dir_fd = dir_fd
     interp.has_base_dir = true
   }
+  defer if dir_errno == .NONE do linux.close(dir_fd)
 
-  env := make_global_env()
-  val, ok := eval(&interp, ast.root, env)
-  if ok do val, ok = await_value(&interp, val) // resolve a bare top-level `async <expr>` (§2)
-  if !ok {
-    fmt.eprintfln("error: %s", interp.error_message)
-    os.exit(1)
+  val, eval_ok := eval(&interp, ast.root, make_global_env())
+  if eval_ok do val, eval_ok = await_value(&interp, val) // resolve a bare top-level `async <expr>` (§2)
+  if !eval_ok {
+    return "", strings.clone(interp.error_message), false
   }
-  formatted := format_value(val)
-  defer delete(formatted)
-  fmt.println(formatted)
+  return format_value(val), "", true
 }
 
 // A real read-eval-print loop: accumulates lines into a snippet, evaluates it
