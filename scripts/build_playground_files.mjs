@@ -17,7 +17,13 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(repo, "docs", "repo-files.json");
 const SKIP = [/^docs\/media\//, /^docs\/hb\.wasm$/, /^docs\/repo-files\.json$/];
 
-const tracked = execFileSync("git", ["ls-files"], { cwd: repo, encoding: "utf8" })
+// --cached --others --exclude-standard: everything a clone of this commit
+// will contain, whether or not it has been `git add`ed yet. Plain `ls-files`
+// looks only at the index, so generating before staging a new file silently
+// left it out - and CI, checking out the committed tree, saw a stale
+// manifest. Ignored files stay out either way.
+const tracked = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"],
+                             { cwd: repo, encoding: "utf8" })
   .split("\n").filter(Boolean).filter((p) => !SKIP.some((re) => re.test(p))).sort();
 
 const files = {};
