@@ -375,3 +375,45 @@ test_builtin_cache_is_not_searchable :: proc(t: ^testing.T) {
 // piece is open_and_load's final read-only openat call, which is otherwise
 // identical to loadfile's unsandboxed form tested above and should work
 // correctly on a Linux host without this specific kernel bug.
+
+// ---- failure semantics (§8/§16) ---------------------------------------------
+
+// SPEC.md §8, resolved 2026-08-27: a failed builtin call is fatal, on the
+// same terms as `check`/`error` - no enclosing `else` catches it. §16 used to
+// claim the opposite ("catchable by an enclosing then/else"), so this pins
+// the rule the evaluator actually implements against the section that now
+// documents it.
+@(test)
+test_builtin_failure_is_not_caught_by_else :: proc(t: ^testing.T) {
+  // A missing file: the `else` is right there, and still doesn't catch it.
+  _, missing_ok, missing_err := eval_with_builtins(`(loadfile "definitely_not_here.txt") then 1 else 2`, "", nil)
+  testing.expect(t, !missing_ok, "a failed loadfile must not be caught by an else")
+  testing.expect(t, strings.contains(missing_err, "loadfile"))
+
+  // A denied permission, same story - narrowing io away doesn't produce a
+  // recoverable value, it ends the evaluation.
+  denied := `(loadfile "SPEC.md" chctx chperm { .name = "io", .enabled = 1 == 0 }) then 1 else 2`
+  _, denied_ok, denied_err := eval_with_builtins(denied, "", nil)
+  testing.expect(t, !denied_ok, "a denied loadfile must not be caught by an else")
+  testing.expect(t, strings.contains(denied_err, "permission"))
+
+  // A containment violation is a failure like any other (§16).
+  sd := make_scratch_dir(t, "fatal_escape_dir")
+  defer remove_scratch_dir(sd)
+  _, escape_ok, _ := eval_with_builtins(`(loadfile { .dir = d, .path = "../SPEC.md" }) then 1 else 2`, "d", sd.handle)
+  testing.expect(t, !escape_ok, "an escaping path must not be caught by an else")
+}
+
+// The other half of the same rule, for the two failure sources §8 always
+// described that way - kept next to the builtin case so the three read as one
+// rule rather than three coincidences.
+@(test)
+test_check_and_error_are_not_caught_by_else :: proc(t: ^testing.T) {
+  _, check_ok, check_err := eval_with_builtins(`check(1 < 0, "invariant broken") 5 then 1 else 2`, "", nil)
+  testing.expect(t, !check_ok, "a failed check must not be caught by an else")
+  testing.expect(t, strings.contains(check_err, "invariant broken"))
+
+  _, error_ok, error_err := eval_with_builtins(`(error "boom") then 1 else 2`, "", nil)
+  testing.expect(t, !error_ok, "an error must not be caught by an else")
+  testing.expect(t, strings.contains(error_err, "boom"))
+}
