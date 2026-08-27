@@ -163,7 +163,10 @@ export class WASI {
   }
 
   readString(ptr, len) {
-    return new TextDecoder().decode(this.bytes.subarray(ptr, ptr + len));
+    // .slice, not .subarray: with threads the memory is a SharedArrayBuffer,
+    // and TextDecoder refuses a view onto shared memory outright ("must not be
+    // shared"). Copying out is the price of the shared heap.
+    return new TextDecoder().decode(this.bytes.slice(ptr, ptr + len));
   }
 
   // Resolves a path relative to a directory descriptor, refusing anything that
@@ -197,7 +200,9 @@ export class WASI {
       for (let i = 0; i < iovsLen; i++) {
         const ptr = self.view.getUint32(iovsPtr + i * 8, true);
         const len = self.view.getUint32(iovsPtr + i * 8 + 4, true);
-        sink(self.bytes.subarray(ptr, ptr + len));
+        // Copied for the same reason readString copies: a shared view cannot
+        // be handed to TextDecoder.
+        sink(self.bytes.slice(ptr, ptr + len));
         written += len;
       }
       return written;
@@ -506,12 +511,32 @@ export class ExitSignal extends Error {
 // Instantiates a fresh module per run. Fresh on purpose: hb is a WASI
 // *command* - the host calls _start once and the program ends - so reusing an
 // instance would restart a program whose globals and heap are already spent.
-export async function run({ wasmBytes, fs, args, env, stdin, onStdout, onStderr }) {
+// Runs a program on this thread, start to finish. Used where there is no need
+// for the worker split: the Node tests, and anything else driving the
+// interpreter in one place.
+//
+// `spawnThread` is wasi-threads' one import. Returning a negative number means
+// "no threads here", which the interpreter reports at the `async` rather than
+// pretending to be concurrent (see task_wasi.odin) - so a caller that has no
+// way to spawn simply leaves it out.
+export async function run({ wasmBytes, fs, args, env, stdin, onStdout, onStderr, spawnThread }) {
   const wasi = new WASI({ fs, args, env, stdin, onStdout, onStderr });
-  const { instance } = await WebAssembly.instantiate(wasmBytes, {
+
+  // A module built for threads imports its memory rather than exporting one,
+  // because the host has to be able to hand the same memory to every
+  // instance. 18 pages initial / 1GB max matches what the build declares.
+  const module = await WebAssembly.compile(wasmBytes);
+  const needsMemory = WebAssembly.Module.imports(module).some((i) => i.module === "env" && i.name === "memory");
+  const memory = needsMemory
+    ? new WebAssembly.Memory({ initial: 18, maximum: 16384, shared: true })
+    : null;
+
+  const instance = await WebAssembly.instantiate(module, {
+    ...(memory ? { env: { memory } } : {}),
     wasi_snapshot_preview1: wasi.imports(),
+    wasi: { "thread-spawn": spawnThread ?? (() => -1) },
   });
-  wasi.setMemory(instance.exports.memory);
+  wasi.setMemory(memory ?? instance.exports.memory);
 
   try {
     instance.exports._start();
@@ -520,4 +545,130 @@ export async function run({ wasmBytes, fs, args, env, stdin, onStdout, onStderr 
     if (err instanceof ExitSignal) return err.code;
     throw err;
   }
+}
+
+// ---- running WASI calls on another thread ------------------------------------
+//
+// With wasi-threads, several instances of the module run at once - one per
+// spawned thread - and they all need the *same* filesystem. They already share
+// linear memory, which is the whole trick: every preview1 call takes pointers
+// into that memory, so a thread does not have to ship any data anywhere. It
+// writes the call's arguments into a small control block, wakes the owner of
+// the filesystem, and blocks until the errno comes back.
+//
+// Two calls stay local to the calling thread, because handing them over would
+// be wrong rather than merely slower:
+//
+//   fd_read on stdin  the caller is the one that must block waiting for input.
+//   proc_exit         ends *this* instance, and is a throw, not a result.
+//
+// Everything else is uniform, which is why this is a table rather than a
+// switch: the names are the protocol.
+
+// Each call's argument shapes: "i" is an i32, "I" an i64 (which wasm hands
+// JavaScript as a BigInt, and which travels as a low/high pair of words).
+// Spelled out rather than inferred, because guessing costs correctness in a
+// way that is very hard to see: an argument dropped off the end of path_open
+// is its *out* pointer, so the new descriptor gets written to address zero and
+// every later call quietly operates on the wrong file.
+export const REMOTE_CALLS = [
+  ["args_get", "ii"],
+  ["args_sizes_get", "ii"],
+  ["environ_get", "ii"],
+  ["environ_sizes_get", "ii"],
+  ["fd_close", "i"],
+  ["fd_filestat_get", "ii"],
+  ["fd_pread", "iiiIi"],
+  ["fd_prestat_dir_name", "iii"],
+  ["fd_prestat_get", "ii"],
+  ["fd_pwrite", "iiiIi"],
+  ["fd_read", "iiii"],
+  ["fd_readdir", "iiiIi"],
+  ["fd_seek", "iIii"],
+  ["fd_sync", "i"],
+  ["fd_write", "iiii"],
+  ["path_create_directory", "iii"],
+  ["path_filestat_get", "iiiii"],
+  ["path_open", "iiiiiIIii"],
+  ["path_readlink", "iiiiii"],
+  ["path_symlink", "iiiii"],
+  ["random_get", "ii"],
+];
+
+// Control block layout, as Int32Array indices.
+export const RPC = {
+  STATE: 0, OPCODE: 1, RESULT: 2, ARGS: 3, WORDS: 32,
+  IDLE: 0, PENDING: 1, DONE: 2,
+};
+
+// The import object a spawned thread (or the program's own thread) uses: every
+// call marshalled to whoever owns the filesystem, except the two above.
+export function remoteImports({ channel, notify, localHandlers = {} }) {
+  const imports = {};
+  for (const [opcode, [name, signature]] of REMOTE_CALLS.entries()) {
+    imports[name] = (...args) => {
+      const local = localHandlers[name];
+      if (local) {
+        const handled = local(...args);
+        if (handled !== undefined) return handled;
+      }
+
+      Atomics.store(channel, RPC.OPCODE, opcode);
+      let word = RPC.ARGS;
+      for (const [i, kind] of [...signature].entries()) {
+        const value = args[i];
+        if (kind === "I") {
+          const big = BigInt(value ?? 0);
+          Atomics.store(channel, word++, Number(big & 0xffffffffn) | 0);
+          Atomics.store(channel, word++, Number(big >> 32n) | 0);
+        } else {
+          Atomics.store(channel, word++, (value ?? 0) | 0);
+        }
+      }
+
+      Atomics.store(channel, RPC.STATE, RPC.PENDING);
+      notify();
+      while (Atomics.load(channel, RPC.STATE) !== RPC.DONE) {
+        Atomics.wait(channel, RPC.STATE, RPC.PENDING);
+      }
+      Atomics.store(channel, RPC.STATE, RPC.IDLE);
+      return Atomics.load(channel, RPC.RESULT);
+    };
+  }
+  return imports;
+}
+
+// The other end: runs one marshalled call against this WASI instance, whose
+// memory is the same shared memory the caller is pointing into.
+export function serveRemoteCall(wasi, channel, onError) {
+  const opcode = Atomics.load(channel, RPC.OPCODE);
+  const [name, signature] = REMOTE_CALLS[opcode];
+  const handler = wasi.imports()[name];
+
+  // Unpacked by the same signature the caller packed with.
+  const args = [];
+  let word = RPC.ARGS;
+  for (const kind of signature) {
+    if (kind === "I") {
+      const low = BigInt(Atomics.load(channel, word++) >>> 0);
+      const high = BigInt(Atomics.load(channel, word++));
+      args.push(low | (high << 32n));
+    } else {
+      args.push(Atomics.load(channel, word++));
+    }
+  }
+
+  let result;
+  try {
+    result = handler(...args);
+  } catch (err) {
+    // A throw here would leave the caller blocked forever, so it becomes an
+    // errno instead - and the owner gets told, since this is a host bug, not
+    // a program one.
+    onError?.(name, err);
+    result = ERRNO.IO;
+  }
+  Atomics.store(channel, RPC.RESULT, result | 0);
+  Atomics.store(channel, RPC.STATE, RPC.DONE);
+  Atomics.notify(channel, RPC.STATE);
 }

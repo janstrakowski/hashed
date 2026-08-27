@@ -56,7 +56,7 @@ for path in examples/*.hb; do
   if [ "$NO_THREADS" -eq 1 ] && [[ " $ASYNC " == *" $name "* ]]; then
     async_checked=$((async_checked + 1))
     case "$wasi_out" in
-      *"async"*"no thread support"*) ;;
+      *"async"*"could not start a thread"*) ;;
       *) failures=$((failures + 1))
          printf 'EXPECTED A REFUSAL %s\n  got: %s\n' "$name" "$wasi_out" ;;
     esac

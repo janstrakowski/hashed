@@ -12,6 +12,7 @@ odin test src                                 # full suite
 ./hb -e '<expr>'                              # evaluate one expression
 scripts/build_wasi.sh                             # portable WASI -> hb.wasm
 scripts/build_wasi.sh --threads                   # wasi-threads -> hb-threads.wasm
+scripts/build_wasi.sh --threads-web -out:docs/hb.wasm  # what the browser runs
 scripts/wasi_smoke.sh ./hb ./hb.wasm wasmtime     # both targets agree
 ```
 
@@ -20,8 +21,9 @@ interpreter Pages serves, and `docs/repo-files.json` is the repository as the
 terminal's filesystem - so *any* commit can make the manifest stale, and a
 change to `src/` makes the wasm stale. `.githooks/pre-commit` regenerates the
 manifest (enable it once with `git config core.hooksPath .githooks`); rebuild
-the wasm with `scripts/build_wasi.sh -out:docs/hb.wasm` when the interpreter
-changes. CI checks both.
+the wasm with `scripts/build_wasi.sh --threads-web -out:docs/hb.wasm` when the
+interpreter changes - the browser runs the *threaded* flavour, which imports
+its memory so every spawned thread can share one heap. CI checks both.
 
 **Two targets.** Anything touching the filesystem goes through `fs.odin`
 (`fs_linux.odin` / `fs_wasi.odin`) and anything spawning a thread through
