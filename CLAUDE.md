@@ -28,16 +28,37 @@ directory.
 
 ## Docs and examples
 
-`main` is public, so the docs on it describe what **runs**, not what `SPEC.md`
-plans. `LANGUAGE.md` is the feature-by-feature tour and carries an explicit
-"what isn't built yet" section; keeping that section honest is part of
-implementing a feature, as is adding the example that demonstrates it.
+`main` is public. Anyone who finds this repo should be able to see what the
+language can do **today** and try each of it themselves, without reading the
+evaluator or guessing which parts of `SPEC.md` are real. Documentation and
+examples are therefore part of a feature, not follow-up work — a feature that
+nobody outside this repo can discover or run is not finished.
 
-Every `examples/*.hb` is executed by the suite and asserted against the value
-its own header comment documents — `test_every_example_is_covered_by_a_test`
-fails if a new example lands without an assertion. Code quoted in `README.md`
-is compared against the example it claims to be (`docs_test.odin`), because it
-drifted once already.
+**Every user-visible feature is documented in `LANGUAGE.md`**, the
+feature-by-feature tour of what runs. Each entry carries a snippet the reader
+can paste straight into `./hb -e '…'` and a pointer to the example that
+demonstrates it. Run the snippets before committing them; a doc that lies is
+worse than a missing one.
+
+**Every language feature gets an example in `examples/`.** One runnable file
+per feature, with a header comment saying what it evaluates to, in the style
+the existing ones use. Features where a runnable file isn't the natural
+demonstration — a CLI flag, the terminal UI, the debugger — are documented in
+`GETTING_STARTED.md` instead; say which route you took in the commit body.
+
+**Docs state what is implemented, never what is planned.** `SPEC.md` is the
+design and deliberately runs ahead; `LANGUAGE.md`'s "what isn't built yet"
+section is what keeps that difference legible to a reader. Updating it is part
+of implementing a feature, and part of removing one. When a feature turns out
+to be missing something a user would reasonably expect — no boolean literals,
+a failure that can't be caught — say so in the docs rather than writing around
+it.
+
+Three parts of this are mechanical, so they can't rot quietly: every
+`examples/*.hb` is executed by the suite and asserted against its documented
+value; `test_every_example_is_covered_by_a_test` fails when an example lands
+without an assertion; and code quoted in `README.md` is compared against the
+example it claims to be (`docs_test.odin`), because it drifted once already.
 
 ## Git workflow
 
@@ -56,9 +77,9 @@ each feature lands, so force-pushing it is expected and normal.
 **Never force-push `main`.**
 
 **Landing a feature.** When it finally emerges — the feature works, the whole
-suite passes, `./hb` is rebuilt — squash `dev`'s WIP commits into one commit and
-fast-forward `main`. Run the suite in that exact final squashed state, not just
-somewhere along the way. Do this when the work is green rather than asking first;
+suite passes, `./hb` is rebuilt, and the docs and examples above cover it —
+squash `dev`'s WIP commits into one commit and fast-forward `main`. Run the
+suite in that exact final squashed state, not just somewhere along the way. Do this when the work is green rather than asking first;
 say in the reply that it landed.
 
 **A green commit needs reasonable test coverage, not just a green suite.** A
