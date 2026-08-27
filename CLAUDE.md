@@ -26,6 +26,42 @@ derives the checkout location from `#directory` at compile time, because CI
 checks out somewhere else and `odin test` promises no particular working
 directory.
 
+## Odin notes
+
+Traps this project has actually hit, collected because they cost time to
+rediscover and the compiler's message doesn't always point at the fix:
+
+- A **composite literal in a `for`/`if` header needs parentheses**:
+  `for x in ([]string{"a", "b"})`. Without them it's a syntax error at the
+  first comma — the brace is read as the loop body.
+- **`fmt` treats `{` as the start of a format verb.** Building an expectation
+  that is mostly braces (a Table's printed form, say) with `fmt.tprintf`
+  yields `%!(MISSING CLOSE BRACE)`; use `strings.concatenate` instead.
+- **A proc can't return a compound-literal slice** — it lives in the callee's
+  stack frame. Make it a file-scope `X := []T{...}` value.
+- **`os.read_entire_file` returns an `Error`, not a `bool`** (`err != nil`,
+  not `!ok`) in the Odin this project tracks.
+
+## Changing the language
+
+**The language is the user's call. Ask before changing it.** Syntax, semantics,
+what a builtin does, what a value displays as, what fails and how — none of it
+changes without asking first, however obvious the change looks, and however
+much a port or a refactor seems to force it. Present the options and what each
+costs; don't pick one and report it afterwards.
+
+What doesn't need asking: implementation work that leaves observable behaviour
+identical, and fixing code that contradicts `SPEC.md` — there the spec already
+decided, and the code is simply wrong (see the top of this file).
+
+The edge worth naming, because it has already come up: when `SPEC.md`
+contradicts *itself*, resolving it is a design decision, not a bug fix. If one
+reading is clearly stale — superseded by a later dated resolution, or
+self-contradictory in its own sentence — say so and fix it. If both readings
+are coherent and pick out different behaviour, stop and ask; the §8/§16
+resolution went the first way, and a case like it that went the second way
+would be the user's to settle.
+
 ## Docs and examples
 
 `main` is public. Anyone who finds this repo should be able to see what the
@@ -59,6 +95,52 @@ Three parts of this are mechanical, so they can't rot quietly: every
 value; `test_every_example_is_covered_by_a_test` fails when an example lands
 without an assertion; and code quoted in `README.md` is compared against the
 example it claims to be (`docs_test.odin`), because it drifted once already.
+
+## Delegating to agents
+
+**Trial, started 2026-08-27** — kept in one commit so it can be reverted whole
+if it doesn't earn its keep. What to watch: whether delegated work comes back
+needing more correction than it saved, and whether bugs that used to surface
+while writing tests and examples start slipping through instead.
+
+The split is **discovery vs. transcription**, not tests-and-docs vs. features.
+Writing the first example of a new feature is the first honest use of it — that
+is where `[k] = v` and `:.ok as v` turned out to be broken (§5/§8), neither of
+which reading the evaluator would have found. Writing a test is often what
+forces the implementation into a testable shape, as extracting `parse_args` out
+of `main` did. Both are development work wearing a different hat, and handing
+them to a cold agent trades a short feedback loop for a round trip.
+
+**Keep in-session:** testability refactors; tests and examples for anything
+still moving; the first example of any new feature.
+
+**Delegate:** expanding an example corpus over behavior that already works and
+has been verified; doc sweeps and index pages; capturing expected values across
+many files; repetitive per-case test batches once the surface is stable.
+
+**The landing gate doesn't move.** Delegated work returns as a proposal, never
+as a landed commit: run the suite, mutation-check that delegated tests actually
+fail when the feature is reverted (a test that passes either way is worse than
+no test, and reads as coverage in review), and re-run any doc snippet before it
+lands.
+
+**Reuse an agent; don't re-spawn one.** Spawn at first need and keep it for
+the rest of the session — `SendMessage` continues an existing agent with its
+context intact, so its second and third task skip the re-derivation the first
+one paid for. Two standing roles cover this repo: one for docs and examples,
+one for test batches. Don't pre-spawn against future work: an idle agent isn't
+warm, it's unbriefed, and briefing costs the same whenever it happens.
+
+**Re-brief a kept agent on what moved.** Its picture of the repo is as old as
+its last message. Say what changed since, and have it re-read any file it is
+about to touch — a kept agent confidently editing a file that has been
+rewritten underneath it is the failure this trades for the cold-start saving.
+
+**Warmth doesn't outlive the session.** The next session starts cold whatever
+happens here, which is why these conventions live in this file rather than in
+any agent's head. A spawn still only pays for units big enough to outweigh the
+first briefing; below roughly a few files of independent work, in-session is
+faster.
 
 ## Git workflow
 

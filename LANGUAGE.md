@@ -170,17 +170,27 @@ empty                   // …and this is its absence
 
 ## Failure
 
-Three distinct failure sources, and the difference between them is the point:
+Four distinct failure sources, and exactly one of them is recoverable:
 
 | | Recoverable? |
 |---|---|
 | `then` with a false condition | yes — by an `else` written immediately after it |
 | `check(<cond>, <msg>) <body>` | **no** — fatal, no `else` anywhere catches it |
 | `error <msg>` | **no** — same |
+| a failed builtin call — missing file, escaping path, denied `io` | **no** — same |
 
 `check` is for invariants that must hold; `then`/`else` is for branching. There
-is deliberately no way to catch the fatal kind (§11). `static_check` has
-`check`'s shape, for conditions meant to be settled before the program runs.
+is deliberately no way to catch the fatal kinds (§8, §11).
+
+The practical consequence is worth stating plainly: **"read this file, fall back
+if it isn't there" is not currently expressible.** A failed `loadfile` ends the
+program, `else` or no `else`, so a program has to be arranged so that the reads
+it performs are ones that must succeed. Whether to add a recoverable I/O channel
+is an open design question, not something the present `then`/`else` can be read
+into.
+
+`static_check` has `check`'s shape, for conditions meant to be settled before
+the program runs.
 
 → `examples/check-and-invariants.hb` (§11)
 
