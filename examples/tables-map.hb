@@ -1,0 +1,17 @@
+// Map-style Tables (SPEC.md §5): `.name = value` for a literal key,
+// `[expr] = value` for a computed one, `.field` to read one back, and
+// `concat` as the functional-update mechanism - the right-hand side wins on
+// a key collision, so this is how you "change" one field of an immutable
+// value.
+//
+// Reading a key that isn't there is a hard failure, not `nothing`. Asking
+// whether a key exists is `is { .key as x }` instead - see
+// table-destructuring.hb. Evaluates to
+// { name: "xz", version: "5.8.4", sha256: "abc123" }.
+"sha256" as computed_key
+  {
+    .name = "xz",
+    .version = "5.8.3",
+    [computed_key] = "abc123",
+  } as pkg
+    pkg concat { .version = "5.8.4" }
