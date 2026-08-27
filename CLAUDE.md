@@ -10,16 +10,28 @@ change to behavior means changing both in the same commit.
 odin build src -out:hb                        # the CLI (the shipped binary, kept current)
 odin test src                                 # full suite
 ./hb -e '<expr>'                              # evaluate one expression
-odin build src -target:wasi_wasm32 -o:size -out:hb.wasm  # the WASI build
+scripts/build_wasi.sh                             # portable WASI -> hb.wasm
+scripts/build_wasi.sh --threads                   # wasi-threads -> hb-threads.wasm
 scripts/wasi_smoke.sh ./hb ./hb.wasm wasmtime     # both targets agree
 ```
 
-**Two targets.** Anything touching the filesystem goes through `fs.odin`,
-implemented by `fs_linux.odin` and `fs_wasi.odin`; nothing above them names a
-syscall. Odin picks the file by suffix, so a `_linux.odin` file simply isn't
+**Two targets.** Anything touching the filesystem goes through `fs.odin`
+(`fs_linux.odin` / `fs_wasi.odin`) and anything spawning a thread through
+`task.odin` (`task_linux.odin` / `task_wasi.odin`); nothing above them names a
+syscall or a thread API. Odin picks the file by suffix, so a `_linux.odin` file simply isn't
 compiled for WASI - which is also why the terminal UI and the test files are
 named or tagged that way. `odin test` only ever builds natively, so the WASI
-backend is covered by the smoke script above, not by the suite.
+backends are covered by the smoke script above, not by the suite - once per
+flavour, the threaded one under WAMR's iwasm, since wasmtime dropped
+wasi-threads.
+
+**The threaded WASI build has a hand-written piece.** `src/thread_start.s` is
+the wasi-threads entry point: the host instantiates the module afresh per
+thread, and wasm globals are per-instance, so `__stack_pointer` still points
+at the main thread's stack until that stub repoints it. Odin cannot touch
+that global, which is why those few lines are assembly and why
+`scripts/build_wasi.sh` compiles and links them rather than `odin build`
+doing everything.
 
 `./hb` is gitignored, not tracked — but it is the binary you and any hand-testing
 actually run, so rebuild it as part of every completed feature, not just at the

@@ -2,7 +2,6 @@ package hashedbuild
 
 import "core:strings"
 import "core:sync"
-import "core:thread"
 
 // SPEC.md §2's `async`. The two-pass description there ("pass 1 starts every
 // async immediately without waiting; pass 2 walks the same route again,
@@ -26,7 +25,7 @@ import "core:thread"
 //     eval_table_construct) is what makes them actually run concurrently
 //     with each other, not just with surrounding sync code.
 Async_Handle :: struct {
-  th:     ^thread.Thread,
+  task:   Task, // nil if the target couldn't spawn one - see run_async_body
   interp: Interpreter, // this async's own independent sub-evaluation (own arg_stack snapshot, own ctx)
   body:   Node_Idx,
   env:    ^Env,
@@ -39,8 +38,8 @@ Async_Handle :: struct {
 }
 
 @(private = "file")
-async_thread_proc :: proc(t: ^thread.Thread) {
-  h := cast(^Async_Handle)t.data
+run_async_body :: proc(data: rawptr) {
+  h := (^Async_Handle)(data)
   h.result_value, h.result_ok = eval(&h.interp, h.body, h.env)
   if !h.result_ok do h.error_message = strings.clone(h.interp.error_message)
 }
@@ -74,9 +73,16 @@ spawn_async :: proc(interp: ^Interpreter, body: Node_Idx, env: ^Env) -> ^Async_H
   h.interp.arg_stack = make([dynamic]Value, len(interp.arg_stack))
   copy(h.interp.arg_stack[:], interp.arg_stack[:])
 
-  h.th = thread.create(async_thread_proc)
-  h.th.data = h
-  thread.start(h.th)
+  spawned: bool
+  h.task, spawned = task_spawn(run_async_body, h)
+  if !spawned {
+    // No threads on this target (see task.odin): evaluate here and now. The
+    // handle still behaves like one - await_value finds the result already
+    // sitting in it - so §2's rules hold exactly, including an untaken
+    // branch's async work still running. Only the concurrency is missing.
+    run_async_body(h)
+    h.awaited = true
+  }
   if interp.debugger != nil do register_debugger_task(interp.debugger, h)
   return h
 }
@@ -99,7 +105,7 @@ await_value :: proc(interp: ^Interpreter, v: Value) -> (Value, bool) {
     // mutex rather than double-joining the thread, so the marker's lifetime
     // exactly matches the one real join underneath it.
     if interp.debugger != nil do mark_awaiting(interp.debugger, h.body, true)
-    thread.join(h.th)
+    task_join(h.task)
     if interp.debugger != nil do mark_awaiting(interp.debugger, h.body, false)
     h.awaited = true
   }
