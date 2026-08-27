@@ -29,9 +29,20 @@ make_scratch_dir :: proc(t: ^testing.T, name: string) -> Scratch_Dir {
   return Scratch_Dir{path = path, handle = h}
 }
 
+// The repo root, derived from this source file's own location: #directory
+// resolves at compile time to "<repo>/src/", so trimming that suffix gives
+// the root wherever the repo is checked out - a CI runner's workspace as
+// readily as a dev machine - with no dependence on the working directory
+// `odin test` happens to inherit. Trimmed rather than "+ \"..\"" because
+// these paths get compared against the kernel's own resolved answer for a
+// File's display path (§3), which never contains a ".." component.
+repo_root :: proc() -> string {
+  return strings.trim_suffix(strings.trim_suffix(#directory, "/"), "/src")
+}
+
 @(private = "file")
 fmt_scratch_path :: proc(name: string) -> string {
-  return strings.concatenate({"/home/janst/hashedbuild/.builtins_fs_test_", name})
+  return strings.concatenate({repo_root(), "/.builtins_fs_test_", name})
 }
 
 @(private = "file")
@@ -196,7 +207,9 @@ test_builtin_loadfile_unsandboxed_file_and_directory :: proc(t: ^testing.T) {
   testing.expect_value(t, fv.kind, File_Kind.Regular)
   testing.expect_value(t, string(fv.content), "content!")
 
-  dir_val, dir_ok, dir_err := eval_with_builtins(`loadfile "/home/janst/hashedbuild"`, "", nil)
+  load_dir_src := fmt.aprintf(`loadfile "%s"`, repo_root())
+  defer delete(load_dir_src)
+  dir_val, dir_ok, dir_err := eval_with_builtins(load_dir_src, "", nil)
   testing.expect(t, dir_ok, dir_err)
   dfv, is_dir_file := dir_val.(^File_Value)
   testing.expect(t, is_dir_file)
@@ -278,7 +291,9 @@ test_builtin_filetext_round_trips_createfile_content :: proc(t: ^testing.T) {
 
 @(test)
 test_builtin_filetext_rejects_directory :: proc(t: ^testing.T) {
-  val, ok, _ := eval_with_builtins(`filetext (loadfile "/home/janst/hashedbuild")`, "", nil)
+  src := fmt.aprintf(`filetext (loadfile "%s")`, repo_root())
+  defer delete(src)
+  val, ok, _ := eval_with_builtins(src, "", nil)
   _ = val
   testing.expect(t, !ok, "filetext should refuse a directory File")
 }

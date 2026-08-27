@@ -1,0 +1,60 @@
+name: CI
+
+# main is the branch that has to stay green (see CLAUDE.md): every commit on
+# it builds and passes the whole suite. dev is deliberately left out - it
+# carries WIP commits that are allowed to be broken, and a permanent red X
+# there would train everyone to ignore the badge. Add `dev` to the push
+# branches if you ever want a signal on WIP too.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # Same release the project is developed against; bump deliberately, so
+      # a compiler change shows up as its own commit rather than as a
+      # mystery failure on an unrelated PR.
+      ODIN_VERSION: dev-2026-08
+    steps:
+      - uses: actions/checkout@v7
+
+      # The release tarball's top-level directory is named after the nightly
+      # it was cut from (odin-linux-amd64-nightly+2026-08-06), not after the
+      # tag, so strip it rather than trying to predict it.
+      - name: Cache Odin
+        id: cache-odin
+        uses: actions/cache@v6
+        with:
+          path: ~/odin
+          key: odin-linux-amd64-${{ env.ODIN_VERSION }}
+
+      - name: Install Odin ${{ env.ODIN_VERSION }}
+        if: steps.cache-odin.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/odin"
+          curl -fsSL "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/odin-linux-amd64-${ODIN_VERSION}.tar.gz" \
+            | tar xz -C "$HOME/odin" --strip-components=1
+
+      - name: Put Odin on PATH
+        run: echo "$HOME/odin" >> "$GITHUB_PATH"
+
+      # Odin shells out to clang to link. The runner images ship it, but
+      # that's their choice to change, and a missing linker is a confusing
+      # failure to debug from a build log.
+      - name: Ensure clang is present
+        run: |
+          if ! command -v clang >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y clang
+          fi
+
+      - run: odin version
+
+      - name: Build
+        run: odin build src -out:hb
+
+      - name: Test
+        run: odin test src -out:/tmp/hbtest
