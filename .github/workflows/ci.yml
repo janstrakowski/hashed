@@ -192,3 +192,62 @@ jobs:
       # evaluator's recursion outgrows on the larger examples.
       - name: Examples agree with real threads
         run: scripts/wasi_smoke.sh ./hb ./hb-threads.wasm "$HOME/iwasm/iwasm" --stack-size=4194304 --max-threads=8
+
+  # The playground is the interpreter running in a browser, so it can break in
+  # ways neither the Odin suite nor the wasm smoke tests can see: the WASI shim
+  # (docs/wasi.js) is a hand-written host, and the page's persistence only
+  # exists inside a real browser's IndexedDB.
+  playground:
+    runs-on: ubuntu-latest
+    env:
+      ODIN_VERSION: dev-2026-08
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache Odin
+        id: cache-odin
+        uses: actions/cache@v6
+        with:
+          path: ~/odin
+          key: odin-linux-amd64-${{ env.ODIN_VERSION }}
+
+      - name: Install Odin ${{ env.ODIN_VERSION }}
+        if: steps.cache-odin.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/odin"
+          curl -fsSL "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/odin-linux-amd64-${ODIN_VERSION}.tar.gz" \
+            | tar xz -C "$HOME/odin" --strip-components=1
+
+      - name: Put Odin on PATH
+        run: echo "$HOME/odin" >> "$GITHUB_PATH"
+
+      - name: Ensure clang and wasm-ld are present
+        run: |
+          missing=""
+          command -v clang >/dev/null || missing="$missing clang"
+          command -v wasm-ld >/dev/null || missing="$missing lld"
+          if [ -n "$missing" ]; then
+            sudo apt-get update && sudo apt-get install -y $missing
+          fi
+
+      # The native build is what the shim test compares the committed wasm
+      # against, example by example - that is the staleness check. Bytes can't
+      # be compared: Odin's wasm output is not reproducible run to run.
+      - name: Build native hb
+        run: odin build src -out:hb
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - run: npm install
+
+      - name: WASI shim
+        run: npm run test:shim
+
+      # Throttled, because the unthrottled run on a fast machine is what let a
+      # real input race through in the first place.
+      - name: The page itself
+        env:
+          THROTTLE: 4
+        run: npm run test:browser -- "$(command -v google-chrome || command -v chromium-browser || command -v chromium)"

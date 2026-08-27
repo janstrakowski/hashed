@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HashedBuild terminal</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%3E%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #EEF1F4; --surface: #FFFFFF; --text: #1B2430; --text-dim: #5B6472;
+    --border: #D6DCE2; --accent: #B96A1F; --ok: #2F7D46; --err: #B3392F;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0E1116; --surface: #12161D; --text: #E7E9EC; --text-dim: #8B95A3;
+      --border: #262D38; --accent: #E0954A; --ok: #63B37B; --err: #E4776B;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0E1116; --surface: #12161D; --text: #E7E9EC; --text-dim: #8B95A3;
+    --border: #262D38; --accent: #E0954A; --ok: #63B37B; --err: #E4776B;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font-family: var(--sans); display: flex; flex-direction: column;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--accent);
+  }
+  header .spacer { flex: 1; }
+  header a { color: var(--accent); font-size: 13px; }
+  #screen {
+    flex: 1; margin: 0; padding: 16px 20px 8px; overflow-y: auto; cursor: text;
+    font-family: var(--mono); font-size: 13px; line-height: 1.55;
+    background: var(--surface); white-space: pre-wrap; word-break: break-word;
+  }
+  #screen .err { color: var(--err); }
+  #screen .dim { color: var(--text-dim); }
+  #screen .accent { color: var(--accent); }
+  .line { display: flex; gap: 0; align-items: baseline; }
+  .prompt { color: var(--accent); white-space: pre; }
+  #entry {
+    flex: 1; border: 0; outline: none; padding: 0; background: transparent;
+    color: var(--text); font: inherit; caret-color: var(--accent);
+  }
+  #inputline {
+    display: flex; gap: 0; align-items: baseline; padding: 0 20px 16px;
+    background: var(--surface); font-family: var(--mono); font-size: 13px;
+  }
+  footer {
+    padding: 8px 20px; border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--text-dim); display: flex; gap: 16px; flex-wrap: wrap;
+  }
+  kbd {
+    font-family: var(--mono); font-size: 11px; border: 1px solid var(--border);
+    border-bottom-width: 2px; border-radius: 4px; padding: 1px 4px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="eyebrow">HashedBuild</div>
+    <h1>Terminal</h1>
+  </div>
+  <div class="spacer"></div>
+  <a href="index.html">Home</a>
+  <a href="https://github.com/janstrakowski/hashedbuild/blob/main/LANGUAGE.md">Language tour</a>
+  <a href="SPEC.html">Spec</a>
+</header>
+
+<pre id="screen"></pre>
+<div id="inputline">
+  <span class="prompt" id="prompt">$ </span>
+  <input id="entry" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" autofocus>
+</div>
+
+<footer>
+  <span><kbd>↑</kbd><kbd>↓</kbd> history · <kbd>Ctrl</kbd>+<kbd>L</kbd> clears</span>
+  <span>Type <span class="accent">help</span> to start.</span>
+  <span>The interpreter is WebAssembly running in this tab; files persist in your browser.</span>
+</footer>
+
+<script type="module">
+import { FileSystem, run } from "./wasi.js";
+
+// The files a fresh visitor lands with - enough to `cat` something, run
+// something, and have loadfile find something.
+const STARTING_FILES = {
+  "examples/optiona.txt": "This is the payload for option A.\n",
+  "examples/optionb.txt": "This is the payload for option B.\n",
+  "examples/choice.txt": "option A",
+  "tour.hb": `// A program is one expression, and its value is the output.
+{
+  .arithmetic = 7 / 2,            // Integer division truncates
+  .float = 7.0 / 2,               // one Float promotes the whole thing
+  .text = "hello, " concat "world",
+  .table = { .a = 1 } concat { .b = 2 },
+  .pattern = (:.ok 42) is :.ok as payload then payload else 0,
+  .file = filetext (loadfile "/examples/optiona.txt"),
+}
+`,
+  "write-a-file.hb": `// createfile writes into this browser's filesystem, and it stays
+// there between visits. Run it twice: the second run fails, because
+// createfile is exclusive (SPEC.md §16).
+createfile {
+  .path = "/greeting.txt",
+  .content = "written from the browser\\n",
+}
+`,
+};
+
+const screen = document.getElementById("screen");
+const entry = document.getElementById("entry");
+const promptEl = document.getElementById("prompt");
+
+let wasmBytes = null;
+let fs = null;
+let history = [];
+let historyIndex = 0;
+
+// Bare `hb` puts the terminal in REPL mode. The interpreter's own REPL reads
+// stdin in a loop, which a wasm module cannot do in a browser without blocking
+// the thread - but it evaluates every submission with a *fresh* interpreter
+// and environment (see run_eval_repl/eval_and_print in main.odin), so running
+// one instance per submission behaves exactly the same. The prompts below are
+// the ones that loop prints.
+let repl = null; // null, or { buffer: [] }
+
+// ---- output ------------------------------------------------------------------
+
+function write(text, cls) {
+  const span = document.createElement("span");
+  if (cls) span.className = cls;
+  span.textContent = text;
+  screen.append(span);
+  screen.scrollTop = screen.scrollHeight;
+}
+
+const writeLine = (text = "", cls) => write(text + "\n", cls);
+
+function echo(prompt, command) {
+  write(prompt, "accent");
+  writeLine(command);
+}
+
+// ---- persistence: IndexedDB, one row, no schema ------------------------------
+
+const DB_NAME = "hashedbuild-playground";
+const STORE = "state";
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function loadState() {
+  try {
+    const db = await openDb();
+    return await new Promise((resolve, reject) => {
+      const req = db.transaction(STORE, "readonly").objectStore(STORE).get("state");
+      req.onsuccess = () => resolve(req.result ?? null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return null; // private window, blocked storage: start fresh, still works
+  }
+}
+
+async function saveState() {
+  try {
+    const db = await openDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).put({ files: fs.snapshot(), history: history.slice(-100) }, "state");
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    // Not being able to persist is survivable; the session still works.
+  }
+}
+
+function seedFilesystem() {
+  const seeded = new FileSystem();
+  const enc = new TextEncoder();
+  for (const [path, text] of Object.entries(STARTING_FILES)) seeded.writeFile("/" + path, enc.encode(text));
+  return seeded;
+}
+
+// ---- running the interpreter --------------------------------------------------
+
+// One fresh instance per invocation, which is what a CLI is: argv in, output
+// out, exit code, gone. The filesystem is the thing that survives.
+async function hb(args) {
+  if (!wasmBytes) return 1;
+  let code = 0;
+  try {
+    code = await run({
+      wasmBytes, fs, args: ["hb", ...args],
+      onStdout: (text) => write(text),
+      onStderr: (text) => write(text, "err"),
+    });
+  } catch (err) {
+    writeLine(`the module trapped: ${err.message}`, "err");
+    code = -1;
+  }
+  await saveState();
+  return code;
+}
+
+// ---- the shell ----------------------------------------------------------------
+
+const HELP = `Commands
+
+  hb                 start the REPL (an expression, then a blank line)
+  hb <file>          run a program
+  hb -e '<expr>'     evaluate one expression
+  hb -a <file>       print the AST before evaluating
+  hb --help          the interpreter's own usage
+  ls [path]          list files
+  cat <file>         print a file
+  clear              clear the screen
+  reset              restore the starting files, discard everything else
+
+Everything runs here, in this tab. Files written with createfile persist in
+this browser and nowhere else.`;
+
+// Splits a command line, honouring quotes so `hb -e '1 + 1'` arrives as one
+// argument rather than three.
+function tokenize(line) {
+  const out = [];
+  const re = /'([^']*)'|"([^"]*)"|(\S+)/g;
+  let m;
+  while ((m = re.exec(line)) !== null) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+
+function listFiles(prefix) {
+  const entries = fs.list().filter((e) => e.type !== "dir");
+  const wanted = prefix ? entries.filter((e) => ("/" + e.path).startsWith(prefix.replace(/\/$/, ""))) : entries;
+  if (wanted.length === 0) return writeLine("(nothing here)", "dim");
+  for (const entry of wanted) {
+    const size = entry.type === "symlink" ? `-> ${entry.target}` : `${entry.data.length}B`;
+    writeLine(`  /${entry.path}${" ".repeat(Math.max(1, 32 - entry.path.length))}${size}`);
+  }
+}
+
+function catFile(path) {
+  const full = path.startsWith("/") ? path : "/" + path;
+  const node = fs.lookup(full);
+  if (!node) return writeLine(`cat: ${path}: no such file`, "err");
+  if (node.type === "dir") return writeLine(`cat: ${path}: is a directory`, "err");
+  if (node.type === "symlink") return writeLine(`cat: ${path}: is a symlink to ${node.target}`, "err");
+  write(new TextDecoder().decode(node.data));
+  if (node.data.length && node.data[node.data.length - 1] !== 10) writeLine();
+}
+
+async function runCommand(line) {
+  const args = tokenize(line);
+  if (args.length === 0) return;
+
+  switch (args[0]) {
+    case "help": writeLine(HELP); return;
+    case "clear": screen.replaceChildren(); return;
+    case "ls": listFiles(args[1]); return;
+    case "cat":
+      if (!args[1]) return writeLine("cat: needs a file", "err");
+      catFile(args[1]);
+      return;
+    case "reset":
+      fs = seedFilesystem();
+      await saveState();
+      writeLine("starting files restored", "dim");
+      return;
+    case "hb":
+      if (args.length === 1) {
+        // The banner the real REPL prints, because this is that REPL.
+        repl = { buffer: [] };
+        writeLine("HashedBuild REPL");
+        writeLine("Type an expression, then an empty line to evaluate it. ':q' to quit.");
+        writeLine();
+        return;
+      }
+      await hb(args.slice(1));
+      return;
+    default:
+      writeLine(`${args[0]}: not a command. Try \`help\`.`, "err");
+  }
+}
+
+// A REPL submission: accumulate lines until a blank one, then evaluate the lot.
+async function runReplLine(line) {
+  const trimmed = line.trim();
+  if (repl.buffer.length === 0) {
+    if (trimmed === ":q" || trimmed === ":quit" || trimmed === ":exit") {
+      repl = null;
+      writeLine();
+      return;
+    }
+    if (trimmed === "") return;
+  }
+  if (trimmed === "") {
+    const source = repl.buffer.join("\n");
+    repl.buffer = [];
+    await hb(["-e", source]);
+    return;
+  }
+  repl.buffer.push(line);
+}
+
+function currentPrompt() {
+  if (!repl) return "$ ";
+  return repl.buffer.length === 0 ? "hb> " : "... ";
+}
+
+function refreshPrompt() {
+  promptEl.textContent = currentPrompt();
+}
+
+function setBusy(value) {
+  busy = value;
+  entry.disabled = value;
+  promptEl.textContent = value ? "  " : currentPrompt();
+  if (!value) entry.focus();
+}
+
+// ---- input --------------------------------------------------------------------
+
+let busy = false;
+
+entry.addEventListener("keydown", async (event) => {
+  if (event.ctrlKey && event.key.toLowerCase() === "l") {
+    event.preventDefault();
+    screen.replaceChildren();
+    return;
+  }
+
+  if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+    if (history.length === 0) return;
+    event.preventDefault();
+    historyIndex += event.key === "ArrowUp" ? -1 : 1;
+    historyIndex = Math.max(0, Math.min(history.length, historyIndex));
+    entry.value = history[historyIndex] ?? "";
+    return;
+  }
+
+  if (event.key !== "Enter" || busy) return;
+  event.preventDefault();
+
+  const line = entry.value;
+  entry.value = "";
+  echo(currentPrompt(), line);
+  if (line.trim()) {
+    history.push(line);
+    historyIndex = history.length;
+  }
+
+  // Lock the prompt while the command runs. Without this, anything typed
+  // meanwhile lands in the input and merges into the next command - which is
+  // exactly what a terminal must not do.
+  setBusy(true);
+  try {
+    if (repl) await runReplLine(line);
+    else await runCommand(line);
+  } finally {
+    setBusy(false);
+    refreshPrompt();
+    await saveState();
+  }
+});
+
+// Clicking anywhere in the scrollback focuses the prompt, the way a terminal
+// behaves - but not while text is being selected for copying.
+screen.addEventListener("mouseup", () => {
+  if (!window.getSelection().toString()) entry.focus();
+});
+
+// ---- boot ---------------------------------------------------------------------
+
+(async () => {
+  writeLine("HashedBuild — the interpreter, compiled to WebAssembly, running here.", "dim");
+  const [response, saved] = await Promise.all([fetch("hb.wasm"), loadState()]);
+  if (!response.ok) {
+    writeLine(`could not load hb.wasm (${response.status})`, "err");
+    return;
+  }
+  wasmBytes = await response.arrayBuffer();
+
+  fs = saved?.files ? FileSystem.fromSnapshot(saved.files) : seedFilesystem();
+  history = saved?.history ?? [];
+  historyIndex = history.length;
+
+  writeLine(saved ? "Restored your files from this browser." : "Type `help` for commands, or `hb tour.hb` to run something.", "dim");
+  writeLine();
+  refreshPrompt();
+  entry.focus();
+})();
+</script>
+</body>
+</html>

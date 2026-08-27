@@ -89,4 +89,4 @@ Still in `./hb -i`: start typing an expression in the Source pane and watch the 
 - **[LANGUAGE.md](LANGUAGE.md)** - every feature that works today, with runnable snippets: values, operators, Tables, functions, pattern matching, failure, files, permissions, concurrency - and an explicit list of what isn't built yet.
 - **[examples/](examples/)** - a runnable file per feature, indexed in [examples/README.md](examples/README.md). The test suite runs all of them.
 - **`SPEC.md`** - the full, evolving language design, including the parts that don't run yet.
-- **[Interactive debugger playback](https://janstrakowski.github.io/hashedbuild/debugger-playback.html)** - every example, stepped through the debugger, without installing anything.
+- **[The web terminal](https://janstrakowski.github.io/hashedbuild/playground.html)** - the same CLI in your browser: the REPL, running files, and a filesystem that persists between visits. Nothing to install.

@@ -127,6 +127,19 @@ fs_cwd_dir :: proc() -> Fs_Fd {
 
 // ---- the operations fs.odin names ----------------------------------------------
 
+// WASI has no absolute paths at all - path_open resolves a name relative to
+// a descriptor, and an absolute one is refused outright. A program that says
+// `loadfile "/examples/x"` means a path rooted at a preopen, so rebase it
+// onto whichever preopen covers it and hand path_open the remainder. Linux
+// needs no equivalent: openat ignores its dirfd for an absolute path.
+@(private = "file")
+rebase_absolute :: proc(parent: Fs_Fd, name: string) -> (Fs_Fd, string, bool) {
+  if len(name) == 0 || name[0] != '/' do return parent, name, true
+  pre, rel, ok := resolve_preopen(name)
+  if !ok do return parent, name, false // nothing preopened covers it
+  return pre, rel, true
+}
+
 @(private = "file")
 lookup_flags :: proc(no_follow: bool) -> wasi.lookupflags_t {
   return no_follow ? {} : {.SYMLINK_FOLLOW}
@@ -137,9 +150,10 @@ open_at :: proc(
   parent: Fs_Fd, name: string, no_follow: bool, oflags: wasi.oflags_t,
   base: wasi.rights_t, inheriting: wasi.rights_t,
 ) -> (Fs_Fd, Fs_Error) {
-  if parent == FS_INVALID_FD do return FS_INVALID_FD, .Access
+  dir, rel, ok := rebase_absolute(parent, name)
+  if !ok || dir == FS_INVALID_FD do return FS_INVALID_FD, .Access
   fd, err := wasi.path_open(
-    wasi.fd_t(parent), lookup_flags(no_follow), name, oflags,
+    wasi.fd_t(dir), lookup_flags(no_follow), rel, oflags,
     base, inheriting, {},
   )
   if err != .SUCCESS do return FS_INVALID_FD, to_fs_error(err)
@@ -162,8 +176,9 @@ fs_create_exclusive_at :: proc(parent: Fs_Fd, name: string) -> (Fs_Fd, Fs_Error)
 // rights to file type, so path_open with FD_READ against a directory is
 // refused outright. Ask first, then open with the flags that fit.
 fs_stat_is_dir_at :: proc(parent: Fs_Fd, name: string, no_follow: bool) -> (bool, Fs_Error) {
-  if parent == FS_INVALID_FD do return false, .Access
-  stat, err := wasi.path_filestat_get(wasi.fd_t(parent), lookup_flags(no_follow), name)
+  dir, rel, ok := rebase_absolute(parent, name)
+  if !ok || dir == FS_INVALID_FD do return false, .Access
+  stat, err := wasi.path_filestat_get(wasi.fd_t(dir), lookup_flags(no_follow), rel)
   if err != .SUCCESS do return false, to_fs_error(err)
   return stat.filetype == .DIRECTORY, .None
 }
@@ -212,14 +227,16 @@ fs_close :: proc(fd: Fs_Fd) {
 }
 
 fs_symlink_at :: proc(parent: Fs_Fd, name: string, target: string) -> Fs_Error {
-  if parent == FS_INVALID_FD do return .Access
-  return to_fs_error(wasi.path_symlink(target, wasi.fd_t(parent), name))
+  dir, rel, ok := rebase_absolute(parent, name)
+  if !ok || dir == FS_INVALID_FD do return .Access
+  return to_fs_error(wasi.path_symlink(target, wasi.fd_t(dir), rel))
 }
 
 fs_readlink_at :: proc(parent: Fs_Fd, name: string) -> (string, Fs_Error) {
-  if parent == FS_INVALID_FD do return "", .Access
+  dir, rel, ok := rebase_absolute(parent, name)
+  if !ok || dir == FS_INVALID_FD do return "", .Access
   buf := make([]u8, 4096, context.temp_allocator)
-  n, err := wasi.path_readlink(wasi.fd_t(parent), name, buf)
+  n, err := wasi.path_readlink(wasi.fd_t(dir), rel, buf)
   if err != .SUCCESS do return "", to_fs_error(err)
   return strings.clone(string(buf[:n])), .None
 }

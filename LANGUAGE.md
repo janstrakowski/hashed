@@ -320,6 +320,31 @@ Displayed paths are relative to that preopen, so a file shows as
 `scripts/wasi_smoke.sh` runs the examples on a wasm build and compares them
 against native; CI does it for both flavours on every push.
 
+## In a browser
+
+[**The terminal**](https://janstrakowski.github.io/hashedbuild/playground.html)
+is this same CLI, compiled to WebAssembly and running in your own tab:
+
+```
+$ hb tour.hb            run a program
+$ hb -e '1 + 2 * 3'     evaluate an expression
+$ hb                    the REPL - an expression, then a blank line
+$ ls / cat / reset      look around
+```
+
+Files written with `createfile` persist between visits, in your browser's
+IndexedDB — no server, nothing sent anywhere, and clearing site data is the
+uninstall. It is the portable build, so `async` refuses there.
+
+Bare `hb` deserves a note: the real REPL loop reads stdin, which a wasm module
+cannot block on in a browser. It doesn't have to — that loop evaluates every
+submission with a *fresh* interpreter and environment, so the page runs one
+instance per submission and the behaviour is identical, prompts and all.
+
+The page is `docs/playground.html`; the WASI host under it is `docs/wasi.js`,
+about 400 lines implementing the 21 preview1 calls the interpreter actually
+imports.
+
 ## Where to go next
 
 - **[GETTING_STARTED.md](GETTING_STARTED.md)** — installing, the REPL, the live
