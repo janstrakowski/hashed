@@ -87,11 +87,19 @@ jobs:
       - name: Put Odin on PATH
         run: echo "$HOME/odin" >> "$GITHUB_PATH"
 
-      - name: Ensure clang is present
+      # wasm-ld links the wasm32 build and comes from lld, which the runner
+      # images don't ship even though they do ship clang. Odin reports its
+      # absence as a bare "sh: 1: wasm-ld: not found", so it is checked for by
+      # name here rather than assumed to arrive with the compiler.
+      - name: Ensure clang and wasm-ld are present
         run: |
-          if ! command -v clang >/dev/null; then
-            sudo apt-get update && sudo apt-get install -y clang
+          missing=""
+          command -v clang >/dev/null || missing="$missing clang"
+          command -v wasm-ld >/dev/null || missing="$missing lld"
+          if [ -n "$missing" ]; then
+            sudo apt-get update && sudo apt-get install -y $missing
           fi
+          wasm-ld --version
 
       # Pinned like Odin is: a runtime upgrade should be its own commit, not a
       # surprise on an unrelated PR.
