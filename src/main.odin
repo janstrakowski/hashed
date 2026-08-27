@@ -185,8 +185,10 @@ eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) ->
   }
   defer if dir_errno == .None do fs_close(dir_fd)
 
-  val, eval_ok := eval(&interp, ast.root, make_global_env())
-  if eval_ok do val, eval_ok = await_value(&interp, val) // resolve a bare top-level `async <expr>` (§2)
+  // eval_program, not eval: it also resolves a bare top-level `async` (§2)
+  // and waits for any task nothing awaited, so the program can't exit with
+  // work half-done (eval_async.odin).
+  val, eval_ok := eval_program(&interp, ast.root, make_global_env())
   if !eval_ok {
     return "", strings.clone(interp.error_message), false
   }
@@ -263,8 +265,7 @@ eval_once :: proc(src: string, show_ast: bool, cache_dir: string) {
 
   interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(cache_dir)}
   env := make_global_env()
-  val, ok := eval(&interp, ast.root, env)
-  if ok do val, ok = await_value(&interp, val)
+  val, ok := eval_program(&interp, ast.root, env)
   if !ok {
     fmt.eprintfln("error: %s", interp.error_message)
     os.exit(1)
@@ -291,8 +292,7 @@ eval_and_print :: proc(src: string, show_ast: bool, cache_dir: string) {
 
   interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(cache_dir)}
   env := make_global_env()
-  val, ok := eval(&interp, ast.root, env)
-  if ok do val, ok = await_value(&interp, val)
+  val, ok := eval_program(&interp, ast.root, env)
   if !ok {
     fmt.printfln("error: %s", interp.error_message)
     return

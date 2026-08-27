@@ -24,6 +24,15 @@ import "core:sync"
 //   - Firing several sibling `async`s before awaiting any of them (see
 //     eval_table_construct) is what makes them actually run concurrently
 //     with each other, not just with surrounding sync code.
+// Every handle spawned during one program run, so the run can wait for all
+// of them before it ends - see eval_program. Shared by pointer into each
+// async's own Interpreter rather than being global, because `odin test` runs
+// programs concurrently and two runs must not see each other's tasks.
+Async_Registry :: struct {
+  mu:      sync.Mutex,
+  handles: [dynamic]^Async_Handle,
+}
+
 Async_Handle :: struct {
   task:   Task, // nil if the target couldn't spawn one - see run_async_body
   interp: Interpreter, // this async's own independent sub-evaluation (own arg_stack snapshot, own ctx)
@@ -58,6 +67,10 @@ run_async_body :: proc(data: rawptr) {
 // single-tree log (see debugger.odin) rather than a black box that just
 // silently finishes in the background.
 spawn_async :: proc(interp: ^Interpreter, body: Node_Idx, env: ^Env) -> (^Async_Handle, bool) {
+  // Created on the first spawn and inherited by every task from there on, so
+  // a task that spawns further tasks registers them in the same place.
+  if interp.async_registry == nil do interp.async_registry = new(Async_Registry)
+
   h := new(Async_Handle)
   h.body = body
   h.env = env
@@ -67,6 +80,8 @@ spawn_async :: proc(interp: ^Interpreter, body: Node_Idx, env: ^Env) -> (^Async_
     current_ctx   = interp.current_ctx,
     base_dir_fd   = interp.base_dir_fd,
     has_base_dir  = interp.has_base_dir,
+    base_dir_path = interp.base_dir_path,
+    async_registry = interp.async_registry,
     debugger      = interp.debugger,
     discard_depth = interp.discard_depth,
   }
@@ -85,6 +100,10 @@ spawn_async :: proc(interp: ^Interpreter, body: Node_Idx, env: ^Env) -> (^Async_
     free(h)
     return nil, false
   }
+  sync.mutex_lock(&interp.async_registry.mu)
+  append(&interp.async_registry.handles, h)
+  sync.mutex_unlock(&interp.async_registry.mu)
+
   if interp.debugger != nil do register_debugger_task(interp.debugger, h)
   return h, true
 }
@@ -136,4 +155,48 @@ contains_async_anywhere :: proc(ast: ^ast_t, node: Node_Idx) -> bool {
     if contains_async_anywhere(ast, ast.extra_children[start + i]) do return true
   }
   return false
+}
+
+// Evaluates a whole program: the expression, the await of its own result,
+// and then - always, success or failure - a wait for every task the run
+// started but nothing ever awaited.
+//
+// That last part is why this exists rather than callers writing eval +
+// await_value themselves. A fatal failure (§8: a failed `check`, an `error`,
+// a denied builtin) ends the program wherever it happens, and §2 requires
+// async work to be started even down branches whose value is discarded - so
+// without this, a program could die with a `createfile` half-written. Waiting
+// costs nothing when there are no tasks, which is the usual case.
+eval_program :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, bool) {
+  val, ok := eval(interp, node, env)
+  if ok do val, ok = await_value(interp, val)
+  drain_async(interp)
+  return val, ok
+}
+
+// Waits for every registered task. Re-reads the length each time round
+// because a task being drained can still be spawning more, and joins outside
+// the registry lock so a task that spawns while we wait doesn't deadlock
+// against us.
+drain_async :: proc(interp: ^Interpreter) {
+  registry := interp.async_registry
+  if registry == nil do return
+
+  for i := 0; ; i += 1 {
+    sync.mutex_lock(&registry.mu)
+    finished := i >= len(registry.handles)
+    h: ^Async_Handle
+    if !finished do h = registry.handles[i]
+    sync.mutex_unlock(&registry.mu)
+    if finished do break
+
+    // Same lock/flag pair await_value uses, so a task the program already
+    // awaited normally is never joined twice.
+    sync.mutex_lock(&h.mu)
+    if !h.awaited {
+      task_join(h.task)
+      h.awaited = true
+    }
+    sync.mutex_unlock(&h.mu)
+  }
 }

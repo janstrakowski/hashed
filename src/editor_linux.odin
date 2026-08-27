@@ -693,8 +693,7 @@ compute_result_lines :: proc(ast: ^ast_t, src: string, current_path: string, cac
   interp := Interpreter{ast = ast, src = src, current_ctx = make_root_context(cache_dir)}
   setup_interp_base_dir(&interp, current_path)
   env := make_global_env()
-  val, ok := eval(&interp, ast.root, env)
-  if ok do val, ok = await_value(&interp, val) // resolve a bare top-level `async <expr>` (§2)
+  val, ok := eval_program(&interp, ast.root, env) // resolve a bare top-level `async <expr>` (§2)
   if !ok {
     append(&lines, fmt.aprintf("error: %s", interp.error_message))
     return lines
