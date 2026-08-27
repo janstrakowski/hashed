@@ -15,6 +15,14 @@ scripts/build_wasi.sh --threads                   # wasi-threads -> hb-threads.w
 scripts/wasi_smoke.sh ./hb ./hb.wasm wasmtime     # both targets agree
 ```
 
+**The playground carries two generated artifacts.** `docs/hb.wasm` is the
+interpreter Pages serves, and `docs/repo-files.json` is the repository as the
+terminal's filesystem - so *any* commit can make the manifest stale, and a
+change to `src/` makes the wasm stale. `.githooks/pre-commit` regenerates the
+manifest (enable it once with `git config core.hooksPath .githooks`); rebuild
+the wasm with `scripts/build_wasi.sh -out:docs/hb.wasm` when the interpreter
+changes. CI checks both.
+
 **Two targets.** Anything touching the filesystem goes through `fs.odin`
 (`fs_linux.odin` / `fs_wasi.odin`) and anything spawning a thread through
 `task.odin` (`task_linux.odin` / `task_wasi.odin`); nothing above them names a
