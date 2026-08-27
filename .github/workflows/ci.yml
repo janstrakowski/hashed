@@ -237,9 +237,8 @@ jobs:
             sudo apt-get update && sudo apt-get install -y $missing
           fi
 
-      # The native build is what the shim test compares the committed wasm
-      # against, example by example - that is the staleness check. Bytes can't
-      # be compared: Odin's wasm output is not reproducible run to run.
+      # The shim test compares the wasm against the native build, example by
+      # example - the two have to agree.
       - name: Build native hb
         run: odin build src -out:hb
 
@@ -249,10 +248,13 @@ jobs:
 
       - run: npm install
 
-      # The starting filesystem is the repository itself, so the manifest has
-      # to be regenerated whenever the repository changes.
-      - name: The repo manifest is current
-        run: node scripts/build_playground_files.mjs --check
+      # Both are generated, not committed - the same two commands the Pages
+      # workflow runs. Building them here is what makes the tests below test
+      # the artifacts the site will actually serve.
+      - name: Build the interpreter and the filesystem
+        run: |
+          scripts/build_wasi.sh --threads-web -out:docs/hb.wasm
+          node scripts/build_playground_files.mjs
 
       - name: WASI shim
         run: npm run test:shim

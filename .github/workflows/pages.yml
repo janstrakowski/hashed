@@ -1,0 +1,85 @@
+# Builds the site and deploys it, instead of serving files committed to the
+# repository.
+#
+# docs/hb.wasm and docs/repo-files.json are *generated* - the interpreter, and
+# the repository as the playground's filesystem. Committing them meant every
+# edit to any tracked file could leave one stale, so a documentation change
+# could not be a documentation change: it needed a second commit regenerating
+# a build artifact before CI would go green. Building them here removes that
+# entirely, and takes a 400KB binary out of the repository with it.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a queued run supersedes an older one rather than
+# racing it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ODIN_VERSION: dev-2026-08
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache Odin
+        id: cache-odin
+        uses: actions/cache@v6
+        with:
+          path: ~/odin
+          key: odin-linux-amd64-${{ env.ODIN_VERSION }}
+
+      - name: Install Odin ${{ env.ODIN_VERSION }}
+        if: steps.cache-odin.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/odin"
+          curl -fsSL "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/odin-linux-amd64-${ODIN_VERSION}.tar.gz" \
+            | tar xz -C "$HOME/odin" --strip-components=1
+
+      - name: Put Odin on PATH
+        run: echo "$HOME/odin" >> "$GITHUB_PATH"
+
+      - name: Ensure clang and wasm-ld are present
+        run: |
+          missing=""
+          command -v clang >/dev/null || missing="$missing clang"
+          command -v wasm-ld >/dev/null || missing="$missing lld"
+          if [ -n "$missing" ]; then
+            sudo apt-get update && sudo apt-get install -y $missing
+          fi
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      # The threaded flavour: it imports its memory, which is what lets every
+      # spawned thread share one heap (see LANGUAGE.md).
+      - name: Build the interpreter and the filesystem
+        run: |
+          scripts/build_wasi.sh --threads-web -out:docs/hb.wasm
+          node scripts/build_playground_files.mjs
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
