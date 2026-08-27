@@ -233,6 +233,55 @@ try {
   await page.waitForFunction(() => !document.body.classList.contains("tui"), { timeout: WAIT });
   check("quitting returns to the shell", await screenText(), (t) => t.includes("left the editor"));
 
+  // --- a filesystem from an older visit ---------------------------------------
+  //
+  // The reported symptom was an examples picker listing nothing: a snapshot
+  // stored before the repository became the filesystem, restored forever after
+  // because nothing ever re-seeded it. Here that state is planted deliberately.
+  await page.evaluate(async () => {
+    const db = await new Promise((resolve, reject) => {
+      const req = indexedDB.open("hashedbuild-playground", 1);
+      req.onupgradeneeded = () => req.result.createObjectStore("state");
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    const current = await new Promise((resolve) => {
+      const req = db.transaction("state", "readonly").objectStore("state").get("state");
+      req.onsuccess = () => resolve(req.result);
+    });
+    // An old seed: no examples at all, one file of the visitor's own, and a
+    // version that no longer matches the manifest.
+    const stale = {
+      ...current,
+      seedVersion: "from-an-older-visit",
+      files: {
+        "tour.hb": { type: "file", data: [...new TextEncoder().encode("1 + 1\n")] },
+        "mine.hb": { type: "file", data: [...new TextEncoder().encode("42\n")] },
+      },
+    };
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("state", "readwrite");
+      tx.objectStore("state").put(stale, "state");
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  });
+
+  await page.reload({ waitUntil: "networkidle0" });
+  await booted();
+  check("a stale filesystem is refreshed", await screenText(),
+    (t) => t.includes("repository was updated"));
+  await type("ls examples");
+  check("the examples are back", await screenText(), (t) => t.includes("/examples/guard-chain.hb"));
+  await type("cat mine.hb");
+  check("a file of the visitor's own survives the refresh", await screenText(), (t) => t.includes("42"));
+
+  // And with nothing stale, a restore says nothing about updating.
+  await page.reload({ waitUntil: "networkidle0" });
+  await booted();
+  check("an up-to-date filesystem is left alone", await screenText(),
+    (t) => t.includes("Restored your files from this browser.") && !t.split("Restored your files from this browser.")[1].includes("repository was updated"));
+
   // The service-worker route to isolation, on its own: this is how the page
   // gets there on GitHub Pages, which cannot set headers. A separate browser
   // context so it starts without the service worker already installed.
