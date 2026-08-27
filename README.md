@@ -27,18 +27,19 @@ A real parser and tree-walking evaluator exist now (`src/`, with a full test sui
 ```hashedbuild
 // examples/option-picker.hb - reads choice.txt (relative to this file, not
 // to wherever `hb` was invoked from), then branches on its exact content.
-// "option A" writes output.txt starting with "Option A:" followed by
+// "option A" writes an entry starting with "Option A:" followed by
 // optiona.txt's content; "option B" does the analogous thing with
-// optionb.txt; anything else is an unrecoverable runtime error.
+// optionb.txt; anything else is an unrecoverable runtime error. The result
+// goes into ctx.cache, which names it by its own content hash.
 loadfile "choice.txt" |> filetext as choice
   choice == "option A" then
     createfile {
-      .path = "output.txt",
+      .dir = ctx.cache,
       .content = "Option A:\n" concat filetext (loadfile "optiona.txt"),
     }
   else choice == "option B" then
     createfile {
-      .path = "output.txt",
+      .dir = ctx.cache,
       .content = "Option B:\n" concat filetext (loadfile "optionb.txt"),
     }
   else
@@ -47,7 +48,7 @@ loadfile "choice.txt" |> filetext as choice
 
 Run it with `./hb examples/option-picker.hb` (from anywhere - its paths resolve relative to the script itself, not your shell's current directory), or explore it live with `./hb -i` - a two-to-four-pane terminal editor with a built-in examples picker, a live AST view, and a step-by-step evaluation trace. This one example touches a few of the language's actual design points: files are ordinary values (`loadfile`/`createfile`), branching is built from general composable operators rather than bespoke syntax (`then`/`else` chains into an if/else-if/else), and `error` is a genuinely unrecoverable failure - unlike a failed `then`, no enclosing `else` catches it.
 
-See `SPEC.md` for the full, evolving language design, and `examples/` for more (pipe chaining, sequence-pattern destructuring, variants, optional values, `async`). For a closer look at the debugger itself - stepping through every example one node at a time, including concurrent `async` tasks in lockstep - see the [interactive playback](https://janstrakowski.github.io/hashedbuild/debugger-playback.html) ([source](docs/debugger-playback.html)).
+**[LANGUAGE.md](LANGUAGE.md)** is the tour of everything that works today, feature by feature, with a runnable snippet for each and an explicit list of what isn't built yet. **[examples/](examples/)** has a runnable file per feature - all of them executed by the test suite, so they can't drift from the implementation. `SPEC.md` is the full design, including the parts that don't run yet. For a closer look at the debugger itself - stepping through every example one node at a time, including concurrent `async` tasks in lockstep - see the [interactive playback](https://janstrakowski.github.io/hashedbuild/debugger-playback.html) ([source](docs/debugger-playback.html)).
 
 # Examples
 

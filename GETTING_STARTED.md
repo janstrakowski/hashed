@@ -25,10 +25,12 @@ You should see an AST dump followed by `121`.
 ## The ways to run something
 
 - **`./hb path/to/program.hb`** - run a file for real, print its result.
+- **`./hb -e '<expression>'`** - evaluate one expression and exit, like a single REPL submission. Handy for trying anything on this page without opening a file: `./hb -e '{ .a = 1 } concat { .b = 2 }'`.
 - **`./hb`** (no arguments) - a line-based REPL. Type an expression, then an empty line to evaluate it; `:q` to quit.
-- **`./hb -a path/to/program.hb`** - print the full AST before evaluating.
+- **`./hb -a path/to/program.hb`** - print the full AST before evaluating. Works with `-e` too.
 - **`./hb -i`** - the live terminal editor (needs a real terminal, not a pipe).
 - **`./hb --cache-dir <path> ...`** - override where `ctx.cache` writes to (defaults to your XDG cache dir).
+- **`./hb --help`**, **`./hb --version`** - usage and version.
 
 ## Try each part of the video
 
@@ -84,6 +86,7 @@ Still in `./hb -i`: start typing an expression in the Source pane and watch the 
 
 ## Where to go next
 
-- **`SPEC.md`** - the full, evolving language design.
-- **`examples/`** - every example mentioned above, plus pattern matching, variants, and optional values.
+- **[LANGUAGE.md](LANGUAGE.md)** - every feature that works today, with runnable snippets: values, operators, Tables, functions, pattern matching, failure, files, permissions, concurrency - and an explicit list of what isn't built yet.
+- **[examples/](examples/)** - a runnable file per feature, indexed in [examples/README.md](examples/README.md). The test suite runs all of them.
+- **`SPEC.md`** - the full, evolving language design, including the parts that don't run yet.
 - **[Interactive debugger playback](https://janstrakowski.github.io/hashedbuild/debugger-playback.html)** - every example, stepped through the debugger, without installing anything.

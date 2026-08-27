@@ -26,6 +26,19 @@ derives the checkout location from `#directory` at compile time, because CI
 checks out somewhere else and `odin test` promises no particular working
 directory.
 
+## Docs and examples
+
+`main` is public, so the docs on it describe what **runs**, not what `SPEC.md`
+plans. `LANGUAGE.md` is the feature-by-feature tour and carries an explicit
+"what isn't built yet" section; keeping that section honest is part of
+implementing a feature, as is adding the example that demonstrates it.
+
+Every `examples/*.hb` is executed by the suite and asserted against the value
+its own header comment documents — `test_every_example_is_covered_by_a_test`
+fails if a new example lands without an assertion. Code quoted in `README.md`
+is compared against the example it claims to be (`docs_test.odin`), because it
+drifted once already.
+
 ## Git workflow
 
 `main` holds only working features. Its history is linear (no merge commits,
