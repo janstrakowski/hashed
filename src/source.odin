@@ -2,11 +2,11 @@ package hashedbuild
 
 import "core:path/filepath"
 
-// Whether this build includes the terminal UI - the live editor and the
-// debugger's raw-mode TTY driving (editor_linux.odin, term_linux.odin). A
-// WASI build has no terminal to take over, so `-i` reports that rather than
-// pretending; everything else about the interpreter is the same on both.
-TUI_AVAILABLE :: ODIN_OS == .Linux
+// Whether this build includes the terminal UI - the live editor and its
+// debugger (editor.odin, term_*.odin). Both targets have one now: a real
+// terminal on Linux, a browser tab running xterm.js on WASI. Other targets
+// (freestanding wasm, say) have no terminal at all, and `-i` says so.
+TUI_AVAILABLE :: ODIN_OS == .Linux || ODIN_OS == .WASI
 
 source_t :: struct {
   name: string,

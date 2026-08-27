@@ -1,5 +1,6 @@
 package hashedbuild
 
+import "core:os"
 import "core:strings"
 import "core:sys/linux"
 
@@ -152,4 +153,18 @@ fs_make_dirs :: proc(path: string) -> Fs_Error {
     linux.mkdir(prefix, {.IRUSR, .IWUSR, .IXUSR})
   }
   return .None
+}
+
+// Listing goes through core:os here, which is a perfectly good directory
+// reader on a platform that has a working directory. (WASI does not, which is
+// why fs_wasi.odin implements this against the preopen table instead.)
+fs_list_dir :: proc(path: string, allocator := context.allocator) -> ([]Fs_Entry, Fs_Error) {
+  infos, err := os.read_all_directory_by_path(path, context.temp_allocator)
+  if err != nil do return nil, .Not_Found
+
+  entries := make([dynamic]Fs_Entry, 0, len(infos), allocator)
+  for info in infos {
+    append(&entries, Fs_Entry{name = strings.clone(info.name, allocator), is_dir = info.type == .Directory})
+  }
+  return entries[:], .None
 }

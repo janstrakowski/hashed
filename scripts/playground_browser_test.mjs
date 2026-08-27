@@ -6,13 +6,18 @@
 // Usage: node scripts/playground_browser_test.mjs [chrome-path]
 // Needs puppeteer-core installed and a Chrome/Chromium binary.
 
-import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, extname } from "node:path";
 import puppeteer from "puppeteer-core";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CHROME = process.argv[2] ?? process.env.CHROME_PATH ?? "/usr/bin/chromium";
+// Generous on purpose: a boot fetches a ~500KB interpreter and a ~550KB
+// manifest, instantiates the module, and may reload once for cross-origin
+// isolation - on a throttled CI runner that adds up well past a default wait.
+const WAIT = Number(process.env.WAIT_MS ?? 60000);
 const PORT = 8899;
 
 let failures = 0;
@@ -26,10 +31,41 @@ const check = (name, actual, expected) => {
   }
 };
 
-const server = spawn("python3", ["-m", "http.server", String(PORT)], {
-  cwd: join(repo, "docs"), stdio: "ignore",
-});
-await new Promise((r) => setTimeout(r, 1200));
+// Two servers, because the page can get cross-origin isolation two ways and
+// both are worth knowing about:
+//
+//   isolated  sends COOP/COEP itself, the way a host that can set headers
+//             would. Deterministic, and what the bulk of the test runs on.
+//   plain     sends nothing, so isolation has to come from
+//             coi-serviceworker - which is the GitHub Pages situation, and is
+//             checked on its own below rather than underneath every assertion.
+const TYPES = {
+  ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
+  ".json": "application/json", ".wasm": "application/wasm",
+};
+
+function serve(port, isolated) {
+  const server = createServer(async (req, res) => {
+    const path = join(repo, "docs", decodeURIComponent(req.url.split("?")[0]));
+    try {
+      const body = await readFile(path);
+      const headers = { "Content-Type": TYPES[extname(path)] ?? "application/octet-stream" };
+      if (isolated) {
+        headers["Cross-Origin-Opener-Policy"] = "same-origin";
+        headers["Cross-Origin-Embedder-Policy"] = "require-corp";
+        headers["Cross-Origin-Resource-Policy"] = "cross-origin";
+      }
+      res.writeHead(200, headers).end(body);
+    } catch {
+      res.writeHead(404).end("not found");
+    }
+  });
+  server.listen(port);
+  return server;
+}
+
+const server = serve(PORT, true);
+const plainServer = serve(PORT + 1, false);
 
 const browser = await puppeteer.launch({
   executablePath: CHROME,
@@ -54,10 +90,13 @@ try {
   // growing is not that signal - it grows the moment the command is echoed,
   // before it runs. The prompt being enabled again is.
   const type = async (line) => {
-    await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: 20000 });
+    await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: WAIT });
+    // Start from an empty line: an earlier history recall can leave text in
+    // the field, and typing onto the end of it makes a different command.
+    await page.$eval("#entry", (el) => { el.value = ""; });
     await page.type("#entry", line);
     await page.keyboard.press("Enter");
-    await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: 20000 });
+    await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: WAIT });
   };
 
   // The last boot line differs between a fresh visit and a restored one, so
@@ -66,7 +105,7 @@ try {
     await page.waitForFunction(() => {
       const text = document.getElementById("screen").textContent;
       return text.includes("Type `help`") || text.includes("Restored your files");
-    }, { timeout: 20000 });
+    }, { timeout: WAIT });
   };
 
   await page.goto(url, { waitUntil: "networkidle0" });
@@ -133,10 +172,69 @@ try {
   check("up-arrow recalls the last command",
     await page.$eval("#entry", (el) => el.value), (v) => v.includes("createfile"));
 
+  // --- the live editor, in a real terminal emulator -------------------------
+  //
+  // `hb -i` is a full-screen TUI: raw keystrokes in, ANSI out, xterm.js
+  // rendering it. Nothing else on this page needs an emulator, and until this
+  // landed the WASI build refused -i outright.
+  const tuiRows = async () => page.evaluate(() => {
+    const rows = document.querySelector("#tui .xterm-rows");
+    return rows ? [...rows.children].map((r) => r.textContent.replace(/\s+$/, "")).join("\n") : "";
+  });
+  const settle = (ms = 1500) => new Promise((r) => setTimeout(r, ms));
+
+  await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: WAIT });
+  await page.$eval("#entry", (el) => { el.value = ""; });
+  await page.type("#entry", "hb -i");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.body.classList.contains("tui"), { timeout: WAIT });
+  await settle(3500);
+  check("the editor draws itself", await tuiRows(), (t) => t.includes("HashedBuild live parser"));
+  check("its panes are there", await tuiRows(), (t) => t.includes("source") && t.includes("ast") && t.includes("result"));
+
+  // Typing goes straight to the program, which re-parses on every keystroke.
+  for (const ch of "5 |> (*2 + 1)") await page.keyboard.press(ch === " " ? "Space" : ch);
+  await settle(2000);
+  check("keystrokes reach the editor", await tuiRows(), (t) => t.includes("5 |> (*2 + 1)"));
+  check("it parses and evaluates live", await tuiRows(), (t) => t.includes("Op_Pipe") && t.includes("11"));
+
+  // Ctrl+E opens the examples picker, which lists a real directory - the one
+  // piece of this that needed fd_readdir.
+  await page.keyboard.down("Control"); await page.keyboard.press("KeyE"); await page.keyboard.up("Control");
+  await settle();
+  check("the examples picker lists the repo", await tuiRows(),
+    (t) => t.includes("select an example") && t.includes("guard-chain.hb"));
+  await page.keyboard.type("guard");
+  await settle(800);
+  await page.keyboard.press("Enter");
+  await settle(2500);
+  check("an example loads and evaluates", await tuiRows(),
+    (t) => t.includes("guard-chain") || t.includes("canonical guard"));
+
+  // Ctrl+Q leaves the editor and hands the shell back.
+  await page.keyboard.down("Control"); await page.keyboard.press("KeyQ"); await page.keyboard.up("Control");
+  await page.waitForFunction(() => !document.body.classList.contains("tui"), { timeout: WAIT });
+  check("quitting returns to the shell", await screenText(), (t) => t.includes("left the editor"));
+
+  // The service-worker route to isolation, on its own: this is how the page
+  // gets there on GitHub Pages, which cannot set headers. A separate browser
+  // context so it starts without the service worker already installed.
+  const swContext = await browser.createBrowserContext();
+  const swPage = await swContext.newPage();
+  await swPage.goto(`http://localhost:${PORT + 1}/playground.html`, { waitUntil: "networkidle0" });
+  let isolatedViaWorker = false;
+  for (let i = 0; i < 30 && !isolatedViaWorker; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    isolatedViaWorker = await swPage.evaluate(() => self.crossOriginIsolated).catch(() => false);
+  }
+  check("coi-serviceworker reaches isolation without header support", isolatedViaWorker, true);
+  await swContext.close();
+
   check("no page errors", problems.join(" | "), "");
 } finally {
   await browser.close();
-  server.kill();
+  server.close();
+  plainServer.close();
 }
 
 console.log(failures === 0 ? "\nall terminal checks passed" : `\n${failures} terminal checks failed`);

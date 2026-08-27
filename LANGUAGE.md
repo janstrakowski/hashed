@@ -342,12 +342,17 @@ into — and that in turn needs cross-origin isolation, which a service worker
 supplies since GitHub Pages cannot set the headers itself. Ctrl+D sends
 end-of-input.
 
+`hb -i` opens the **live editor** in there too: the same two-to-four-pane TUI as
+on a real terminal, re-parsing and re-evaluating on every keystroke, with the
+examples picker (Ctrl+E) listing the repository. It draws ANSI into xterm.js,
+which the page loads only when you ask for it. Its debugger panel is the one
+thing missing — a paused run needs a thread, and this is the portable build, so
+it says so rather than pretending. `async` refuses there for the same reason.
+
 Anything a program writes stays in your browser's IndexedDB: `createfile` lands
 in the filesystem, `ctx.cache` writes to `/cache/hashedbuild`, and both survive
 a reload. No server, nothing sent anywhere, and clearing site data is the
-uninstall. It is the portable build, so `async` refuses there, and `hb -i` — the
-live editor — is a terminal UI compiled only for Linux, so it reports that
-rather than running.
+uninstall.
 
 The page is `docs/playground.html`, the worker `docs/terminal-worker.js`, and
 the WASI host under both is `docs/wasi.js`, implementing the 21 preview1 calls

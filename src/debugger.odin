@@ -27,7 +27,7 @@ Debugger_Run :: struct {
   ast:    ast_t,
   src:    string, // owned - also every task's source buffer
   interp: Interpreter, // the main/root task
-  th:     ^thread.Thread, // the main/root task's thread
+  task:   Task, // the main/root task's thread (task.odin)
 
   // Everything below is touched by every task's thread plus whichever thread
   // renders the panel - guarded by `mu`, except `step_generation`'s reads
@@ -165,8 +165,8 @@ mark_awaiting :: proc(dbg: ^Debugger_Run, node: Node_Idx, awaiting: bool) {
 }
 
 @(private = "file")
-debugger_thread_proc :: proc(t: ^thread.Thread) {
-  dbg := cast(^Debugger_Run)t.data
+debugger_thread_proc :: proc(data: rawptr) {
+  dbg := (^Debugger_Run)(data)
   env := make_global_env()
   val, ok := eval(&dbg.interp, dbg.ast.root, env)
   // A program whose top-level result is itself `async <expr>` (or ends in
@@ -205,9 +205,19 @@ start_debugger_run :: proc(src_owned: string, current_path: string, cache_dir: s
   }
   setup_interp_base_dir(&dbg.interp, current_path)
 
-  dbg.th = thread.create(debugger_thread_proc)
-  dbg.th.data = dbg
-  thread.start(dbg.th)
+  // The run evaluates on its own thread so the panel can render while it sits
+  // paused mid-expression. A target without threads (the portable WASI build -
+  // see task.odin) therefore has no debugger at all: report that by returning
+  // nil, the same as an unparseable buffer, rather than trapping inside the
+  // runtime.
+  spawned: bool
+  dbg.task, spawned = task_spawn(debugger_thread_proc, dbg)
+  if !spawned {
+    ast_destroy(&dbg.ast)
+    delete(dbg.src)
+    free(dbg)
+    return nil
+  }
   sync.sema_wait(&dbg.ready_sema) // block until the first node's pending state is actually visible
   return dbg
 }
@@ -222,8 +232,7 @@ stop_debugger_run :: proc(dbg: ^Debugger_Run) {
   dbg.stop = true
   sync.mutex_unlock(&dbg.mu)
   sync.cond_broadcast(&dbg.cond) // wake every task paused in cond_wait, not just one
-  thread.join(dbg.th)
-  thread.destroy(dbg.th)
+  task_join(dbg.task)
 
   // Join every async task this run ever spawned. A task that was mid-flight
   // (between waking up and reaching its own next pause point, or about to

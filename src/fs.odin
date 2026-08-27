@@ -40,6 +40,14 @@ FS_INVALID_FD :: Fs_Fd(-1)
 //   fs_symlink_at           create a symlink; fs_readlink_at reads its target
 //   fs_open_dir_path        open a directory by path - ctx.cache only (§9)
 //   fs_make_dirs            mkdir -p by path - ctx.cache only (§9)
+//   fs_list_dir             names in a directory - the editor's file pickers
+
+// One entry of a directory listing. Deliberately minimal: the editor wants
+// names, and whether to descend.
+Fs_Entry :: struct {
+  name:   string,
+  is_dir: bool,
+}
 
 // What went wrong, in terms both targets can express. Deliberately coarse:
 // these become the parenthesised detail in a §16 failure message, where the

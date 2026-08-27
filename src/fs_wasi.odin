@@ -267,3 +267,42 @@ fs_make_dirs :: proc(path: string) -> Fs_Error {
   }
   return .None
 }
+
+// preview1's fd_readdir: entries come back packed as a 24-byte header (next
+// cookie, inode, name length, filetype) followed by the raw name, and the
+// caller keeps asking until a pass returns less than it asked for.
+fs_list_dir :: proc(path: string, allocator := context.allocator) -> ([]Fs_Entry, Fs_Error) {
+  dir, err := fs_open_dir_path(path)
+  if err != .None do return nil, err
+  defer fs_close(dir)
+
+  entries := make([dynamic]Fs_Entry, 0, 16, allocator)
+  buf := make([]u8, 4096, context.temp_allocator)
+  cookie := wasi.dircookie_t(0)
+
+  for {
+    used, read_err := wasi.fd_readdir(wasi.fd_t(dir), buf, cookie)
+    if read_err != .SUCCESS do return entries[:], to_fs_error(read_err)
+    if used == 0 do break
+
+    offset := 0
+    for offset + size_of(wasi.dirent_t) <= int(used) {
+      dirent := (^wasi.dirent_t)(raw_data(buf[offset:]))^
+      name_start := offset + size_of(wasi.dirent_t)
+      name_end := name_start + int(dirent.d_namlen)
+      if name_end > int(used) do break // a name split across reads: ask again from d_next
+
+      name := string(buf[name_start:name_end])
+      if name != "." && name != ".." {
+        append(&entries, Fs_Entry{
+          name = strings.clone(name, allocator),
+          is_dir = dirent.d_type == .DIRECTORY,
+        })
+      }
+      cookie = dirent.d_next
+      offset = name_end
+    }
+    if int(used) < len(buf) do break
+  }
+  return entries[:], .None
+}

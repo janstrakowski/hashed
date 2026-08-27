@@ -254,5 +254,7 @@ jobs:
       # real input race through in the first place.
       - name: The page itself
         env:
-          THROTTLE: 4
+          # Enough to expose input races (it caught one), without making every
+          # module instantiation a test of the timeouts.
+          THROTTLE: 2
         run: npm run test:browser -- "$(command -v google-chrome || command -v chromium-browser || command -v chromium)"
