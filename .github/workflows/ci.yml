@@ -242,6 +242,11 @@ jobs:
 
       - run: npm install
 
+      # The starting filesystem is the repository itself, so the manifest has
+      # to be regenerated whenever the repository changes.
+      - name: The repo manifest is current
+        run: node scripts/build_playground_files.mjs --check
+
       - name: WASI shim
         run: npm run test:shim
 

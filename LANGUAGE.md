@@ -323,27 +323,35 @@ against native; CI does it for both flavours on every push.
 ## In a browser
 
 [**The terminal**](https://janstrakowski.github.io/hashedbuild/playground.html)
-is this same CLI, compiled to WebAssembly and running in your own tab:
+is this CLI, compiled to WebAssembly and running in your own tab, with the
+repository as its filesystem — the same files you would have after cloning:
 
 ```
-$ hb tour.hb            run a program
-$ hb -e '1 + 2 * 3'     evaluate an expression
-$ hb                    the REPL - an expression, then a blank line
-$ ls / cat / reset      look around
+$ ls                          the repo: src/, examples/, SPEC.md, …
+$ cat examples/guard-chain.hb
+$ hb examples/guard-chain.hb  run it
+$ hb -e '1 + 2 * 3'           evaluate an expression
+$ hb                          the REPL, reading what you type
 ```
 
-Files written with `createfile` persist between visits, in your browser's
-IndexedDB — no server, nothing sent anywhere, and clearing site data is the
-uninstall. It is the portable build, so `async` refuses there.
+`hb` there is the interpreter's **real** REPL loop, blocking on stdin: the
+banner, the `hb> ` and `... ` prompts and `:q` come out of the module, not out
+of the page. That works because the interpreter runs in a Web Worker, which can
+block without freezing the tab, reading a `SharedArrayBuffer` the page writes
+into — and that in turn needs cross-origin isolation, which a service worker
+supplies since GitHub Pages cannot set the headers itself. Ctrl+D sends
+end-of-input.
 
-Bare `hb` deserves a note: the real REPL loop reads stdin, which a wasm module
-cannot block on in a browser. It doesn't have to — that loop evaluates every
-submission with a *fresh* interpreter and environment, so the page runs one
-instance per submission and the behaviour is identical, prompts and all.
+Anything a program writes stays in your browser's IndexedDB: `createfile` lands
+in the filesystem, `ctx.cache` writes to `/cache/hashedbuild`, and both survive
+a reload. No server, nothing sent anywhere, and clearing site data is the
+uninstall. It is the portable build, so `async` refuses there, and `hb -i` — the
+live editor — is a terminal UI compiled only for Linux, so it reports that
+rather than running.
 
-The page is `docs/playground.html`; the WASI host under it is `docs/wasi.js`,
-about 400 lines implementing the 21 preview1 calls the interpreter actually
-imports.
+The page is `docs/playground.html`, the worker `docs/terminal-worker.js`, and
+the WASI host under both is `docs/wasi.js`, implementing the 21 preview1 calls
+the interpreter actually imports.
 
 ## Where to go next
 

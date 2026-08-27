@@ -123,9 +123,18 @@ class Descriptor {
 export class WASI {
   // `args` becomes argv, so args[0] is the program name and args[1..] are what
   // `hb` parses (a file to run, or -e '<expr>').
-  constructor({ fs, args = ["hb"], onStdout = () => {}, onStderr = () => {} }) {
+  // `env` becomes the process environment - which is how ctx.cache is aimed:
+  // resolve_cache_dir (builtins_fs.odin) reads XDG_CACHE_HOME, so setting it
+  // puts the content-addressed store somewhere the visitor can `ls`.
+  // `stdin` is an optional reader: a function returning bytes, or null at EOF.
+  // Without one, reading stdin is end-of-file, which is what a program run
+  // non-interactively should see.
+  constructor({ fs, args = ["hb"], env = {}, stdin = null,
+                onStdout = () => {}, onStderr = () => {} }) {
     this.fs = fs;
     this.args = args;
+    this.env = env;
+    this.stdin = stdin;
     this.onStdout = onStdout;
     this.onStderr = onStderr;
     this.exitCode = null;
@@ -213,12 +222,20 @@ export class WASI {
       },
 
       environ_sizes_get(countPtr, sizePtr) {
-        self.view.setUint32(countPtr, 0, true);
-        self.view.setUint32(sizePtr, 0, true);
+        const pairs = Object.entries(self.env).map(([k, v]) => `${k}=${v}`);
+        self.view.setUint32(countPtr, pairs.length, true);
+        self.view.setUint32(sizePtr, pairs.reduce((n, p) => n + enc.encode(p).length + 1, 0), true);
         return ERRNO.SUCCESS;
       },
 
-      environ_get() {
+      environ_get(environPtr, bufPtr) {
+        let ptr = bufPtr;
+        Object.entries(self.env).forEach(([key, value], i) => {
+          self.view.setUint32(environPtr + i * 4, ptr, true);
+          const encoded = enc.encode(`${key}=${value}\0`);
+          self.bytes.set(encoded, ptr);
+          ptr += encoded.length;
+        });
         return ERRNO.SUCCESS;
       },
 
@@ -266,6 +283,18 @@ export class WASI {
       },
 
       fd_read(fd, iovsPtr, iovsLen, readPtr) {
+        if (fd === 0) {
+          // The interpreter's REPL reads stdin in a loop, so this call has to
+          // be able to *wait* - the reader supplied by the terminal blocks on
+          // a SharedArrayBuffer until the user has typed something. A null
+          // reader, or a null result, is EOF, which ends that loop cleanly.
+          const wanted = self.view.getUint32(iovsPtr + 4, true);
+          const chunk = self.stdin ? self.stdin(wanted) : null;
+          const written = chunk ? chunk.length : 0;
+          if (written > 0) self.bytes.set(chunk, self.view.getUint32(iovsPtr, true));
+          self.view.setUint32(readPtr, written, true);
+          return ERRNO.SUCCESS;
+        }
         const d = self.fds.get(fd);
         if (!d || d.node?.type !== "file") return ERRNO.BADF;
         let read = 0;
@@ -445,8 +474,8 @@ export class ExitSignal extends Error {
 // Instantiates a fresh module per run. Fresh on purpose: hb is a WASI
 // *command* - the host calls _start once and the program ends - so reusing an
 // instance would restart a program whose globals and heap are already spent.
-export async function run({ wasmBytes, fs, args, onStdout, onStderr }) {
-  const wasi = new WASI({ fs, args, onStdout, onStderr });
+export async function run({ wasmBytes, fs, args, env, stdin, onStdout, onStderr }) {
+  const wasi = new WASI({ fs, args, env, stdin, onStdout, onStderr });
   const { instance } = await WebAssembly.instantiate(wasmBytes, {
     wasi_snapshot_preview1: wasi.imports(),
   });
