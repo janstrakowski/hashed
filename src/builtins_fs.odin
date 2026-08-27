@@ -6,7 +6,6 @@ import "core:fmt"
 import "core:os"
 import "core:slice"
 import "core:strings"
-import "core:sys/linux"
 import "core:unicode/utf8"
 
 // SPEC.md §16: loadfile/createfile/symlink/readlink. Not syntax - ordinary
@@ -92,9 +91,9 @@ ctx_allows_io :: proc(interp: ^Interpreter) -> bool {
 // resolve relative paths against - the running source file's own directory
 // if one was set up (see Interpreter.base_dir_fd), else the process's cwd.
 @(private = "file")
-unsandboxed_dir_fd :: proc(interp: ^Interpreter) -> linux.Fd {
+unsandboxed_dir_fd :: proc(interp: ^Interpreter) -> Fs_Fd {
   if interp.has_base_dir do return interp.base_dir_fd
-  return linux.AT_FDCWD
+  return fs_cwd_dir()
 }
 
 // ---- path containment -----------------------------------------------------------
@@ -109,9 +108,9 @@ unsandboxed_dir_fd :: proc(interp: ^Interpreter) -> linux.Fd {
 // component can't itself smuggle a "..", since any "/" in it would mean the
 // split below was wrong, not that this single name escapes anything.
 @(private = "file")
-resolve_parent_beneath :: proc(base_fd: linux.Fd, sub_path: string) -> (parent_fd: linux.Fd, basename: string, errno: linux.Errno) {
+resolve_parent_beneath :: proc(base_fd: Fs_Fd, sub_path: string) -> (parent_fd: Fs_Fd, basename: string, err: Fs_Error) {
   if len(sub_path) == 0 || sub_path[0] == '/' {
-    return {}, "", .EACCES
+    return FS_INVALID_FD, "", .Access
   }
 
   cur_fd := base_fd
@@ -120,38 +119,42 @@ resolve_parent_beneath :: proc(base_fd: linux.Fd, sub_path: string) -> (parent_f
     slash := strings.index_byte(remaining, '/')
     if slash < 0 {
       if remaining == "" || remaining == ".." {
-        if cur_fd != base_fd do linux.close(cur_fd)
-        return {}, "", .EACCES
+        if cur_fd != base_fd do fs_close(cur_fd)
+        return FS_INVALID_FD, "", .Access
       }
-      return cur_fd, remaining, .NONE
+      return cur_fd, remaining, .None
     }
 
     component := remaining[:slash]
     remaining = remaining[slash + 1:]
     if component == "" || component == ".." {
-      if cur_fd != base_fd do linux.close(cur_fd)
-      return {}, "", .EACCES
+      if cur_fd != base_fd do fs_close(cur_fd)
+      return FS_INVALID_FD, "", .Access
     }
     if component == "." do continue // stays at the same fd
 
-    cpath := strings.clone_to_cstring(component, context.temp_allocator)
-    next_fd, open_errno := linux.openat(cur_fd, cpath, {.DIRECTORY, .NOFOLLOW})
-    if cur_fd != base_fd do linux.close(cur_fd)
-    if open_errno != .NONE do return {}, "", open_errno
+    next_fd, open_err := fs_open_dir_at(cur_fd, component, true)
+    if cur_fd != base_fd do fs_close(cur_fd)
+    if open_err != .None do return FS_INVALID_FD, "", open_err
     cur_fd = next_fd
   }
 }
 
 @(private = "file")
 Resolved_Path :: struct {
-  fd:          linux.Fd,
+  fd:          Fs_Fd,
   basename:    string,
   needs_close: bool, // true iff `fd` was freshly opened by resolve_parent_beneath, not just the caller's own dir handle
+  // The directory this resolved against, as a path - the handle's own
+  // display path, or the base directory for an unsandboxed call. The File
+  // this produces displays `display_dir` joined with the sub-path the caller
+  // asked for (§3), which is why it travels alongside the descriptor.
+  display_dir: string,
 }
 
 @(private = "file")
 close_resolved :: proc(r: Resolved_Path) {
-  if r.needs_close do linux.close(r.fd)
+  if r.needs_close do fs_close(r.fd)
 }
 
 // Resolves an optional `.dir` + required `.path` pair out of a builtin's
@@ -164,75 +167,133 @@ resolve_target :: proc(interp: ^Interpreter, t: ^Table_Value, path_str: string, 
   dir_val, has_dir := table_find(t, "dir")
   if !has_dir {
     if dir_required do return {}, "requires a .dir directory handle", false
-    return Resolved_Path{fd = unsandboxed_dir_fd(interp), basename = path_str}, "", true
+    return Resolved_Path{fd = unsandboxed_dir_fd(interp), basename = path_str, display_dir = unsandboxed_dir_path(interp)}, "", true
   }
   dir_file, dir_ok := dir_val.(^File_Value)
   if !dir_ok || dir_file.kind != .Directory {
     return {}, ".dir must be a directory File", false
   }
   parent_fd, basename, rerr := resolve_parent_beneath(dir_file.dir_fd, path_str)
-  if rerr != .NONE {
+  if rerr != .None {
     return {}, fmt.tprintf("path escapes its directory or doesn't exist (%v)", rerr), false
   }
-  return Resolved_Path{fd = parent_fd, basename = basename, needs_close = parent_fd != dir_file.dir_fd}, "", true
+  return Resolved_Path{
+    fd = parent_fd, basename = basename,
+    needs_close = parent_fd != dir_file.dir_fd,
+    display_dir = dir_file.display_path,
+  }, "", true
 }
 
-// ---- display path (§3) -------------------------------------------------------------
+// ---- display paths (§3) -------------------------------------------------------
 
-// The absolute path an open fd currently refers to, asked of the kernel via
-// /proc/self/fd/<n>. Every File carries one for display (SPEC.md §3): the
-// path a call site writes is relative to the process's cwd, the running
-// source file's directory, or a contained .dir handle, so only the kernel
-// knows the whole of it. Falls back to the call site's own spelling if /proc
-// isn't there to ask.
+// A File shows the path it was reached by (SPEC.md §3), so that path is built
+// as the value is - joined from the directory handle it came through, or from
+// the base directory for an unsandboxed call - and stored in the File_Value.
+//
+// It used to be read back off the kernel via /proc/self/fd, which was tidier
+// (it resolved symlinks and normalised on its own) but doesn't port: WASI has
+// no way at all to turn a descriptor back into a path, and nothing in the
+// *at() family offers one either. Constructing the path costs a lexical
+// cleanup below and gives the same answer for every path a program can
+// actually write, absolute and free of "." and ".." segments.
+
+// The directory an unsandboxed loadfile/createfile resolves against, as a
+// path (see Interpreter.base_dir_path): the running source file's own
+// directory, or the process's cwd when there isn't one.
 @(private = "file")
-display_path_for :: proc(fd: linux.Fd, fallback: string) -> string {
-  link := strings.clone_to_cstring(fmt.tprintf("/proc/self/fd/%d", fd), context.temp_allocator)
-  buf := make([]u8, 4096, context.temp_allocator)
-  n, errno := linux.readlinkat(linux.AT_FDCWD, link, buf)
-  if errno != .NONE || n <= 0 do return strings.clone(fallback)
-  return strings.clone(string(buf[:n]))
+unsandboxed_dir_path :: proc(interp: ^Interpreter) -> string {
+  if interp.has_base_dir && interp.base_dir_path != "" do return interp.base_dir_path
+  cwd, err := os.get_working_directory(context.temp_allocator)
+  if err != nil do return "" // no cwd to speak of: fall back to the path as written
+  return cwd
+}
+
+// Joins `name` onto `dir` and cleans the result lexically: an absolute name
+// replaces the directory outright, "." segments drop out, and ".." pops one
+// segment. Lexical on purpose - it must not touch the filesystem, since it
+// runs for paths that are about to be created as well as ones that exist.
+display_join :: proc(dir: string, name: string) -> string {
+  joined: string
+  switch {
+  case len(name) > 0 && name[0] == '/':
+    joined = name
+  case dir == "":
+    joined = name
+  case:
+    joined = strings.concatenate({dir, "/", name}, context.temp_allocator)
+  }
+  return clean_path(joined)
+}
+
+// Makes a directory path absolute against the process's cwd, for the base
+// directory a source file's relative paths resolve against. Called once per
+// run, at setup, by whoever opens that directory (main.odin, editor.odin).
+absolute_dir_path :: proc(dir_path: string) -> string {
+  if len(dir_path) > 0 && dir_path[0] == '/' do return clean_path(dir_path)
+  cwd, err := os.get_working_directory(context.temp_allocator)
+  if err != nil do return clean_path(dir_path)
+  return display_join(cwd, dir_path)
+}
+
+// Lexical path cleanup: collapses "//", drops "." segments, pops a segment
+// for each "..", and keeps a leading "/" if there was one.
+clean_path :: proc(path: string) -> string {
+  absolute := len(path) > 0 && path[0] == '/'
+  segments := make([dynamic]string, 0, 8, context.temp_allocator)
+  for segment in strings.split(path, "/", context.temp_allocator) {
+    switch segment {
+    case "", ".":
+      continue
+    case "..":
+      // A ".." above an absolute root has nowhere to go and vanishes; on a
+      // relative path it has to be kept, since there's no known parent.
+      if len(segments) > 0 && segments[len(segments) - 1] != ".." {
+        pop(&segments)
+      } else if !absolute {
+        append(&segments, segment)
+      }
+    case:
+      append(&segments, segment)
+    }
+  }
+  body := strings.join(segments[:], "/", context.temp_allocator)
+  if absolute do return strings.concatenate({"/", body})
+  if body == "" do return strings.clone(".")
+  return strings.clone(body)
 }
 
 // ---- loadfile ---------------------------------------------------------------------
 
 @(private = "file")
-open_and_load :: proc(interp: ^Interpreter, dir_fd: linux.Fd, path: string, no_follow_final: bool) -> (Value, bool) {
-  cpath := strings.clone_to_cstring(path, context.temp_allocator)
-  open_flags: linux.Open_Flags = no_follow_final ? {.NOFOLLOW} : {}
+open_and_load :: proc(interp: ^Interpreter, dir_fd: Fs_Fd, path: string, no_follow_final: bool, display: string) -> (Value, bool) {
+  // Type first, then open: a directory and a regular file need different
+  // opens, and asking afterwards would mean opening a directory as a file -
+  // legal on Linux, refused by WASI, whose rights are per file type.
+  is_dir, stat_err := fs_stat_is_dir_at(dir_fd, path, no_follow_final)
+  if stat_err != .None do return fail(interp, fmt.tprintf("loadfile: could not open %s (%v)", path, stat_err))
 
-  fd, errno := linux.openat(dir_fd, cpath, open_flags)
-  if errno != .NONE do return fail(interp, fmt.tprintf("loadfile: could not open %s (%v)", path, errno))
-  defer linux.close(fd)
-
-  st: linux.Stat
-  if serr := linux.fstat(fd, &st); serr != .NONE {
-    return fail(interp, fmt.tprintf("loadfile: could not stat %s (%v)", path, serr))
-  }
-
-  if .IFDIR in st.mode {
-    dir_fd2, derr := linux.openat(dir_fd, cpath, open_flags | {.DIRECTORY})
-    if derr != .NONE do return fail(interp, fmt.tprintf("loadfile: could not open directory %s (%v)", path, derr))
+  if is_dir {
+    // A directory handle outlives this call: it is what further .dir-relative
+    // loadfile/createfile/symlink/readlink calls resolve against (§16).
+    dir_handle, dir_err := fs_open_dir_at(dir_fd, path, no_follow_final)
+    if dir_err != .None do return fail(interp, fmt.tprintf("loadfile: could not open directory %s (%v)", path, dir_err))
     fv := new(File_Value)
     fv.kind = .Directory
-    fv.dir_fd = dir_fd2
-    fv.display_path = display_path_for(dir_fd2, path)
+    fv.dir_fd = dir_handle
+    fv.display_path = display
     return fv, true
   }
 
-  size := int(st.size)
-  content := make([]u8, size)
-  total := 0
-  for total < size {
-    n, rerr := linux.read(fd, content[total:])
-    if rerr != .NONE do return fail(interp, fmt.tprintf("loadfile: read error on %s (%v)", path, rerr))
-    if n == 0 do break
-    total += n
-  }
+  fd, err := fs_open_read_at(dir_fd, path, no_follow_final)
+  if err != .None do return fail(interp, fmt.tprintf("loadfile: could not open %s (%v)", path, err))
+  defer fs_close(fd)
+
+  content, read_err := fs_read_all(fd)
+  if read_err != .None do return fail(interp, fmt.tprintf("loadfile: read error on %s (%v)", path, read_err))
   fv := new(File_Value)
   fv.kind = .Regular
-  fv.content = content[:total]
-  fv.display_path = display_path_for(fd, path)
+  fv.content = content
+  fv.display_path = display
   return fv, true
 }
 
@@ -241,7 +302,7 @@ builtin_loadfile :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, 
   if !ctx_allows_io(interp) do return fail(interp, "loadfile: io permission not granted in the current context")
 
   if path, is_str := arg.(string); is_str {
-    return open_and_load(interp, unsandboxed_dir_fd(interp), path, false)
+    return open_and_load(interp, unsandboxed_dir_fd(interp), path, false, display_join(unsandboxed_dir_path(interp), path))
   }
 
   t, is_table := arg.(^Table_Value)
@@ -254,7 +315,7 @@ builtin_loadfile :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, 
   if !ok do return fail(interp, fmt.tprintf("loadfile: %s", err_msg))
   defer close_resolved(r)
 
-  return open_and_load(interp, r.fd, r.basename, true)
+  return open_and_load(interp, r.fd, r.basename, true, display_join(r.display_dir, path_str))
 }
 
 // ---- filetext ---------------------------------------------------------------------
@@ -307,24 +368,19 @@ builtin_createfile :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value
   if !ok do return fail(interp, fmt.tprintf("createfile: %s", err_msg))
   defer close_resolved(r)
 
-  cpath := strings.clone_to_cstring(r.basename, context.temp_allocator)
   // Exclusive for now (SPEC.md §16) - fails if the file already exists.
-  fd, errno := linux.openat(r.fd, cpath, {.CREAT, .EXCL, .WRONLY}, {.IRUSR, .IWUSR, .IRGRP, .IROTH})
-  if errno != .NONE do return fail(interp, fmt.tprintf("createfile: could not create %s (%v)", r.basename, errno))
-  defer linux.close(fd)
+  fd, err := fs_create_exclusive_at(r.fd, r.basename)
+  if err != .None do return fail(interp, fmt.tprintf("createfile: could not create %s (%v)", r.basename, err))
+  defer fs_close(fd)
 
-  written := 0
-  for written < len(content_bytes) {
-    n, werr := linux.write(fd, content_bytes[written:])
-    if werr != .NONE do return fail(interp, fmt.tprintf("createfile: write error (%v)", werr))
-    if n == 0 do break
-    written += n
+  if werr := fs_write_all(fd, content_bytes); werr != .None {
+    return fail(interp, fmt.tprintf("createfile: write error (%v)", werr))
   }
 
   fv := new(File_Value)
   fv.kind = .Regular
   fv.content = slice.clone(content_bytes)
-  fv.display_path = display_path_for(fd, r.basename)
+  fv.display_path = display_join(r.display_dir, path_str)
   return fv, true
 }
 
@@ -340,59 +396,41 @@ cache_entry_name :: proc(content: []u8) -> string {
   return strings.concatenate({"sha256_", strings.trim_right(encoded, "=")})
 }
 
-// Creates `path` and every missing ancestor directory (like `mkdir -p`),
-// tolerating any component that already exists.
-@(private = "file")
-make_dir_all :: proc(path: string) {
-  start := 0
-  if len(path) > 0 && path[0] == '/' do start = 1
-  for i := start; i <= len(path); i += 1 {
-    if i < len(path) && path[i] != '/' do continue
-    if i == 0 do continue
-    prefix := path[:i]
-    linux.mkdir(strings.clone_to_cstring(prefix, context.temp_allocator), {.IRUSR, .IWUSR, .IXUSR})
-  }
-}
-
 // Opens (creating if necessary) the cache's backing directory, the first
 // time it's actually needed - not at program start, so a program that never
 // touches the cache never creates it.
 @(private = "file")
-ensure_cache_dir_open :: proc(cache: ^Cache_Value) -> linux.Errno {
-  if cache.opened do return .NONE
-  make_dir_all(cache.dir_path)
-  fd, errno := linux.openat(linux.AT_FDCWD, strings.clone_to_cstring(cache.dir_path, context.temp_allocator), {.DIRECTORY})
-  if errno != .NONE do return errno
+ensure_cache_dir_open :: proc(cache: ^Cache_Value) -> Fs_Error {
+  if cache.opened do return .None
+  fs_make_dirs(cache.dir_path)
+  fd, err := fs_open_dir_path(cache.dir_path)
+  if err != .None do return err
   cache.dir_fd = fd
   cache.opened = true
-  return .NONE
+  return .None
 }
 
 @(private = "file")
 createfile_in_cache :: proc(interp: ^Interpreter, cache: ^Cache_Value, content: []u8) -> (Value, bool) {
-  if errno := ensure_cache_dir_open(cache); errno != .NONE {
+  if errno := ensure_cache_dir_open(cache); errno != .None {
     return fail(interp, fmt.tprintf("createfile: could not open cache directory %s (%v)", cache.dir_path, errno))
   }
 
   name := cache_entry_name(content)
   cname := strings.clone_to_cstring(name, context.temp_allocator)
 
-  fd, errno := linux.openat(cache.dir_fd, cname, {.CREAT, .EXCL, .WRONLY}, {.IRUSR, .IWUSR, .IRGRP, .IROTH})
-  #partial switch errno {
-  case .NONE:
-    defer linux.close(fd)
-    written := 0
-    for written < len(content) {
-      n, werr := linux.write(fd, content[written:])
-      if werr != .NONE do return fail(interp, fmt.tprintf("createfile: cache write error (%v)", werr))
-      if n == 0 do break
-      written += n
+  fd, err := fs_create_exclusive_at(cache.dir_fd, name)
+  #partial switch err {
+  case .None:
+    defer fs_close(fd)
+    if werr := fs_write_all(fd, content); werr != .None {
+      return fail(interp, fmt.tprintf("createfile: cache write error (%v)", werr))
     }
-  case .EEXIST:
+  case .Exists:
     // Dedup: an entry with this exact content hash already exists (from this
     // run or a previous one) - reuse it rather than failing or rewriting.
   case:
-    return fail(interp, fmt.tprintf("createfile: could not write to cache (%v)", errno))
+    return fail(interp, fmt.tprintf("createfile: could not write to cache (%v)", err))
   }
 
   fv := new(File_Value)
@@ -422,10 +460,9 @@ builtin_symlink :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, b
   if !ok do return fail(interp, fmt.tprintf("symlink: %s", err_msg))
   defer close_resolved(r)
 
-  cpath := strings.clone_to_cstring(r.basename, context.temp_allocator)
-  ctarget := strings.clone_to_cstring(target_str, context.temp_allocator)
-  ret := linux.syscall(linux.SYS_symlinkat, cast(rawptr)ctarget, r.fd, cast(rawptr)cpath)
-  if ret < 0 do return fail(interp, fmt.tprintf("symlink: could not create %s (%v)", r.basename, linux.Errno(-ret)))
+  if err := fs_symlink_at(r.fd, r.basename, target_str); err != .None {
+    return fail(interp, fmt.tprintf("symlink: could not create %s (%v)", r.basename, err))
+  }
 
   return Nothing_Value{}, true // a symlink isn't a File value in its own right (SPEC.md §3)
 }
@@ -445,12 +482,9 @@ builtin_readlink :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, 
   if !ok do return fail(interp, fmt.tprintf("readlink: %s", err_msg))
   defer close_resolved(r)
 
-  cpath := strings.clone_to_cstring(r.basename, context.temp_allocator)
-  buf := make([]u8, 4096, context.temp_allocator)
-  ret := linux.syscall(linux.SYS_readlinkat, r.fd, cast(rawptr)cpath, raw_data(buf), len(buf))
-  if ret < 0 do return fail(interp, fmt.tprintf("readlink: could not read %s (%v)", r.basename, linux.Errno(-ret)))
-
-  return strings.clone(string(buf[:ret])), true
+  target, err := fs_readlink_at(r.fd, r.basename)
+  if err != .None do return fail(interp, fmt.tprintf("readlink: could not read %s (%v)", r.basename, err))
+  return target, true
 }
 
 // ---- chperm (§16) -----------------------------------------------------------------

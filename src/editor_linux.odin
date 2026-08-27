@@ -678,19 +678,6 @@ run_prompt_action :: proc(e: ^Editor) {
 
 // Unsandboxed loadfile/createfile calls (no .dir given) resolve relative
 // paths against the edited buffer's own saved/loaded path, if it has one -
-// same reasoning as run_file in main.odin. An unsaved buffer just falls back
-// to the process's cwd (has_base_dir stays false). Also used by debugger.odin
-// (not file-private) to set up a debug run's interpreter the same way.
-setup_interp_base_dir :: proc(interp: ^Interpreter, current_path: string) {
-  if current_path == "" do return
-  dir_path := filepath.dir(current_path)
-  if dir_path == "" do dir_path = "."
-  dir_fd, errno := linux.openat(linux.AT_FDCWD, strings.clone_to_cstring(dir_path, context.temp_allocator), {.DIRECTORY})
-  if errno == .NONE {
-    interp.base_dir_fd = dir_fd
-    interp.has_base_dir = true
-  }
-}
 
 // Evaluates the current buffer and renders its result as display lines -
 // same ownership contract as `ast_lines`: caller frees every line plus the
