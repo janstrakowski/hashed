@@ -344,19 +344,28 @@ end-of-input.
 
 `hb -i` opens the **live editor** in there too: the same two-to-four-pane TUI as
 on a real terminal, re-parsing and re-evaluating on every keystroke, with the
-examples picker (Ctrl+E) listing the repository. It draws ANSI into xterm.js,
-which the page loads only when you ask for it. Its debugger panel is the one
-thing missing — a paused run needs a thread, and this is the portable build, so
-it says so rather than pretending. `async` refuses there for the same reason.
+examples picker (Ctrl+E) listing the repository and the debugger stepping a
+paused run. It draws ANSI into xterm.js, which the page loads only when you ask
+for it.
+
+**`async` runs on real threads there**, which is the same wasi-threads build the
+CLI uses — the browser just implements the proposal itself: `thread-spawn`
+starts another Worker, instantiating the same module against the same
+`WebAssembly.Memory`. That shared memory is also what makes the filesystem work
+across threads: every WASI call's arguments are pointers into it, so a spawned
+thread marshals the call to whichever worker owns the filesystem and blocks on
+the answer, without copying anything.
 
 Anything a program writes stays in your browser's IndexedDB: `createfile` lands
 in the filesystem, `ctx.cache` writes to `/cache/hashedbuild`, and both survive
 a reload. No server, nothing sent anywhere, and clearing site data is the
 uninstall.
 
-The page is `docs/playground.html`, the worker `docs/terminal-worker.js`, and
-the WASI host under both is `docs/wasi.js`, implementing the 21 preview1 calls
-the interpreter actually imports.
+The page is `docs/playground.html`; `docs/terminal-worker.js` owns the
+filesystem and spawns threads; `docs/exec-worker.js` is one instance of the
+interpreter (the program, or a thread it spawned); and `docs/wasi.js` is the
+WASI host under all of it, implementing the preview1 calls the interpreter
+imports plus the marshalling that carries them between threads.
 
 ## Where to go next
 

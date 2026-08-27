@@ -360,7 +360,7 @@ eval :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (ret_val: Value
     inner := interp.ast.extra_children[n.children_start]
     h, spawned := spawn_async(interp, inner, env)
     if !spawned {
-      return fail(interp, "async: this build has no thread support (see LANGUAGE.md on the WASI flavours)")
+      return fail(interp, "async: could not start a thread - no thread support here (see LANGUAGE.md on the WASI flavours)")
     }
     return h, true
 

@@ -107,8 +107,8 @@ check("readlink returns the stored target",
 
 {
   const r = await evaluate('async (1 + 1)');
-  check("async refuses on the portable build", r.code, 1);
-  check("async says why", r.err.includes("no thread support"), true);
+  check("async refuses when the host cannot spawn", r.code, 1);
+  check("async says why", r.err.includes("could not start a thread"), true);
 }
 
 // --- the CLI surface the page drives ----------------------------------------

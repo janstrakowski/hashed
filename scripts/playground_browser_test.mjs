@@ -144,6 +144,17 @@ try {
   await type(":q");
   check("':q' ends the REPL", await screenText(), (t) => t.includes(":q"));
 
+  // async, on real threads. The page hands each spawned thread its own
+  // instance of the module against the same shared memory (wasi-threads), so
+  // these are genuinely concurrent - and each one reads a file through the
+  // same filesystem, which is what the RPC layer exists for.
+  await type("hb examples/async-basics.hb");
+  check("async runs on real threads", await screenText(),
+    (t) => t.includes('"This is the payload for option A.\\nThis is the payload for option B.\\n"'));
+  await type("hb examples/async-table.hb");
+  check("concurrent table entries all resolve", await screenText(),
+    (t) => t.includes('{a: 2, b: 6, c: "This is the payload for option A.\\n"}'));
+
   // ctx.cache, which is why /cache exists.
   await type("hb -e 'createfile { .dir = ctx.cache, .content = \"cached\" }'");
   check("ctx.cache writes into /cache", await screenText(),
@@ -210,6 +221,12 @@ try {
   await settle(2500);
   check("an example loads and evaluates", await tuiRows(),
     (t) => t.includes("guard-chain") || t.includes("canonical guard"));
+
+  // The debugger panel needs a thread of its own, which this build now has.
+  await page.keyboard.down("Alt"); await page.keyboard.press("Digit5"); await page.keyboard.up("Alt");
+  await settle(2500);
+  check("the debugger panel is live", await tuiRows(),
+    (t) => t.includes("debug") && !t.includes("no thread support"));
 
   // Ctrl+Q leaves the editor and hands the shell back.
   await page.keyboard.down("Control"); await page.keyboard.press("KeyQ"); await page.keyboard.up("Control");

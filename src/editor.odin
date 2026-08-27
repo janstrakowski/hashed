@@ -796,7 +796,7 @@ compute_debug_lines :: proc(dbg: ^Debugger_Run) -> (lines: [dynamic]string, step
     when TASKS_SUPPORTED {
       append(&lines, strings.clone("(fix parse errors first)"))
     } else {
-      append(&lines, strings.clone("(no debugger: this build has no threads)"))
+      append(&lines, strings.clone("(no debugger: no thread support here)"))
     }
     return lines, 0, false
   }
