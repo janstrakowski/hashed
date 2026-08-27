@@ -55,6 +55,9 @@ try {
   // before it runs. The prompt being enabled again is.
   const type = async (line) => {
     await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: 20000 });
+    // Start from an empty line: an earlier history recall can leave text in
+    // the field, and typing onto the end of it makes a different command.
+    await page.$eval("#entry", (el) => { el.value = ""; });
     await page.type("#entry", line);
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: 20000 });
@@ -132,6 +135,50 @@ try {
   await page.keyboard.press("ArrowUp");
   check("up-arrow recalls the last command",
     await page.$eval("#entry", (el) => el.value), (v) => v.includes("createfile"));
+
+  // --- the live editor, in a real terminal emulator -------------------------
+  //
+  // `hb -i` is a full-screen TUI: raw keystrokes in, ANSI out, xterm.js
+  // rendering it. Nothing else on this page needs an emulator, and until this
+  // landed the WASI build refused -i outright.
+  const tuiRows = async () => page.evaluate(() => {
+    const rows = document.querySelector("#tui .xterm-rows");
+    return rows ? [...rows.children].map((r) => r.textContent.replace(/\s+$/, "")).join("\n") : "";
+  });
+  const settle = (ms = 1500) => new Promise((r) => setTimeout(r, ms));
+
+  await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: 20000 });
+  await page.$eval("#entry", (el) => { el.value = ""; });
+  await page.type("#entry", "hb -i");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.body.classList.contains("tui"), { timeout: 25000 });
+  await settle(3500);
+  check("the editor draws itself", await tuiRows(), (t) => t.includes("HashedBuild live parser"));
+  check("its panes are there", await tuiRows(), (t) => t.includes("source") && t.includes("ast") && t.includes("result"));
+
+  // Typing goes straight to the program, which re-parses on every keystroke.
+  for (const ch of "5 |> (*2 + 1)") await page.keyboard.press(ch === " " ? "Space" : ch);
+  await settle(2000);
+  check("keystrokes reach the editor", await tuiRows(), (t) => t.includes("5 |> (*2 + 1)"));
+  check("it parses and evaluates live", await tuiRows(), (t) => t.includes("Op_Pipe") && t.includes("11"));
+
+  // Ctrl+E opens the examples picker, which lists a real directory - the one
+  // piece of this that needed fd_readdir.
+  await page.keyboard.down("Control"); await page.keyboard.press("KeyE"); await page.keyboard.up("Control");
+  await settle();
+  check("the examples picker lists the repo", await tuiRows(),
+    (t) => t.includes("select an example") && t.includes("guard-chain.hb"));
+  await page.keyboard.type("guard");
+  await settle(800);
+  await page.keyboard.press("Enter");
+  await settle(2500);
+  check("an example loads and evaluates", await tuiRows(),
+    (t) => t.includes("guard-chain") || t.includes("canonical guard"));
+
+  // Ctrl+Q leaves the editor and hands the shell back.
+  await page.keyboard.down("Control"); await page.keyboard.press("KeyQ"); await page.keyboard.up("Control");
+  await page.waitForFunction(() => !document.body.classList.contains("tui"), { timeout: 20000 });
+  check("quitting returns to the shell", await screenText(), (t) => t.includes("left the editor"));
 
   check("no page errors", problems.join(" | "), "");
 } finally {

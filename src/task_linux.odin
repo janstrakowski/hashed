@@ -14,6 +14,9 @@ Task_State :: struct {
 
 Task :: ^Task_State
 
+// Native builds always have threads.
+TASKS_SUPPORTED :: true
+
 @(private = "file")
 task_trampoline :: proc(t: ^thread.Thread) {
   state := (^Task_State)(t.data)

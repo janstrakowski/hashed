@@ -11,6 +11,7 @@
      cannot set COOP/COEP headers, so this service worker supplies them; it
      reloads the page once, on the first visit. -->
 <script src="coi-serviceworker.js"></script>
+<link rel="stylesheet" href="vendor/xterm.css">
 <style>
   :root {
     --bg: #EEF1F4; --surface: #FFFFFF; --text: #1B2430; --text-dim: #5B6472;
@@ -70,6 +71,12 @@
     font-family: var(--mono); font-size: 11px; border: 1px solid var(--border);
     border-bottom-width: 2px; border-radius: 4px; padding: 1px 4px;
   }
+  /* The live editor draws a full-screen TUI, so it gets a real terminal
+     emulator rather than the line-oriented shell above. Hidden until `hb -i`
+     asks for it, and xterm.js is only fetched at that point. */
+  #tui { display: none; flex: 1; padding: 8px 12px; background: var(--surface); min-height: 0; }
+  body.tui #screen, body.tui #inputline { display: none; }
+  body.tui #tui { display: block; }
 </style>
 </head>
 <body>
@@ -85,6 +92,7 @@
 </header>
 
 <pre id="screen"></pre>
+<div id="tui"></div>
 <div id="inputline">
   <span class="prompt" id="prompt">$ </span>
   <input id="entry" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" autofocus>
@@ -128,6 +136,7 @@ let history = [];
 let historyIndex = 0;
 let running = false;        // a command is executing
 let awaitingInput = false;  // ...and it is blocked reading stdin
+let rawMode = false;        // ...and it is a TUI, drawing into xterm.js
 let resolveCommand = null;
 
 // ---- output ---------------------------------------------------------------
@@ -157,15 +166,23 @@ function onWorkerMessage(event) {
       setRunning(false);
       break;
 
-    case "stdout": write(message.text); break;
-    case "stderr": write(message.text, "err"); break;
+    case "stdout":
+      if (rawMode) term.write(message.text);
+      else write(message.text);
+      break;
+    case "stderr":
+      if (rawMode) term.write(message.text);
+      else write(message.text, "err");
+      break;
 
     // The program is blocked reading stdin: hand the prompt back so the
     // visitor can answer it. The interpreter has already printed its own
     // prompt ("hb> ") by this point.
     case "waiting-for-input":
       awaitingInput = true;
-      setRunning(false, "");
+      // In raw mode the emulator already has focus and forwards every
+      // keystroke; the page's own prompt stays out of the way.
+      if (!rawMode) setRunning(false, "");
       break;
 
     case "done":
@@ -215,8 +232,8 @@ function ask(message) {
 
 // Writes a line into the shared buffer and wakes the worker, which is sitting
 // in Atomics.wait inside its stdin read.
-function sendToStdin(line) {
-  const bytes = new TextEncoder().encode(line + "\n");
+function sendToStdin(line, appendNewline = true) {
+  const bytes = new TextEncoder().encode(appendNewline ? line + "\n" : line);
   inputView.set(bytes.subarray(0, inputView.length));
   Atomics.store(controlView, 1, Math.min(bytes.length, inputView.length));
   Atomics.store(controlView, 0, STATE_DATA);
@@ -226,6 +243,73 @@ function sendToStdin(line) {
 function sendEof() {
   Atomics.store(controlView, 0, STATE_EOF);
   Atomics.notify(controlView, 0);
+}
+
+// ---- the live editor, on a real terminal emulator ---------------------------
+//
+// `hb -i` draws a full-screen TUI: cursor moves, alternate screen, colour. The
+// line-oriented shell above cannot render that, so it hands over to xterm.js -
+// loaded here, on first use, rather than on every visit for the sake of a
+// feature most visitors never open.
+
+let term = null;
+let fitAddon = null;
+
+async function ensureTerminalEmulator() {
+  if (term) return term;
+  await new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "vendor/xterm.js";
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("could not load vendor/xterm.js"));
+    document.head.append(script);
+  });
+  await new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "vendor/xterm-addon-fit.js";
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("could not load the fit addon"));
+    document.head.append(script);
+  });
+
+  const styles = getComputedStyle(document.documentElement);
+  term = new window.Terminal({
+    fontFamily: styles.getPropertyValue("--mono").trim() || "monospace",
+    fontSize: 13,
+    cursorBlink: true,
+    theme: {
+      background: styles.getPropertyValue("--surface").trim(),
+      foreground: styles.getPropertyValue("--text").trim(),
+      cursor: styles.getPropertyValue("--accent").trim(),
+    },
+  });
+  fitAddon = new window.FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(document.getElementById("tui"));
+
+  // Every keystroke goes straight to the program: no echo, no line editing.
+  // That is what raw mode means, and the editor is doing its own drawing.
+  term.onData((data) => {
+    if (rawMode) sendToStdin(data, false);
+  });
+  return term;
+}
+
+// The editor asks the host for its size (term_size in term_wasi.odin reads
+// COLUMNS/LINES), so the numbers have to be settled before the program starts.
+async function runInteractive(args) {
+  await ensureTerminalEmulator();
+  document.body.classList.add("tui");
+  fitAddon.fit();
+  term.clear();
+  term.focus();
+  rawMode = true;
+
+  await ask({ type: "hb", args, tui: { columns: term.cols, rows: term.rows } });
+
+  rawMode = false;
+  document.body.classList.remove("tui");
+  writeLine("(left the editor)", "dim");
 }
 
 // ---- the shell -------------------------------------------------------------
@@ -267,7 +351,14 @@ async function runCommand(line) {
       await ask({ type: "cat", path: args[1] });
       return;
     case "reset": await ask({ type: "reset" }); return;
-    case "hb": await ask({ type: "hb", args: args.slice(1) }); return;
+    case "hb": {
+      const hbArgs = args.slice(1);
+      // -i is the flag that means "full-screen TUI"; nothing else in the CLI
+      // needs a terminal emulator, so nothing else pays for one.
+      if (hbArgs.some((a) => a === "-i" || a === "--interactive")) await runInteractive(hbArgs);
+      else await ask({ type: "hb", args: hbArgs });
+      return;
+    }
     default: writeLine(`${args[0]}: not a command. Try \`help\`.`, "err");
   }
 }

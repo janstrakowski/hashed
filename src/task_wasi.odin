@@ -42,6 +42,10 @@ Wasi_Task :: struct {
 
 Task :: ^Wasi_Task
 
+// Only the wasi-threads build can spawn. Anything that needs a thread - async
+// (§2), and the debugger's paused run - has to say so rather than pretend.
+TASKS_SUPPORTED :: HB_WASI_THREADS
+
 when HB_WASI_THREADS {
 
   foreign import wasi_threads "wasi"

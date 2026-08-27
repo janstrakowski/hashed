@@ -331,6 +331,38 @@ export class WASI {
         return ERRNO.SUCCESS;
       },
 
+      // The editor's file picker lists a directory, which is the only reason
+      // this exists. preview1's dirent layout: a 24-byte header (next cookie,
+      // inode, name length, filetype) followed by the raw name, packed back to
+      // back until the buffer is full.
+      fd_readdir(fd, bufPtr, bufLen, cookie, usedPtr) {
+        const d = self.fds.get(fd);
+        if (!d || d.node?.type !== "dir") return ERRNO.BADF;
+
+        const names = [...d.node.entries.keys()];
+        let offset = 0;
+        let index = Number(cookie);
+        for (; index < names.length; index++) {
+          const name = names[index];
+          const child = d.node.entries.get(name);
+          const encoded = enc.encode(name);
+          if (offset + 24 + encoded.length > bufLen) break;
+
+          const at = bufPtr + offset;
+          self.view.setBigUint64(at, BigInt(index + 1), true);        // d_next
+          self.view.setBigUint64(at + 8, 0n, true);                   // d_ino
+          self.view.setUint32(at + 16, encoded.length, true);         // d_namlen
+          self.view.setUint8(at + 20,
+            child.type === "dir" ? FILETYPE.DIRECTORY
+            : child.type === "symlink" ? FILETYPE.SYMBOLIC_LINK
+            : FILETYPE.REGULAR_FILE);
+          self.bytes.set(encoded, at + 24);
+          offset += 24 + encoded.length;
+        }
+        self.view.setUint32(usedPtr, offset, true);
+        return ERRNO.SUCCESS;
+      },
+
       fd_close(fd) {
         return self.fds.delete(fd) ? ERRNO.SUCCESS : ERRNO.BADF;
       },

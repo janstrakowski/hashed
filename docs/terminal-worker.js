@@ -120,11 +120,13 @@ function readStdin(wanted) {
 
 // ---- commands --------------------------------------------------------------------
 
-async function runHb(args) {
+async function runHb(args, tui) {
+  // term_size (term_wasi.odin) has no ioctl to ask, so the host tells it.
+  const env = tui ? { ...ENV, COLUMNS: String(tui.columns), LINES: String(tui.rows), TERM: "xterm-256color" } : ENV;
   let code = 0;
   try {
     code = await run({
-      wasmBytes, fs, args: ["hb", ...args], env: ENV, stdin: readStdin,
+      wasmBytes, fs, args: ["hb", ...args], env, stdin: readStdin,
       onStdout: (text) => post({ type: "stdout", text }),
       onStderr: (text) => post({ type: "stderr", text }),
     });
@@ -170,7 +172,7 @@ self.onmessage = async (event) => {
       return;
     }
     case "hb": {
-      const code = await runHb(message.args);
+      const code = await runHb(message.args, message.tui);
       post({ type: "done", code });
       return;
     }

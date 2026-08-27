@@ -200,8 +200,10 @@ the code explicitly handles (a rejected path, a missing argument, a permission
 denial), not every branch. If the change makes something untestable-as-written,
 refactor it until it is testable — extracting a pure function out of `main` is
 cheaper than shipping a flag nobody can test. The two standing exceptions are
-the terminal UI (`editor.odin`, `debugger.odin`, `term_linux.odin`), where
-driving a raw-mode TTY costs more than it's worth, and pure doc/comment edits.
+the terminal UI (`editor.odin`, `debugger.odin`, `term_*.odin`), where driving a
+raw-mode TTY from `odin test` costs more than it's worth — though it is no
+longer untested: `scripts/playground_browser_test.mjs` drives it for real in a
+browser — and pure doc/comment edits.
 Taking an exception means saying so in the commit body.
 
 ```sh

@@ -6,7 +6,6 @@ import "core:path/filepath"
 import "core:slice"
 import "core:strings"
 import "core:sync"
-import "core:sys/linux"
 import "core:unicode/utf8"
 
 // Clips a string to at most `max_cols` *codepoints*, not bytes. Doesn't
@@ -497,11 +496,17 @@ open_example_menu :: proc(e: ^Editor) {
   resize(&m.items, 0)
   resize(&m.search, 0)
 
-  entries, err := os.read_all_directory_by_path("examples", context.allocator)
-  if err == nil {
-    defer os.file_info_slice_delete(entries, context.allocator)
+  // Through the fs layer, not core:os: WASI has no working directory, and its
+  // path resolution goes through whatever the host preopened. "examples" is
+  // tried first for a native run started in the repo, "/examples" for a
+  // sandbox rooted at it.
+  entries, err := fs_list_dir("examples", context.allocator)
+  if err != .None do entries, err = fs_list_dir("/examples", context.allocator)
+  if err == .None {
+    defer delete(entries, context.allocator)
     for entry in entries {
-      if entry.type == .Directory do continue
+      defer delete(entry.name, context.allocator)
+      if entry.is_dir do continue
       if strings.has_suffix(entry.name, ".hb") do append(&m.items, strings.clone(entry.name))
     }
   }
@@ -784,7 +789,15 @@ debug_node_label :: proc(interp: ^Interpreter, n: Node_Idx) -> string {
 compute_debug_lines :: proc(dbg: ^Debugger_Run) -> (lines: [dynamic]string, steps_taken: int, finished: bool) {
   lines = make([dynamic]string, 0, 16)
   if dbg == nil {
-    append(&lines, strings.clone("(fix parse errors first)"))
+    // Two different reasons land here: the buffer doesn't parse, or this
+    // build cannot spawn the thread a paused run needs (task.odin) - the
+    // browser's portable build, in practice. Saying "fix parse errors" to
+    // someone whose program parses fine is just misleading.
+    when TASKS_SUPPORTED {
+      append(&lines, strings.clone("(fix parse errors first)"))
+    } else {
+      append(&lines, strings.clone("(no debugger: this build has no threads)"))
+    }
     return lines, 0, false
   }
 
