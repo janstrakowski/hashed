@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HashedBuild</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #EEF1F4;
+    --surface: #FFFFFF;
+    --text: #1B2430;
+    --text-dim: #5B6472;
+    --border: #D6DCE2;
+    --accent: #B96A1F;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151B;
+      --surface: #191E26;
+      --text: #E7E9EC;
+      --text-dim: #8B95A3;
+      --border: #2B323C;
+      --accent: #E0954A;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12151B;
+    --surface: #191E26;
+    --text: #E7E9EC;
+    --text-dim: #8B95A3;
+    --border: #2B323C;
+    --accent: #E0954A;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+  }
+  main {
+    max-width: 640px;
+    width: 100%;
+    padding: 48px 32px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  h1 {
+    margin: 6px 0 10px;
+    font-size: 32px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  p.lede {
+    margin: 0 0 32px;
+    color: var(--text-dim);
+    font-size: 15px;
+    line-height: 1.6;
+    max-width: 58ch;
+  }
+  .links {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  a.card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 16px 18px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    text-decoration: none;
+    color: inherit;
+  }
+  a.card:hover { border-color: var(--accent); }
+  a.card .title {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 14.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  a.card .title::after {
+    content: "→";
+    margin-left: auto;
+    color: var(--accent);
+  }
+  a.card .desc {
+    font-size: 13px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  footer {
+    margin-top: 32px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">HashedBuild</div>
+  <h1>A build-system language, in progress</h1>
+  <p class="lede">A files-as-values, context-threaded language with opt-in concurrency, capability-style permissions, and a genuinely pausable/resumable interactive debugger.</p>
+  <div class="links">
+    <a class="card" href="SPEC.html">
+      <span class="title">Language spec</span>
+      <span class="desc">The full draft: program model, types, functions, control flow, async, filesystem builtins.</span>
+    </a>
+    <a class="card" href="debugger-playback.html">
+      <span class="title">Debugger playback</span>
+      <span class="desc">Every example, stepped through the live editor's pausable debugger and captured frame by frame.</span>
+    </a>
+  </div>
+  <footer>Source at <a href="https://github.com/janstrakowski/hashedbuild">github.com/janstrakowski/hashedbuild</a></footer>
+</main>
+</body>
+</html>
