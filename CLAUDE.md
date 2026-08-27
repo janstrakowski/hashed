@@ -12,8 +12,9 @@ odin test src             # full suite
 ./hb -e '<expr>'          # evaluate one expression, like a REPL submission
 ```
 
-`./hb` is committed and must be rebuilt as part of every completed feature, not
-just at the end of a session.
+`./hb` is gitignored, not tracked — but it is the binary you and any hand-testing
+actually run, so rebuild it as part of every completed feature, not just at the
+end of a session.
 
 ## Git workflow
 
