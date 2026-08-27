@@ -13,6 +13,10 @@ import puppeteer from "puppeteer-core";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CHROME = process.argv[2] ?? process.env.CHROME_PATH ?? "/usr/bin/chromium";
+// Generous on purpose: a boot fetches a ~500KB interpreter and a ~550KB
+// manifest, instantiates the module, and may reload once for cross-origin
+// isolation - on a throttled CI runner that adds up well past a default wait.
+const WAIT = Number(process.env.WAIT_MS ?? 60000);
 const PORT = 8899;
 
 let failures = 0;
@@ -54,13 +58,13 @@ try {
   // growing is not that signal - it grows the moment the command is echoed,
   // before it runs. The prompt being enabled again is.
   const type = async (line) => {
-    await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: 20000 });
+    await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: WAIT });
     // Start from an empty line: an earlier history recall can leave text in
     // the field, and typing onto the end of it makes a different command.
     await page.$eval("#entry", (el) => { el.value = ""; });
     await page.type("#entry", line);
     await page.keyboard.press("Enter");
-    await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: 20000 });
+    await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: WAIT });
   };
 
   // The last boot line differs between a fresh visit and a restored one, so
@@ -69,7 +73,7 @@ try {
     await page.waitForFunction(() => {
       const text = document.getElementById("screen").textContent;
       return text.includes("Type `help`") || text.includes("Restored your files");
-    }, { timeout: 20000 });
+    }, { timeout: WAIT });
   };
 
   await page.goto(url, { waitUntil: "networkidle0" });
@@ -147,11 +151,11 @@ try {
   });
   const settle = (ms = 1500) => new Promise((r) => setTimeout(r, ms));
 
-  await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: 20000 });
+  await page.waitForFunction(() => !document.getElementById("entry").disabled, { timeout: WAIT });
   await page.$eval("#entry", (el) => { el.value = ""; });
   await page.type("#entry", "hb -i");
   await page.keyboard.press("Enter");
-  await page.waitForFunction(() => document.body.classList.contains("tui"), { timeout: 25000 });
+  await page.waitForFunction(() => document.body.classList.contains("tui"), { timeout: WAIT });
   await settle(3500);
   check("the editor draws itself", await tuiRows(), (t) => t.includes("HashedBuild live parser"));
   check("its panes are there", await tuiRows(), (t) => t.includes("source") && t.includes("ast") && t.includes("result"));
@@ -177,7 +181,7 @@ try {
 
   // Ctrl+Q leaves the editor and hands the shell back.
   await page.keyboard.down("Control"); await page.keyboard.press("KeyQ"); await page.keyboard.up("Control");
-  await page.waitForFunction(() => !document.body.classList.contains("tui"), { timeout: 20000 });
+  await page.waitForFunction(() => !document.body.classList.contains("tui"), { timeout: WAIT });
   check("quitting returns to the shell", await screenText(), (t) => t.includes("left the editor"));
 
   check("no page errors", problems.join(" | "), "");
