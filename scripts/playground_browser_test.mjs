@@ -1,7 +1,7 @@
-// Drives docs/playground.html in a real headless browser: the shim test
-// (playground_test.mjs) covers the WASI side, this covers the page around it -
-// booting, running, and above all persistence, which is the one thing that
-// cannot be tested without a browser's IndexedDB.
+// Drives docs/playground.html - the web terminal - in a real headless browser.
+// The shim test (playground_test.mjs) covers the WASI host; this covers the
+// terminal around it: the shell, the REPL mode, and above all persistence,
+// which cannot be tested without a browser's IndexedDB.
 //
 // Usage: node scripts/playground_browser_test.mjs [chrome-path]
 // Needs puppeteer-core installed and a Chrome/Chromium binary.
@@ -44,54 +44,83 @@ try {
   page.on("console", (m) => { if (m.type() === "error") problems.push("console: " + m.text()); });
 
   const url = `http://localhost:${PORT}/playground.html`;
-  const ready = async () => {
-    await page.waitForFunction(() => document.getElementById("status").textContent !== "loading…");
+  const screenText = () => page.$eval("#screen", (el) => el.textContent);
+  const prompt = () => page.$eval("#prompt", (el) => el.textContent);
+
+  // Types a line and waits for the terminal to finish handling it. Each
+  // command instantiates the module, so waiting on the screen growing is the
+  // honest signal that it is done.
+  const type = async (line) => {
+    const before = (await screenText()).length;
+    await page.type("#entry", line);
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(
+      (n) => document.getElementById("screen").textContent.length > n,
+      { timeout: 15000 }, before,
+    );
+  };
+
+  // The last boot line differs between a fresh visit and a restored one, so
+  // wait for either rather than for one of them.
+  const booted = async () => {
+    await page.waitForFunction(() => {
+      const text = document.getElementById("screen").textContent;
+      return text.includes("Type `help`") || text.includes("Restored your files");
+    }, { timeout: 20000 });
   };
 
   await page.goto(url, { waitUntil: "networkidle0" });
-  await ready();
-  check("page boots", await page.$eval("#status", (el) => el.textContent), "ready");
-  check("starting files are listed", (await page.$$(".file")).length, (n) => n >= 5);
+  await booted();
+  check("terminal boots", await screenText(), (t) => t.includes("compiled to WebAssembly"));
+  check("prompt is a shell prompt", await prompt(), "$ ");
 
-  // The interpreter really runs, and produces the value the tour promises.
-  await page.click("#run");
-  await page.waitForFunction(() => document.getElementById("output").textContent.length > 0);
-  const tour = await page.$eval("#output", (el) => el.textContent);
-  check("tour program evaluates", tour.includes('text: "hello, world"'), true);
-  check("it can read a seeded file", tour.includes("This is the payload for option A."), true);
+  // The shell's own commands.
+  await type("ls");
+  check("ls lists the seeded files", await screenText(), (t) => t.includes("/tour.hb"));
 
-  const selectFile = async (name) => {
-    await page.evaluate((n) => {
-      [...document.querySelectorAll(".file")].find((b) => b.textContent.includes(n)).click();
-    }, name);
-  };
+  await type("cat examples/choice.txt");
+  check("cat prints a file", await screenText(), (t) => t.includes("option A"));
 
-  // A write lands in the virtual filesystem and shows up in the file list.
-  await selectFile("write-a-file.hb");
-  await page.click("#run");
-  await page.waitForFunction(() => document.getElementById("status").textContent !== "ready");
-  check("createfile reports the file it wrote",
-    await page.$eval("#output", (el) => el.textContent), (t) => t.includes("<file: /greeting.txt>"));
-  check("the new file appears in the list",
-    await page.$$eval(".file", (bs) => bs.map((b) => b.textContent).join(" ")),
-    (t) => t.includes("greeting.txt"));
+  // Running a program: the real CLI path, argv and all.
+  await type("hb tour.hb");
+  check("a program runs", await screenText(), (t) => t.includes('text: "hello, world"'));
+  check("it read a file through loadfile", await screenText(),
+    (t) => t.includes("This is the payload for option A."));
 
-  // The point of the whole exercise: it is still there after a reload, with no
-  // server and no database anywhere.
+  await type("hb -e '6 * 7'");
+  check("-e evaluates an expression", await screenText(), (t) => t.trimEnd().endsWith("42"));
+
+  // REPL mode: bare `hb`, then an expression, then a blank line.
+  await type("hb");
+  check("REPL prints its banner", await screenText(), (t) => t.includes("HashedBuild REPL"));
+  check("REPL prompt", await prompt(), "hb> ");
+  await type("1 + 1");
+  check("continuation prompt while buffering", await prompt(), "... ");
+  await type("");
+  check("blank line evaluates the buffer", await screenText(), (t) => t.trimEnd().endsWith("2"));
+  await type(":q");
+  check("':q' leaves the REPL", await prompt(), "$ ");
+
+  // Writing a file, and the point of the whole thing: it is still there after
+  // a reload, with no server and no database anywhere.
+  await type("hb write-a-file.hb");
+  check("createfile reports what it wrote", await screenText(), (t) => t.includes("<file: /greeting.txt>"));
+
   await page.reload({ waitUntil: "networkidle0" });
-  await ready();
-  check("state is restored from the browser",
-    await page.$eval("#status", (el) => el.textContent), "restored from this browser");
-  check("the written file survived the reload",
-    await page.$$eval(".file", (bs) => bs.map((b) => b.textContent).join(" ")),
-    (t) => t.includes("greeting.txt"));
+  await booted();
+  check("state is restored", await screenText(), (t) => t.includes("Restored your files"));
+  await type("cat greeting.txt");
+  check("the written file survived the reload", await screenText(),
+    (t) => t.includes("written from the browser"));
 
   // And the language's own rules still hold in there: createfile is exclusive.
-  await selectFile("write-a-file.hb");
-  await page.click("#run");
-  await page.waitForFunction(() => document.getElementById("status").textContent.includes("exited"));
-  check("a second write fails, exclusively",
-    await page.$eval("#output", (el) => el.textContent), (t) => t.includes("Exists"));
+  await type("hb write-a-file.hb");
+  check("a second write fails, exclusively", await screenText(), (t) => t.includes("Exists"));
+
+  // History, because a terminal without it is a nuisance.
+  await page.keyboard.press("ArrowUp");
+  check("up-arrow recalls the last command",
+    await page.$eval("#entry", (el) => el.value), "hb write-a-file.hb");
 
   check("no page errors", problems.join(" | "), "");
 } finally {
@@ -99,5 +128,5 @@ try {
   server.kill();
 }
 
-console.log(failures === 0 ? "\nall playground checks passed" : `\n${failures} playground checks failed`);
+console.log(failures === 0 ? "\nall terminal checks passed" : `\n${failures} terminal checks failed`);
 process.exit(failures === 0 ? 0 : 1);

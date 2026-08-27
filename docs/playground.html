@@ -3,31 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HashedBuild playground</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%23%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<title>HashedBuild terminal</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%3E%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
   :root {
-    --bg: #EEF1F4;
-    --surface: #FFFFFF;
-    --text: #1B2430;
-    --text-dim: #5B6472;
-    --border: #D6DCE2;
-    --accent: #B96A1F;
-    --ok: #2F7D46;
-    --err: #B3392F;
+    --bg: #EEF1F4; --surface: #FFFFFF; --text: #1B2430; --text-dim: #5B6472;
+    --border: #D6DCE2; --accent: #B96A1F; --ok: #2F7D46; --err: #B3392F;
     --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --bg: #12151B; --surface: #191E26; --text: #E7E9EC; --text-dim: #8B95A3;
-      --border: #2B323C; --accent: #E0954A; --ok: #63B37B; --err: #E4776B;
+      --bg: #0E1116; --surface: #12161D; --text: #E7E9EC; --text-dim: #8B95A3;
+      --border: #262D38; --accent: #E0954A; --ok: #63B37B; --err: #E4776B;
     }
   }
   :root[data-theme="dark"] {
-    --bg: #12151B; --surface: #191E26; --text: #E7E9EC; --text-dim: #8B95A3;
-    --border: #2B323C; --accent: #E0954A; --ok: #63B37B; --err: #E4776B;
+    --bg: #0E1116; --surface: #12161D; --text: #E7E9EC; --text-dim: #8B95A3;
+    --border: #262D38; --accent: #E0954A; --ok: #63B37B; --err: #E4776B;
   }
   * { box-sizing: border-box; }
   body {
@@ -35,63 +29,38 @@
     font-family: var(--sans); display: flex; flex-direction: column;
   }
   header {
-    padding: 16px 24px; border-bottom: 1px solid var(--border);
-    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
   }
-  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
   header .eyebrow {
     font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
     text-transform: uppercase; color: var(--accent);
   }
   header .spacer { flex: 1; }
   header a { color: var(--accent); font-size: 13px; }
-  main {
-    flex: 1; display: grid; gap: 1px; background: var(--border);
-    grid-template-columns: 220px 1fr 1fr; min-height: 0;
-  }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
-  section { background: var(--surface); display: flex; flex-direction: column; min-height: 0; }
-  .panel-head {
-    padding: 10px 14px; border-bottom: 1px solid var(--border);
-    font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
-    text-transform: uppercase; color: var(--text-dim);
-    display: flex; align-items: center; gap: 8px;
-  }
-  .panel-head .spacer { flex: 1; }
-  button {
-    font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer;
-    background: var(--surface); color: var(--text);
-    border: 1px solid var(--border); border-radius: 5px;
-  }
-  button:hover { border-color: var(--accent); color: var(--accent); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.primary:hover { filter: brightness(1.08); color: #fff; }
-  textarea, pre {
-    flex: 1; margin: 0; padding: 14px; border: 0; resize: none;
+  #screen {
+    flex: 1; margin: 0; padding: 16px 20px 8px; overflow-y: auto; cursor: text;
     font-family: var(--mono); font-size: 13px; line-height: 1.55;
-    background: transparent; color: var(--text); overflow: auto;
+    background: var(--surface); white-space: pre-wrap; word-break: break-word;
   }
-  textarea:focus { outline: none; }
-  pre { white-space: pre-wrap; word-break: break-word; }
-  pre .err { color: var(--err); }
-  pre .meta { color: var(--text-dim); }
-  .files { flex: 1; overflow: auto; padding: 6px; }
-  .file {
-    width: 100%; text-align: left; border: 0; background: transparent;
-    font-family: var(--mono); font-size: 12px; padding: 5px 8px;
-    border-radius: 5px; color: var(--text); cursor: pointer;
-    display: flex; gap: 8px; align-items: baseline;
+  #screen .err { color: var(--err); }
+  #screen .dim { color: var(--text-dim); }
+  #screen .accent { color: var(--accent); }
+  .line { display: flex; gap: 0; align-items: baseline; }
+  .prompt { color: var(--accent); white-space: pre; }
+  #entry {
+    flex: 1; border: 0; outline: none; padding: 0; background: transparent;
+    color: var(--text); font: inherit; caret-color: var(--accent);
   }
-  .file:hover { background: var(--bg); color: var(--text); }
-  .file.active { background: var(--bg); color: var(--accent); }
-  .file .kind { color: var(--text-dim); font-size: 10px; }
-  .file .size { margin-left: auto; color: var(--text-dim); font-size: 10px; }
+  #inputline {
+    display: flex; gap: 0; align-items: baseline; padding: 0 20px 16px;
+    background: var(--surface); font-family: var(--mono); font-size: 13px;
+  }
   footer {
-    padding: 8px 24px; border-top: 1px solid var(--border);
+    padding: 8px 20px; border-top: 1px solid var(--border);
     font-size: 12px; color: var(--text-dim); display: flex; gap: 16px; flex-wrap: wrap;
   }
-  footer .ok { color: var(--ok); }
-  footer .err { color: var(--err); }
   kbd {
     font-family: var(--mono); font-size: 11px; border: 1px solid var(--border);
     border-bottom-width: 2px; border-radius: 4px; padding: 1px 4px;
@@ -102,7 +71,7 @@
 <header>
   <div>
     <div class="eyebrow">HashedBuild</div>
-    <h1>Playground</h1>
+    <h1>Terminal</h1>
   </div>
   <div class="spacer"></div>
   <a href="index.html">Home</a>
@@ -110,52 +79,28 @@
   <a href="SPEC.html">Spec</a>
 </header>
 
-<main>
-  <section>
-    <div class="panel-head">
-      Files
-      <div class="spacer"></div>
-      <button id="reset" title="Restore the starting files and discard anything written">Reset</button>
-    </div>
-    <div class="files" id="files"></div>
-  </section>
-
-  <section>
-    <div class="panel-head">
-      Source
-      <div class="spacer"></div>
-      <button class="primary" id="run">Run ▸</button>
-    </div>
-    <textarea id="source" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
-  </section>
-
-  <section>
-    <div class="panel-head">Result</div>
-    <pre id="output"></pre>
-  </section>
-</main>
+<pre id="screen"></pre>
+<div id="inputline">
+  <span class="prompt" id="prompt">$ </span>
+  <input id="entry" spellcheck="false" autocapitalize="off" autocorrect="off" autocomplete="off" autofocus>
+</div>
 
 <footer>
-  <span id="status">loading…</span>
-  <span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> runs</span>
-  <span>Everything runs in your browser; files persist here and nowhere else.</span>
+  <span><kbd>↑</kbd><kbd>↓</kbd> history · <kbd>Ctrl</kbd>+<kbd>L</kbd> clears</span>
+  <span>Type <span class="accent">help</span> to start.</span>
+  <span>The interpreter is WebAssembly running in this tab; files persist in your browser.</span>
 </footer>
 
 <script type="module">
 import { FileSystem, run } from "./wasi.js";
 
-// The files a fresh visitor starts with. Kept small and self-explanatory: the
-// point is to have something to read, edit and re-run immediately, not to
-// mirror examples/ wholesale.
+// The files a fresh visitor lands with - enough to `cat` something, run
+// something, and have loadfile find something.
 const STARTING_FILES = {
   "examples/optiona.txt": "This is the payload for option A.\n",
   "examples/optionb.txt": "This is the payload for option B.\n",
   "examples/choice.txt": "option A",
-  "tour.hb": `// Welcome. This runs for real - the interpreter is compiled to
-// WebAssembly and running in this tab, nothing is sent anywhere.
-//
-// Ctrl+Enter (or Run) evaluates the buffer. A program is one
-// expression, and its value is the output.
+  "tour.hb": `// A program is one expression, and its value is the output.
 {
   .arithmetic = 7 / 2,            // Integer division truncates
   .float = 7.0 / 2,               // one Float promotes the whole thing
@@ -165,40 +110,51 @@ const STARTING_FILES = {
   .file = filetext (loadfile "/examples/optiona.txt"),
 }
 `,
-  "write-a-file.hb": `// createfile writes into the filesystem on the left, and it
-// persists across reloads - it lives in this browser, in
-// IndexedDB. Run it twice: the second run fails, because
+  "write-a-file.hb": `// createfile writes into this browser's filesystem, and it stays
+// there between visits. Run it twice: the second run fails, because
 // createfile is exclusive (SPEC.md §16).
 createfile {
   .path = "/greeting.txt",
   .content = "written from the browser\\n",
 }
 `,
-  "guard-chain.hb": `// The canonical guard chain: pipe a value through a chain of
-// AND'd guards, bind a name partway, and branch on the result.
-5 as object
-  object |> (object > 0 and is n as p1 and p1 < 100) then p1 else 0
-`,
 };
 
-const els = {
-  files: document.getElementById("files"),
-  source: document.getElementById("source"),
-  output: document.getElementById("output"),
-  status: document.getElementById("status"),
-  run: document.getElementById("run"),
-  reset: document.getElementById("reset"),
-};
+const screen = document.getElementById("screen");
+const entry = document.getElementById("entry");
+const promptEl = document.getElementById("prompt");
 
 let wasmBytes = null;
 let fs = null;
-let currentPath = "tour.hb";
+let history = [];
+let historyIndex = 0;
 
-// ---- persistence: IndexedDB, one row, no schema to speak of -----------------
-//
-// The whole filesystem is a plain object (FileSystem#snapshot), so persisting
-// it is a single put. No server, no database to provision - the store is the
-// visitor's own browser, and clearing site data is the uninstall.
+// Bare `hb` puts the terminal in REPL mode. The interpreter's own REPL reads
+// stdin in a loop, which a wasm module cannot do in a browser without blocking
+// the thread - but it evaluates every submission with a *fresh* interpreter
+// and environment (see run_eval_repl/eval_and_print in main.odin), so running
+// one instance per submission behaves exactly the same. The prompts below are
+// the ones that loop prints.
+let repl = null; // null, or { buffer: [] }
+
+// ---- output ------------------------------------------------------------------
+
+function write(text, cls) {
+  const span = document.createElement("span");
+  if (cls) span.className = cls;
+  span.textContent = text;
+  screen.append(span);
+  screen.scrollTop = screen.scrollHeight;
+}
+
+const writeLine = (text = "", cls) => write(text + "\n", cls);
+
+function echo(prompt, command) {
+  write(prompt, "accent");
+  writeLine(command);
+}
+
+// ---- persistence: IndexedDB, one row, no schema ------------------------------
 
 const DB_NAME = "hashedbuild-playground";
 const STORE = "state";
@@ -221,7 +177,7 @@ async function loadState() {
       req.onerror = () => reject(req.error);
     });
   } catch {
-    return null; // private window, blocked storage: fall back to a fresh start
+    return null; // private window, blocked storage: start fresh, still works
   }
 }
 
@@ -230,7 +186,7 @@ async function saveState() {
     const db = await openDb();
     await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).put({ files: fs.snapshot(), currentPath }, "state");
+      tx.objectStore(STORE).put({ files: fs.snapshot(), history: history.slice(-100) }, "state");
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error);
     });
@@ -242,143 +198,207 @@ async function saveState() {
 function seedFilesystem() {
   const seeded = new FileSystem();
   const enc = new TextEncoder();
-  for (const [path, text] of Object.entries(STARTING_FILES)) {
-    seeded.writeFile("/" + path, enc.encode(text));
-  }
+  for (const [path, text] of Object.entries(STARTING_FILES)) seeded.writeFile("/" + path, enc.encode(text));
   return seeded;
 }
 
-// ---- ui ---------------------------------------------------------------------
+// ---- running the interpreter --------------------------------------------------
 
-function renderFiles() {
-  els.files.replaceChildren();
-  for (const entry of fs.list()) {
-    if (entry.type === "dir") continue;
-    const button = document.createElement("button");
-    button.className = "file" + (entry.path === currentPath ? " active" : "");
-    const name = document.createElement("span");
-    name.textContent = entry.path;
-    button.append(name);
-    if (entry.type === "symlink") {
-      const kind = document.createElement("span");
-      kind.className = "kind";
-      kind.textContent = "→ " + entry.target;
-      button.append(kind);
-    } else {
-      const size = document.createElement("span");
-      size.className = "size";
-      size.textContent = entry.data.length + "B";
-      button.append(size);
-    }
-    button.onclick = () => selectFile(entry.path);
-    els.files.append(button);
-  }
-}
-
-function fileText(path) {
-  const node = fs.lookup("/" + path);
-  if (!node || node.type !== "file") return "";
-  return new TextDecoder().decode(node.data);
-}
-
-function selectFile(path) {
-  saveBuffer();
-  currentPath = path;
-  els.source.value = fileText(path);
-  renderFiles();
-  saveState();
-}
-
-// The editor is the file: what is typed becomes the file's bytes, so a program
-// can loadfile something you just edited.
-function saveBuffer() {
-  if (!currentPath) return;
-  fs.writeFile("/" + currentPath, new TextEncoder().encode(els.source.value));
-}
-
-function setStatus(text, kind = "") {
-  els.status.className = kind;
-  els.status.textContent = text;
-}
-
-async function runProgram() {
-  if (!wasmBytes) return;
-  saveBuffer();
-
-  const chunks = [];
-  const started = performance.now();
+// One fresh instance per invocation, which is what a CLI is: argv in, output
+// out, exit code, gone. The filesystem is the thing that survives.
+async function hb(args) {
+  if (!wasmBytes) return 1;
   let code = 0;
   try {
     code = await run({
-      wasmBytes,
-      fs,
-      args: ["hb", "/" + currentPath],
-      onStdout: (text) => chunks.push({ text }),
-      onStderr: (text) => chunks.push({ text, err: true }),
+      wasmBytes, fs, args: ["hb", ...args],
+      onStdout: (text) => write(text),
+      onStderr: (text) => write(text, "err"),
     });
   } catch (err) {
-    chunks.push({ text: `the module trapped: ${err.message}\n`, err: true });
+    writeLine(`the module trapped: ${err.message}`, "err");
     code = -1;
   }
-  const elapsed = Math.round(performance.now() - started);
-
-  els.output.replaceChildren();
-  for (const chunk of chunks) {
-    const span = document.createElement("span");
-    if (chunk.err) span.className = "err";
-    span.textContent = chunk.text;
-    els.output.append(span);
-  }
-  if (chunks.length === 0) {
-    const span = document.createElement("span");
-    span.className = "meta";
-    span.textContent = "(no output)";
-    els.output.append(span);
-  }
-
-  setStatus(code === 0 ? `ran in ${elapsed} ms` : `exited ${code} · ${elapsed} ms`,
-            code === 0 ? "ok" : "err");
-  renderFiles();   // a program may have written files
-  saveState();
+  await saveState();
+  return code;
 }
 
-els.run.onclick = runProgram;
-els.source.oninput = () => saveBuffer();
-els.source.onblur = () => saveState();
-els.reset.onclick = async () => {
-  fs = seedFilesystem();
-  currentPath = "tour.hb";
-  els.source.value = fileText(currentPath);
-  els.output.replaceChildren();
-  renderFiles();
-  await saveState();
-  setStatus("starting files restored");
-};
+// ---- the shell ----------------------------------------------------------------
 
-document.addEventListener("keydown", (event) => {
-  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+const HELP = `Commands
+
+  hb                 start the REPL (an expression, then a blank line)
+  hb <file>          run a program
+  hb -e '<expr>'     evaluate one expression
+  hb -a <file>       print the AST before evaluating
+  hb --help          the interpreter's own usage
+  ls [path]          list files
+  cat <file>         print a file
+  clear              clear the screen
+  reset              restore the starting files, discard everything else
+
+Everything runs here, in this tab. Files written with createfile persist in
+this browser and nowhere else.`;
+
+// Splits a command line, honouring quotes so `hb -e '1 + 1'` arrives as one
+// argument rather than three.
+function tokenize(line) {
+  const out = [];
+  const re = /'([^']*)'|"([^"]*)"|(\S+)/g;
+  let m;
+  while ((m = re.exec(line)) !== null) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+
+function listFiles(prefix) {
+  const entries = fs.list().filter((e) => e.type !== "dir");
+  const wanted = prefix ? entries.filter((e) => ("/" + e.path).startsWith(prefix.replace(/\/$/, ""))) : entries;
+  if (wanted.length === 0) return writeLine("(nothing here)", "dim");
+  for (const entry of wanted) {
+    const size = entry.type === "symlink" ? `-> ${entry.target}` : `${entry.data.length}B`;
+    writeLine(`  /${entry.path}${" ".repeat(Math.max(1, 32 - entry.path.length))}${size}`);
+  }
+}
+
+function catFile(path) {
+  const full = path.startsWith("/") ? path : "/" + path;
+  const node = fs.lookup(full);
+  if (!node) return writeLine(`cat: ${path}: no such file`, "err");
+  if (node.type === "dir") return writeLine(`cat: ${path}: is a directory`, "err");
+  if (node.type === "symlink") return writeLine(`cat: ${path}: is a symlink to ${node.target}`, "err");
+  write(new TextDecoder().decode(node.data));
+  if (node.data.length && node.data[node.data.length - 1] !== 10) writeLine();
+}
+
+async function runCommand(line) {
+  const args = tokenize(line);
+  if (args.length === 0) return;
+
+  switch (args[0]) {
+    case "help": writeLine(HELP); return;
+    case "clear": screen.replaceChildren(); return;
+    case "ls": listFiles(args[1]); return;
+    case "cat":
+      if (!args[1]) return writeLine("cat: needs a file", "err");
+      catFile(args[1]);
+      return;
+    case "reset":
+      fs = seedFilesystem();
+      await saveState();
+      writeLine("starting files restored", "dim");
+      return;
+    case "hb":
+      if (args.length === 1) {
+        // The banner the real REPL prints, because this is that REPL.
+        repl = { buffer: [] };
+        writeLine("HashedBuild REPL");
+        writeLine("Type an expression, then an empty line to evaluate it. ':q' to quit.");
+        writeLine();
+        return;
+      }
+      await hb(args.slice(1));
+      return;
+    default:
+      writeLine(`${args[0]}: not a command. Try \`help\`.`, "err");
+  }
+}
+
+// A REPL submission: accumulate lines until a blank one, then evaluate the lot.
+async function runReplLine(line) {
+  const trimmed = line.trim();
+  if (repl.buffer.length === 0) {
+    if (trimmed === ":q" || trimmed === ":quit" || trimmed === ":exit") {
+      repl = null;
+      writeLine();
+      return;
+    }
+    if (trimmed === "") return;
+  }
+  if (trimmed === "") {
+    const source = repl.buffer.join("\n");
+    repl.buffer = [];
+    await hb(["-e", source]);
+    return;
+  }
+  repl.buffer.push(line);
+}
+
+function currentPrompt() {
+  if (!repl) return "$ ";
+  return repl.buffer.length === 0 ? "hb> " : "... ";
+}
+
+function refreshPrompt() {
+  promptEl.textContent = currentPrompt();
+}
+
+// ---- input --------------------------------------------------------------------
+
+let busy = false;
+
+entry.addEventListener("keydown", async (event) => {
+  if (event.ctrlKey && event.key.toLowerCase() === "l") {
     event.preventDefault();
-    runProgram();
+    screen.replaceChildren();
+    return;
+  }
+
+  if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+    if (history.length === 0) return;
+    event.preventDefault();
+    historyIndex += event.key === "ArrowUp" ? -1 : 1;
+    historyIndex = Math.max(0, Math.min(history.length, historyIndex));
+    entry.value = history[historyIndex] ?? "";
+    return;
+  }
+
+  if (event.key !== "Enter" || busy) return;
+  event.preventDefault();
+
+  const line = entry.value;
+  entry.value = "";
+  echo(currentPrompt(), line);
+  if (line.trim()) {
+    history.push(line);
+    historyIndex = history.length;
+  }
+
+  busy = true;
+  try {
+    if (repl) await runReplLine(line);
+    else await runCommand(line);
+  } finally {
+    busy = false;
+    refreshPrompt();
+    await saveState();
   }
 });
 
-// ---- boot -------------------------------------------------------------------
+// Clicking anywhere in the scrollback focuses the prompt, the way a terminal
+// behaves - but not while text is being selected for copying.
+screen.addEventListener("mouseup", () => {
+  if (!window.getSelection().toString()) entry.focus();
+});
+
+// ---- boot ---------------------------------------------------------------------
 
 (async () => {
+  writeLine("HashedBuild — the interpreter, compiled to WebAssembly, running here.", "dim");
   const [response, saved] = await Promise.all([fetch("hb.wasm"), loadState()]);
   if (!response.ok) {
-    setStatus(`could not load hb.wasm (${response.status})`, "err");
+    writeLine(`could not load hb.wasm (${response.status})`, "err");
     return;
   }
   wasmBytes = await response.arrayBuffer();
 
   fs = saved?.files ? FileSystem.fromSnapshot(saved.files) : seedFilesystem();
-  currentPath = saved?.currentPath && fs.lookup("/" + saved.currentPath) ? saved.currentPath : "tour.hb";
-  if (!fs.lookup("/" + currentPath)) currentPath = fs.list().find((e) => e.type === "file")?.path ?? "tour.hb";
+  history = saved?.history ?? [];
+  historyIndex = history.length;
 
-  els.source.value = fileText(currentPath);
-  renderFiles();
-  setStatus(saved ? "restored from this browser" : "ready");
+  writeLine(saved ? "Restored your files from this browser." : "Type `help` for commands, or `hb tour.hb` to run something.", "dim");
+  writeLine();
+  refreshPrompt();
+  entry.focus();
 })();
 </script>
 </body>
