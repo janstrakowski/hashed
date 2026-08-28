@@ -333,33 +333,27 @@ jobs:
             sudo apt-get install -y $missing
           fi
 
-      # The shim test compares the wasm against the native build, example by
-      # example - the two have to agree.
+      # The shim half of the playground test compares the wasm against the
+      # native build, example by example - the two have to agree.
       - name: Build native hb
         run: odin build src -out:hb
 
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-
-      - run: npm install
-
       # Both are generated, not committed - the same two commands the Pages
-      # workflow runs. Building them here is what makes the tests below test
-      # the artifacts the site will actually serve.
+      # workflow runs. Building them here is what makes the test below test the
+      # artifacts the site will actually serve.
       - name: Build the interpreter and the filesystem
         run: |
           scripts/build_wasi.sh --threads-web -out:docs/hb.wasm
-          node scripts/build_playground_files.mjs
+          python3 scripts/build_playground_files.py
 
-      - name: WASI shim
-        run: npm run test:shim
-
-      # Throttled, because the unthrottled run on a fast machine is what let a
-      # real input race through in the first place.
-      - name: The page itself
+      # One test, two halves: the WASI shim in a page, then the terminal around
+      # it. Throttled, because the unthrottled run on a fast machine is what let
+      # a real input race through in the first place.
+      - name: The playground
         env:
           # Enough to expose input races (it caught one), without making every
           # module instantiation a test of the timeouts.
           THROTTLE: 2
-        run: npm run test:browser -- "$(command -v google-chrome || command -v chromium-browser || command -v chromium)"
+        run: |
+          python3 scripts/playground_browser_test.py \
+            "$(command -v google-chrome || command -v chromium-browser || command -v chromium)"
