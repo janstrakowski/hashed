@@ -141,8 +141,7 @@ value; `test_every_example_is_covered_by_a_test` fails when an example lands
 without an assertion; and code quoted in `README.md` is compared against the
 example it claims to be (`docs_test.odin`), because it drifted once already.
 
-
-## Opening the pull request
+## Opening and watching the pull request
 
 Work reaches `main` through a pull request, and **opening it is the agent's
 job, once we have agreed the work is ready.** Not before: a green suite is a
@@ -150,3 +149,13 @@ precondition, not the signal. Push the branch as you go, then say what landed
 and what you're unsure about, and wait for the answer.
 
 When it comes back that it's ready, open the PR — don't ask a second time.
+
+**Then watch it.** A pull request is not handed off when it's opened; the work
+continues there. Review comments, review bots and CI results are instructions
+in exactly the way a prompt in the session is — the only difference is where
+they arrive — so read them and act: push the fix, or say plainly why it isn't
+one. Nothing is waiting for a prompt to repeat what a reviewer already said.
+
+Red CI or a merge conflict is work now, whatever the review state; only a
+green, mergeable branch is waiting on anyone. Keep watching until it merges or
+closes.
