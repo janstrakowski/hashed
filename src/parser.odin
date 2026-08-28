@@ -201,7 +201,7 @@ push_binary :: proc(p: ^Parser, left: Node_Idx, op: Node_Idx, right: Node_Idx) -
 }
 
 // Wraps one child under `kind`, spanning from `kw_span`'s start to the child's end -
-// the shape shared by func/asfunc/asfuncstatic/import/serialize/serialize_file/sha256/cached/async.
+// the shape shared by func/asfunc/asfuncstatic/import/sha256/cached/async.
 @(private = "file")
 push_wrapped :: proc(p: ^Parser, kind: Node_Kind, kw_span: Span, child: Node_Idx) -> Node_Idx {
   start, count := push_children(p.ast, []Node_Idx{child})
