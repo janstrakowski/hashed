@@ -141,3 +141,12 @@ value; `test_every_example_is_covered_by_a_test` fails when an example lands
 without an assertion; and code quoted in `README.md` is compared against the
 example it claims to be (`docs_test.odin`), because it drifted once already.
 
+
+## Opening the pull request
+
+Work reaches `main` through a pull request, and **opening it is the agent's
+job, once we have agreed the work is ready.** Not before: a green suite is a
+precondition, not the signal. Push the branch as you go, then say what landed
+and what you're unsure about, and wait for the answer.
+
+When it comes back that it's ready, open the PR — don't ask a second time.
