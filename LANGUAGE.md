@@ -567,6 +567,12 @@ interpreter (the program, or a thread it spawned); and `docs/wasi.js` is the
 WASI host under all of it, implementing the preview1 calls the interpreter
 imports plus the marshalling that carries them between threads.
 
+## Automated changes
+
+Some of the pull requests here are opened by Code Agent Claude, always from a
+`code-agent/*` branch and always subject to human review before anything
+merges — nothing reaches `main` unreviewed just because an agent wrote it.
+
 ## Where to go next
 
 - **[GETTING_STARTED.md](GETTING_STARTED.md)** — installing, the REPL, the live
