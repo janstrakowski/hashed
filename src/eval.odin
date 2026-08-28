@@ -35,21 +35,30 @@ import "core:strings"
 // this charged `eval` alone, which a body as small as a single self-call
 // (`(func #self 0) 5` - one eval and one call_function per level, nothing
 // else) walked straight past into a segfault, because almost none of the
-// stack it was burning was eval frames. With calls charged too, the budget at
-// which the worst shape tried here first crashes natively - the 8 MiB thread
-// default - sits around 2700, and the spread across every other shape tried
-// is small enough that 1800 is a real ~33% margin rather than a guess.
+// stack it was burning was eval frames.
 //
-// WASI gets an eighth of that, because it gets an eighth of the stack: 1 MiB
-// is wasm-ld's reserve for the main stack, which task_wasi.odin then matches
-// for each spawned thread. Deliberately conservative - a wasm frame is smaller
-// than a native one, so the real ceiling there is higher than 225 - but there
-// is no wasm runtime in this repo's test path to measure it with, and
-// over-estimating would trap the module instead of reporting a failure. The
-// deepest example in examples/ needs about 60, so the margin is real either
-// way. Raise it once something can measure it.
-when ODIN_OS == .WASI {
-  MAX_NEST_DEPTH :: #config(HB_MAX_NEST_DEPTH, 225)
+// The budget is per *stack size*, which is what the targets actually differ
+// in - the language does not. Measured the same way for each: run a spread of
+// recursive body shapes, find the budget at which the worst of them first
+// crashes, keep about a third of it in hand.
+//
+//   8 MiB - Linux/macOS, the default thread stack. Worst shape crashes near
+//           2700, so 1800.
+//   1 MiB - Windows, where it is the PE header's default stack reserve, used
+//           by the main thread and (via CreateThread with dwStackSize 0) by
+//           the thread pool `odin test` runs tests on; and WASI, where it is
+//           wasm-ld's reserve for the main stack, which task_wasi.odin then
+//           matches for each spawned thread. Worst shape crashes near 300, so
+//           200.
+//
+// The 1 MiB figure was measured natively under `ulimit -s 1024`, so it is
+// exact for Windows and an over-estimate of the cost for WASI, where a wasm
+// frame is smaller than a native one. Erring that way is deliberate: a budget
+// too high traps the module or overflows the stack instead of reporting a
+// failure. The deepest example in examples/ needs about 60, so every target
+// keeps real headroom.
+when ODIN_OS == .Windows || ODIN_OS == .WASI {
+  MAX_NEST_DEPTH :: #config(HB_MAX_NEST_DEPTH, 200)
 } else {
   MAX_NEST_DEPTH :: #config(HB_MAX_NEST_DEPTH, 1800)
 }
