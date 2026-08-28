@@ -12,9 +12,8 @@ SPEC.html
 hb.wasm
 .cache/
 hb-threads.wasm
+__pycache__/
 # Both of the playground's artifacts are generated - by the Pages workflow for
 # the real site, and by scripts/ for a local one. Committing them coupled every
 # tracked file to a build product.
 docs/repo-files.json
-node_modules/
-package-lock.json
