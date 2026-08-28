@@ -38,8 +38,8 @@ so a chain of `as` reads top-to-bottom while remaining a single expression.
 
 | Type | Written | Notes |
 |---|---|---|
-| `Integer` | `42`, `-3` | 64-bit; `/` truncates |
-| `Float` | `3.5`, `7.0` | one Float promotes the whole expression |
+| `Integer` | `42`, `0x2A`, `0o52`, `0b101010` | 64-bit; `/` truncates |
+| `Float` | `3.5`, `7.0`, `1.5e3` | one Float promotes the whole expression |
 | `Utf8` | `"text"` | `\n`, `\t`, `\"` escapes; no interpolation |
 | `Boolean` | — | no literals yet; comes out of comparisons and `is` |
 | `Nothing` | `nothing` | the unit value |
@@ -58,6 +58,35 @@ Two things surprise people early:
 - **A `File`'s identity is its content, not its path** (§3). Two files with
   identical bytes are equal, wherever they were read from. The path exists for
   display only; nothing in the language reads it back out as a value.
+
+### Writing numbers
+
+An `Integer` can be written in four bases, and `_` groups digits anywhere
+between them:
+
+```hashedbuild
+0x2A                 // hex, upper or lower: 0X2a is the same 42
+0o52                 // octal - an explicit prefix, not a bare leading zero
+0b101010             // binary
+1_000_000            // grouping, allowed in every base: 0xFF_FF
+```
+
+A literal is a `Float` if and only if it contains a `.` or an exponent — no
+suffix says which type is meant:
+
+```hashedbuild
+0.5                  // a digit is required on both sides: `.5` is not a Float
+1.5e3                // => 1500 ... as a Float
+1.5E-3               // the exponent may be signed, and `_`-grouped too
+```
+
+Two things to know. A `Float` with nothing after the point **displays without
+one** — `1.5e3` prints as `1500`, exactly as the `Integer` 1500 does — and yet
+the two are not equal, because no literal is coerced to the other's type. And
+malformed grouping (`1__0`, `1_`, `0x_F`) is currently accepted rather than
+rejected, which `SPEC.md` §3 says it should not be.
+
+→ `examples/numeric-literals.hb` (§3)
 
 ## Operators
 
@@ -218,6 +247,46 @@ wherever you invoke it from.
 → `examples/files-sandboxed.hb`, `examples/files-symlink.hb`,
 `examples/option-picker.hb` (§3, §16)
 
+## Hashing
+
+`sha256` takes one trailing expression, like `func` or `async`, and returns the
+digest of the value it evaluates to, base64-encoded as `Utf8`:
+
+```hashedbuild
+sha256 "hello"                    // => "Ar9oHTBiuRDqs+ZdbYD2daaU7RcvIDTJNB3UICNP92A="
+sha256 loadfile "pkg.tar.gz"      // exactly what sha256sum reports for that file
+sha256 { .a = 1, .b = 2 }
+```
+
+This is not a checksum utility bolted on the side — it is the value identity
+the rest of the language already runs on, made visible. Three consequences
+follow from that, and they are the reason to reach for it:
+
+- **A regular `File` hashes as its content bytes and nothing else.** No path,
+  no name, no length prefix of the language's own. So
+  `sha256 loadfile "pkg.tar.gz"` is the digest `sha256sum` prints for the same
+  file, which is what makes it checkable against a hash upstream published.
+- **A `Table` hashes over its entries sorted by key**, so the order they were
+  written in doesn't matter — `{ .a = 1, .b = 2 }` and `{ .b = 2, .a = 1 }`
+  hash alike, exactly as they compare equal.
+- **Equal values hash alike, and unequal ones don't.** `Integer` 5 and `Float`
+  5.0 are not equal in this language, so they don't collide; nor do `Utf8`
+  `"1"` and `Integer` 1.
+
+That last point is what makes `File` equality work at all: two `File`s are the
+same value when their bytes match, however they were reached.
+
+```hashedbuild
+(loadfile "a.txt") == (loadfile "copy-of-a.txt")   // true, if the bytes match
+```
+
+Three kinds of value have no digest yet, and say so rather than inventing one:
+a **directory** `File` (§3 hashes one over its entries including each file's
+executable bit, which WASI cannot report — see below), a `Function`, and
+`ctx.cache`. Hashing one is a fatal failure like any other (§8).
+
+→ `examples/hashing.hb` (§3, §6, §15)
+
 ## Context and permissions
 
 `ctx` is the ambient context. The filesystem builtins check
@@ -270,12 +339,26 @@ uncatchable, but the work already in flight finishes first.
 ## What isn't built yet
 
 Parsed, specified, and rejected by the evaluator with "not implemented":
-`import`, `serialize`, `serialize_file`, `sha256`, `cached`.
+`import` and `cached`.
+
+Partly built: **hashing**. `sha256` works for every value except a directory
+`File`, a `Function`, and `ctx.cache`. The directory case is the interesting
+one — `SPEC.md` §3 defines a directory's hash over its entries including each
+file's executable bit, and WASI's `filestat` has no permission bits at all, so
+there is no way to compute the specified digest on both targets. Building it
+means first deciding what a directory hashes as somewhere that cannot see an
+exec bit. `Function` is unbuilt because §15 needs it for `cached` but never
+says how a closure is encoded.
 
 Also absent: `true`/`false` literals, loops and recursion of any kind, a
 `Bytes`-returning counterpart to `filetext`, directory listing as a value, and
 the `#context` implicit name. `SPEC.md` describes several of these as settled
 design; none of them run today.
+
+Removed rather than pending: `serialize` and `serialize_file` were specified in
+§15 and are gone as of 2026-08-28 — the canonical byte encoding they would have
+exposed still exists, but only as the thing `sha256` hashes over. Both names are
+ordinary identifiers again.
 
 ## Running somewhere other than Linux
 

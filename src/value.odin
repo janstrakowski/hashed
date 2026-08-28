@@ -147,10 +147,15 @@ values_equal :: proc(a: Value, b: Value) -> bool {
     return ok && av == bv // reference equality - functions aren't otherwise comparable
   case ^File_Value:
     bv, ok := b.(^File_Value)
-    // Reference equality for now - SPEC.md §3's real content-hash-based File
-    // identity (content bytes for a Regular file, a recursive entry-hash for
-    // a Directory) isn't implemented yet, same gap as serialize/sha256 (§15).
-    return ok && av == bv
+    if !ok do return false
+    // SPEC.md §3: a File's identity is pure content, independent of path -
+    // two Files built from different paths are equal whenever their content
+    // matches. A Regular file compares by its content digest (hash.odin).
+    // A Directory still compares by reference: §3 hashes one over its entries
+    // including each file's executable bit, and WASI's filestat has no
+    // permission bits to report, so that half isn't built (see LANGUAGE.md).
+    if av.kind == .Directory || bv.kind == .Directory do return av == bv
+    return values_hash_equal(av, bv)
   case ^Cache_Value:
     bv, ok := b.(^Cache_Value)
     return ok && av == bv // reference equality - there's only ever one per context anyway
