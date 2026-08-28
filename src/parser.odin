@@ -83,8 +83,8 @@ starts_primary :: proc(kind: Node_Kind) -> bool {
        .Left_Paren, .Left_Brace, .Table_Construct, .Variant_Construct,
        .Sigil_ColonColon, .Sigil_ColonDot,
        .Func_Expr, .AsFunc_Expr, .AsFuncStatic_Expr, .Check_Expr, .StaticCheck_Expr,
-       .Error_Expr, .Import_Expr, .Serialize_Expr, .SerializeFile_Expr, .Sha256_Expr,
-       .Cached_Expr, .Async_Expr:
+       .Error_Expr, .Import_Expr, .Sha256_Expr, .Cached_Expr,
+       .Async_Expr:
     return true
   }
   return false
@@ -124,8 +124,8 @@ is_name_token :: proc(kind: Node_Kind) -> bool {
        .Op_And, .Op_Or, .Op_Concat, .Op_Is,
        .Kw_Then, .Kw_Else, .Kw_As, .Kw_WithCtx, .Kw_ChCtx,
        .Func_Expr, .AsFunc_Expr, .AsFuncStatic_Expr, .Check_Expr, .StaticCheck_Expr,
-       .Error_Expr, .Import_Expr, .Serialize_Expr, .SerializeFile_Expr, .Sha256_Expr,
-       .Cached_Expr, .Async_Expr, .Nothing_Literal, .Table_Construct, .Variant_Construct, .Ctx_Expr:
+       .Error_Expr, .Import_Expr, .Sha256_Expr, .Cached_Expr,
+       .Async_Expr, .Nothing_Literal, .Table_Construct, .Variant_Construct, .Ctx_Expr:
     return true
   }
   return false
@@ -554,8 +554,8 @@ parse_primary :: proc(p: ^Parser) -> (Node_Idx, bool) {
     if !bok do body = push_missing(p, p.cur.span, "expected a function body after 'func'")
     return push_wrapped(p, .Func_Expr, kw.span, body), true
 
-  case .AsFunc_Expr, .AsFuncStatic_Expr, .Import_Expr, .Serialize_Expr, .SerializeFile_Expr,
-       .Sha256_Expr, .Cached_Expr, .Async_Expr:
+  case .AsFunc_Expr, .AsFuncStatic_Expr, .Import_Expr, .Sha256_Expr, .Cached_Expr,
+       .Async_Expr:
     kw := advance(p)
     body, bok := parse_expr(p)
     if !bok do body = push_missing(p, p.cur.span, "expected an expression")

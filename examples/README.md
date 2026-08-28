@@ -22,6 +22,7 @@ prose around each of these.
 | Example | Shows |
 |---|---|
 | `arithmetic.hb` | Integer vs Float, truncating `/`, `%`, precedence, unary minus |
+| `numeric-literals.hb` | Hex/octal/binary Integers, `_` grouping, Float exponents |
 | `strings.hb` | `Utf8` literals and escapes, `concat`, comparison |
 | `comparison-and-logic.hb` | `==`/`<`/`>`, `and`/`or` — and the absence of boolean literals |
 | `nothing-and-empty.hb` | `nothing` (unit) vs `empty` (the zero-entry Table) |
@@ -54,6 +55,7 @@ prose around each of these.
 |---|---|
 | `files-sandboxed.hb` | Directory handles, contained sub-paths, `filetext`, path display |
 | `files-symlink.hb` | `readlink` — and why symlinks aren't values of their own |
+| `hashing.hb` | `sha256`, and the content identity that makes two Files one value |
 | `option-picker.hb` | A real program: read, branch, write into `ctx.cache` |
 | `context-permissions.hb` | `ctx`, `chctx chperm`, `withctx` — capability narrowing |
 | `async-basics.hb` | Two reads in flight at once, awaited implicitly |

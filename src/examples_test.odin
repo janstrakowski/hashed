@@ -40,6 +40,8 @@ EXAMPLE_CASES := []Example_Case{
   {"functions.hb", "121"},
   {"functions-and-holes.hb", "{section: 11, explicit: 49, nested: 507, stored: 42, asserted: 9}"},
   {"guard-chain.hb", "5"},
+  {"hashing.hb", `{text: "Ar9oHTBiuRDqs+ZdbYD2daaU7RcvIDTJNB3UICNP92A=", file: "ZT6vBQgoXEojRYd890EDlZWhUF/uGfXa+C9BNGBykI0=", key_order_is_irrelevant: true, same_content_same_file: true, integer_is_not_float: false}`},
+  {"numeric-literals.hb", "{hex: 42, octal: 42, binary: 42, grouped: 1000000, exponent: 1500, bases_agree: true}"},
   {"nothing-and-empty.hb", "{unit: nothing, zero_table: {}, present_case: 42, empty_case: -1, same: false}"},
   {"optional.hb", "42"},
   {"sequence-pattern.hb", "30"},

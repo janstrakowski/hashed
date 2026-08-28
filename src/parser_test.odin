@@ -515,14 +515,12 @@ test_error_with_and_without_message :: proc(t: ^testing.T) {
   testing.expect_value(t, child_count(&ast2, e2), 1)
 }
 
-// ---- import/serialize/serialize_file/sha256/cached/async (§13/§15) --------
+// ---- import/sha256/cached/async (§13/§15) ---------------------------------
 
 @(test)
 test_keyword_prefix_family :: proc(t: ^testing.T) {
   cases := []struct{ src: string, kind: Node_Kind }{
     {"import \"foo\"", .Import_Expr},
-    {"serialize x", .Serialize_Expr},
-    {"serialize_file x", .SerializeFile_Expr},
     {"sha256 x", .Sha256_Expr},
     {"cached x", .Cached_Expr},
     {"async x", .Async_Expr},
