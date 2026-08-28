@@ -44,6 +44,8 @@ EXAMPLE_CASES := []Example_Case{
   {"numeric-literals.hb", "{hex: 42, octal: 42, binary: 42, grouped: 1000000, exponent: 1500, bases_agree: true}"},
   {"nothing-and-empty.hb", "{unit: nothing, zero_table: {}, present_case: 42, empty_case: -1, same: false}"},
   {"optional.hb", "42"},
+  {"recursion.hb", "{fact: 3628800, fib: 55, even: 1, odd: 0}"},
+  {"recursion-anonymous.hb", "{fact: 120, countdown: 15}"},
   {"sequence-pattern.hb", "30"},
   {"strings.hb", `{joined: "hello, world", escaped: "quoted \"inline\", tabbed\tand broken\n", same: true}`},
   {"table-and-concat.hb", `{archive: "https://example.com/x.tar.gz", sha256: "def456"}`},

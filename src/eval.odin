@@ -16,16 +16,66 @@ import "core:strings"
 //     than evaluated immediately. `eval_slot` is the one place that decides
 //     this, via `contains_hole_shallow`, which recurses through ordinary
 //     structure but stops at boundary children (and/or/pipe/call operands,
-//     Table entries, as-bind's sides, then/else's condition/branches).
+//     Table entries, let-bind's sides, then/else's condition/branches).
 //   - `#arg`/`#argN` (and a Hole once actually evaluated - it means the same
 //     thing) is a genuine *dynamic* lookup into `Interpreter.arg_stack`, which
 //     function calls push onto - this is what lets it "reach through"
 //     boundaries the way §9 describes, unlike a Hole's static, per-slot effect.
 
+// How deep the evaluator may nest before a program is stopped with an ordinary
+// fatal failure (§8) instead of running the host stack into the ground. It
+// counts *native recursion steps* - one per `eval`, one more per user-level
+// call - rather than HashedBuild-level calls alone, because the stack cost of
+// one call depends entirely on the shape of the body being evaluated. That is
+// also why SPEC.md §8 promises programs no particular recursion depth, only
+// that exceeding it is diagnosable.
+//
+// Counting both halves is what makes one constant cover shapes that sit at
+// opposite extremes, and counting only one does not: an earlier version of
+// this charged `eval` alone, which a body as small as a single self-call
+// (`(func #self 0) 5` - one eval and one call_function per level, nothing
+// else) walked straight past into a segfault, because almost none of the
+// stack it was burning was eval frames.
+//
+// The budget is per *stack size*, which is what the targets actually differ
+// in - the language does not. Measured the same way for each: run a spread of
+// recursive body shapes, find the budget at which the worst of them first
+// crashes, keep about a third of it in hand.
+//
+//   8 MiB - Linux/macOS, the default thread stack. Worst shape crashes near
+//           2700, so 1800.
+//   1 MiB - Windows, where it is the PE header's default stack reserve, used
+//           by the main thread and (via CreateThread with dwStackSize 0) by
+//           the thread pool `odin test` runs tests on; and WASI, where it is
+//           wasm-ld's reserve for the main stack, which task_wasi.odin then
+//           matches for each spawned thread. Worst shape crashes near 300, so
+//           200.
+//
+// The 1 MiB figure was measured natively under `ulimit -s 1024`, so it is
+// exact for Windows and an over-estimate of the cost for WASI, where a wasm
+// frame is smaller than a native one. Erring that way is deliberate: a budget
+// too high traps the module or overflows the stack instead of reporting a
+// failure. The deepest example in examples/ needs about 60, so every target
+// keeps real headroom.
+when ODIN_OS == .Windows || ODIN_OS == .WASI {
+  MAX_NEST_DEPTH :: #config(HB_MAX_NEST_DEPTH, 200)
+} else {
+  MAX_NEST_DEPTH :: #config(HB_MAX_NEST_DEPTH, 1800)
+}
+
 Interpreter :: struct {
   ast:           ^ast_t,
   src:           string,
   arg_stack:     [dynamic]Value,
+  // The function each active call is *executing*, for `#self`/`#selfN` (§9).
+  // Parallel to arg_stack but deliberately not the same depth: `|>` pushes an
+  // argument without entering a function, and a native builtin enters without
+  // pushing either - so the two are independent addressing schemes, exactly as
+  // §9 says ("per implicit-value kind, each with its own addressing scheme").
+  self_stack:    [dynamic]Value,
+  // Native recursion steps currently outstanding, against MAX_NEST_DEPTH -
+  // bumped by `eval` and by each user-level call (see call_function).
+  nest_depth:    int,
   error_message: string,
 
   // The current implicit context (SPEC.md §9's `ctx`) - read live by native
@@ -210,7 +260,7 @@ contains_hole_shallow :: proc(ast: ^ast_t, node: Node_Idx) -> bool {
     op := ast.nodes[ast.extra_children[n.children_start + 1]].kind
     left := ast.extra_children[n.children_start + 0]
     if op == .Op_Pipe && ast.nodes[left].kind == .Hole {
-      // Same "entirely omitted" rule as As_Bind: "|> f" with a bare, direct
+      // Same "entirely omitted" rule as Let_Bind: "|> f" with a bare, direct
       // Hole on the left is a function of the omitted piped value (SPEC.md
       // §7's own example), not a pipe whose left side is a trivial identity
       // closure - so the escape happens here rather than being independently
@@ -223,13 +273,13 @@ contains_hole_shallow :: proc(ast: ^ast_t, node: Node_Idx) -> bool {
   case .Unary_Expr:
     operand := ast.extra_children[n.children_start + 1]
     return contains_hole_shallow(ast, operand)
-  case .As_Bind, .With_Ctx_Expr, .ChCtx_Expr:
-    // §7 rule 2 (As_Bind's bound value, or With_Ctx_Expr's left expr) applies
-    // identically to both: entirely omitting the slot ("as name body" /
+  case .Let_Bind, .With_Ctx_Expr, .ChCtx_Expr:
+    // §7 rule 2 (Let_Bind's bound value, or With_Ctx_Expr's left expr) applies
+    // identically to both: entirely omitting the slot ("let name; body" /
     // "withctx new_ctx") makes the WHOLE construct a function - the slot's
     // hole-ness escapes outward. A value that merely *contains* a hole inside
-    // a larger expression ("(*2) as name body") does NOT escape - per rule 1
-    // that's its own independent slot, curried separately by eval_as_bind /
+    // a larger expression ("let name (*2); body") does NOT escape - per rule 1
+    // that's its own independent slot, curried separately by eval_let_bind /
     // eval_with_ctx.
     bound := ast.extra_children[n.children_start]
     return ast.nodes[bound].kind == .Hole
@@ -260,6 +310,14 @@ eval_slot :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, bo
 // used throughout the switch body below - functionally they're the same
 // "final result" a plain (Value, bool) return would give the caller.
 eval :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (ret_val: Value, ret_ok: bool) {
+  // Checked before any of the trace/debugger bookkeeping below, so the early
+  // return leaves none of it half-set-up.
+  interp.nest_depth += 1
+  defer interp.nest_depth -= 1
+  if interp.nest_depth > MAX_NEST_DEPTH {
+    return fail(interp, "evaluation nested too deeply (runaway recursion?)")
+  }
+
   tracing := interp.enable_trace
   depth := interp.trace_depth
   if tracing do interp.trace_depth += 1
@@ -316,8 +374,8 @@ eval :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (ret_val: Value
   case .Variant_Construct:
     return eval_variant_construct(interp, node, env)
 
-  case .As_Bind:
-    return eval_as_bind(interp, node, env)
+  case .Let_Bind:
+    return eval_let_bind(interp, node, env)
 
   case .With_Ctx_Expr:
     return eval_with_ctx(interp, node, env)
@@ -392,23 +450,35 @@ eval_unary :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, b
   return fail(interp, "unknown unary operator")
 }
 
+// `#arg`/`#argN` (the enclosing call's argument) and `#self`/`#selfN` (the
+// function that call is executing, §9). Both are dynamic lookups into their own
+// stack, N levels out - which is what lets either reach through a hard boundary
+// (§7) the way a Hole cannot. `#self` is what makes an *anonymous* function
+// recursive: `let rec` (§10) only helps one that has a name to refer to.
 @(private = "file")
 eval_implicit_name :: proc(interp: ^Interpreter, node: Node_Idx) -> (Value, bool) {
-  text := node_text(interp, node) // "#arg", "#arg2", "#context", ...
+  text := node_text(interp, node) // "#arg", "#arg2", "#self", "#context", ...
   rest := text[1:]
   if rest == "context" do return fail(interp, "#context is not supported by this evaluator yet")
-  if !strings.has_prefix(rest, "arg") do return fail(interp, fmt.tprintf("unknown implicit name: %s", text))
+
+  stack: ^[dynamic]Value
+  prefix: string
+  switch {
+  case strings.has_prefix(rest, "arg"):  stack, prefix = &interp.arg_stack, "arg"
+  case strings.has_prefix(rest, "self"): stack, prefix = &interp.self_stack, "self"
+  case: return fail(interp, fmt.tprintf("unknown implicit name: %s", text))
+  }
 
   level := 1
-  num_part := rest[3:]
+  num_part := rest[len(prefix):]
   if len(num_part) > 0 {
     v, ok := strconv.parse_int(num_part)
     if !ok do return fail(interp, fmt.tprintf("malformed implicit name: %s", text))
     level = v
   }
-  idx := len(interp.arg_stack) - level
+  idx := len(stack) - level
   if idx < 0 do return fail(interp, fmt.tprintf("%s: no such enclosing function", text))
-  return interp.arg_stack[idx], true
+  return stack[idx], true
 }
 
 // ---- binary operators --------------------------------------------------------
@@ -731,26 +801,36 @@ eval_variant_construct :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) 
 }
 
 @(private = "file")
-eval_as_bind :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, bool) {
+eval_let_bind :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, bool) {
   n := interp.ast.nodes[node]
   bound_idx := interp.ast.extra_children[n.children_start]
   name_idx := interp.ast.extra_children[n.children_start + 1]
   body_idx := interp.ast.extra_children[n.children_start + 2]
 
+  // `let rec` (§10) evaluates the bound value in the child scope the name is
+  // about to land in, rather than in the parent. Nothing else changes: a
+  // closure made while evaluating it captures that same ^Env by pointer, so
+  // binding the name afterwards is visible to it when it is eventually
+  // called - which is the whole of recursion. A *non*-function that reads its
+  // own name (`let rec x x + 1; x`) instead hits the window before the bind
+  // and fails with the ordinary "undefined name" - the right answer, and one
+  // that falls out rather than needing a sentinel value to detect.
+  child_env := env_make_child(env)
+  bound_env := env if .Is_Rec not_in n.flags else child_env
+
   bound_val: Value
   bok: bool
   if interp.ast.nodes[bound_idx].kind == .Hole {
-    // The whole As_Bind was the deferred slot (§7 rule 2, "named function") -
+    // The whole Let_Bind was the deferred slot (§7 rule 2, "named function") -
     // this is reached via call_function's plain `eval` on its own body, so the
     // omitted value resolves straight from the argument stack, same as any
     // other bare Hole - it must NOT be re-deferred into its own function.
-    bound_val, bok = eval(interp, bound_idx, env)
+    bound_val, bok = eval(interp, bound_idx, bound_env)
   } else {
-    bound_val, bok = eval_slot(interp, bound_idx, env)
+    bound_val, bok = eval_slot(interp, bound_idx, bound_env)
   }
   if !bok do return nil, false
 
-  child_env := env_make_child(env)
   env_bind(child_env, node_text(interp, name_idx), bound_val)
   return eval_slot(interp, body_idx, child_env)
 }
@@ -758,7 +838,7 @@ eval_as_bind :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value,
 // `<expr> withctx <new_ctx>` (§7/§9). `<new_ctx>` is evaluated under the
 // *outer* context (the new one doesn't exist yet), then swapped in only for
 // the extent of `<expr>`, restored unconditionally afterward. `<expr>`
-// follows the exact same bare-Hole-vs-embedded-Hole distinction as As_Bind's
+// follows the exact same bare-Hole-vs-embedded-Hole distinction as Let_Bind's
 // bound value and |>'s left side (see contains_hole_shallow) - an entirely
 // omitted `<expr>` makes the whole With_Ctx_Expr the deferred slot, so its
 // Hole must resolve from the argument stack directly, not re-defer.
@@ -818,15 +898,29 @@ eval_chctx :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, b
 
 call_function :: proc(interp: ^Interpreter, fn: ^Function_Value, arg: Value) -> (Value, bool) {
   // Natives (§16's filesystem builtins) read `ctx` live off the call site -
-  // no arg_stack push (they don't use #arg) and no context swap (the whole
+  // no arg_stack/self_stack push (they evaluate no HashedBuild body, so neither
+  // #arg nor #self can be observed inside one) and no context swap (the whole
   // point is that a wrapping `withctx` can restrict what they do from
   // outside; see SPEC.md §9's "Context & permissions").
   if fn.native != nil {
     return fn.native(interp, fn.native_closure, arg)
   }
 
+  // A call costs native stack of its own, on top of the `eval` frames its body
+  // spends - and a body can be as small as a single call, in which case those
+  // frames alone badly under-count what the stack is actually doing. Charging
+  // the call itself is what keeps one budget honest across body shapes; see
+  // MAX_NEST_DEPTH.
+  interp.nest_depth += 1
+  defer interp.nest_depth -= 1
+  if interp.nest_depth > MAX_NEST_DEPTH {
+    return fail(interp, "evaluation nested too deeply (runaway recursion?)")
+  }
+
   append(&interp.arg_stack, arg)
   defer pop(&interp.arg_stack)
+  append(&interp.self_stack, Value(fn))
+  defer pop(&interp.self_stack)
   // Restore the closure's own captured context for the call, then put back
   // whatever was active at the call site - see Interpreter.current_ctx.
   old_ctx := interp.current_ctx

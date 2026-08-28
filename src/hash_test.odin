@@ -142,6 +142,6 @@ test_unhashable_values_fail_with_a_reason :: proc(t: ^testing.T) {
 // ordinary identifiers again - not reserved words that parse and then fail.
 @(test)
 test_serialize_is_an_ordinary_identifier :: proc(t: ^testing.T) {
-  testing.expect(t, eval_bool(t, `5 as serialize  serialize == 5`))
+  testing.expect(t, eval_bool(t, `let serialize 5; serialize == 5`))
   testing.expect(t, eval_bool(t, `{ .serialize_file = 1 } is { .serialize_file as n }  and n == 1`))
 }

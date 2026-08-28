@@ -13,5 +13,5 @@
 // Note the target comes back as the literal string that was stored - a
 // relative path stays relative, and nothing checks that it resolves to
 // anything at all. Evaluates to "optiona.txt".
-loadfile "." as here
+let here loadfile ".";
   readlink { .dir = here, .path = "link-to-optiona" }

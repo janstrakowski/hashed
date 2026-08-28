@@ -506,7 +506,7 @@ test_async_work_finishes_even_when_the_program_fails :: proc(t: ^testing.T) {
   sd := make_scratch_dir(t, "async_drain_dir")
   defer remove_scratch_dir(sd)
 
-  src := `(async (createfile { .dir = d, .path = "written.txt", .content = "survived" })) as pending  error "fatal"`
+  src := `let pending (async (createfile { .dir = d, .path = "written.txt", .content = "survived" })); error "fatal"`
   _, ok, err := eval_with_builtins(src, "d", sd.handle)
   testing.expect(t, !ok, "the error must still be fatal")
   testing.expect(t, strings.contains(err, "fatal"))

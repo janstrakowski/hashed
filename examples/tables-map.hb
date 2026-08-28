@@ -8,10 +8,10 @@
 // whether a key exists is `is { .key as x }` instead - see
 // table-destructuring.hb. Evaluates to
 // { name: "xz", version: "5.8.4", sha256: "abc123" }.
-"sha256" as computed_key
-  {
+let computed_key "sha256";
+  let pkg {
     .name = "xz",
     .version = "5.8.3",
     [computed_key] = "abc123",
-  } as pkg
+  };
     pkg concat { .version = "5.8.4" }

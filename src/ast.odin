@@ -12,7 +12,10 @@ Node_Kind :: enum u16 {
   Table_Construct,    // children: zero or more Table_Entry (map-style) XOR bare exprs (sequence-style) -
                       // never mixed. Also what `empty` desugars to (zero children).
   Table_Entry,        // children: [key, value] - key is an expr ([expr] form) or an Identifier (.field form)
-  As_Bind,            // children: [bound_expr_or_Hole, name_leaf, body] - `<expr> as <name> <body>`
+  Let_Bind,           // children: [bound_expr_or_Hole, name_leaf, body] - `let [rec] <name> <expr>; <body>`
+                      // (SPEC.md §10). An omitted `<expr>` - nothing between the name and the `;` - is a
+                      // Hole, which makes the whole Let_Bind a function of that omitted value (§7 rule 2).
+                      // The `rec` spelling sets Node_Flags.Is_Rec; see eval.odin's eval_let_bind.
   With_Ctx_Expr,      // children: [expr_or_Hole, new_ctx] - `<expr> withctx <new_ctx>` (SPEC.md §7/§9)
   ChCtx_Expr,         // children: [expr_or_Hole, fn] - `<expr> chctx <fn>` == `<expr> withctx (<fn> ctx)` (SPEC.md §7/§9)
   Func_Expr,          // children: [body] - `func <body>`
@@ -81,9 +84,13 @@ Node_Kind :: enum u16 {
   Right_Brace,
   Comma,
   Colon,     // bare `:` - only meaningful in `{N}: selector, ...` (§8 sequence patterns)
+  Semicolon, // bare `;` - terminates a `let`'s bound value (SPEC.md §10)
   Kw_Then,
   Kw_Else,
-  Kw_As,
+  Kw_As,     // only a binder inside patterns now (`<pattern> as <name>`, §8) - the
+             // bind-expression it used to introduce is spelled `let` (§10)
+  Kw_Let,
+  Kw_Rec,
   Kw_WithCtx,
   Kw_ChCtx,
   End_Of_File,
@@ -107,6 +114,11 @@ Node_Flags :: bit_set[enum {
   // literal text `name`" from "the key is whatever the variable `name`
   // holds", and silently picks the former.
   Computed_Key,
+  // Set on a Let_Bind written `let rec <name> <expr>; <body>` rather than
+  // `let <name> <expr>; <body>` (SPEC.md §10). The two share one node shape;
+  // this is the only thing that distinguishes them, and all it changes is
+  // whether `<name>` is already in scope while `<expr>` is evaluated.
+  Is_Rec,
 }]
 
 Span :: struct {

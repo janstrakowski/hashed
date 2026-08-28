@@ -151,6 +151,8 @@ next_token :: proc(l: ^Lexer) -> Token {
     case "then":          return Token{kind = .Kw_Then, span = Span{start, l.pos}}
     case "else":          return Token{kind = .Kw_Else, span = Span{start, l.pos}}
     case "as":            return Token{kind = .Kw_As, span = Span{start, l.pos}}
+    case "let":           return Token{kind = .Kw_Let, span = Span{start, l.pos}}
+    case "rec":           return Token{kind = .Kw_Rec, span = Span{start, l.pos}}
     case "withctx":       return Token{kind = .Kw_WithCtx, span = Span{start, l.pos}}
     case "chctx":         return Token{kind = .Kw_ChCtx, span = Span{start, l.pos}}
     case "ctx":           return Token{kind = .Ctx_Expr, span = Span{start, l.pos}}
@@ -218,6 +220,7 @@ next_token :: proc(l: ^Lexer) -> Token {
   case '{': l.pos += 1; return Token{.Left_Brace, Span{start, l.pos}}
   case '}': l.pos += 1; return Token{.Right_Brace, Span{start, l.pos}}
   case ',': l.pos += 1; return Token{.Comma, Span{start, l.pos}}
+  case ';': l.pos += 1; return Token{.Semicolon, Span{start, l.pos}}
   }
 
   return Token{kind = .ERROR_UNRECOGNIZED, span = Span{start, l.pos}}

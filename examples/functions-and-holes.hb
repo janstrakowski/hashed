@@ -14,6 +14,6 @@
   .section = 5 |> (*2 + 1),
   .explicit = (func (#arg * #arg)) 7,
   .nested = (func ((func (#arg + #arg2 * 100)) 7)) 5,
-  .stored = { .double = func (#arg * 2) } as t (t.double) 21,
+  .stored = let t { .double = func (#arg * 2) }; (t.double) 21,
   .asserted = (asfunc (func (#arg - 1))) 10,
 }

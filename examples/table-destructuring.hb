@@ -6,7 +6,7 @@
 // Bindings flow rightward: `and`'s right side, and the `then` body, both see
 // what the left side bound (which is what guard-chain.hb builds on).
 // Evaluates to { name: "xz", digest: "abc123", has_url: false }.
-{ .name = "xz", .meta = { .sha256 = "abc123" } } as pkg
+let pkg { .name = "xz", .meta = { .sha256 = "abc123" } };
   pkg is { .name as name, .meta as meta } and meta is { .sha256 as digest }
     then {
       .name = name,

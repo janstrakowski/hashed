@@ -11,7 +11,7 @@ package hashedbuild
 // give - `object |> (c1 and is p1 and c2) then happy else bad` needs those parens,
 // which only makes sense if `|>` binds tighter than `and`):
 //
-//   as-bind  >  then/else  >  or  >  and  >  |>  >  concat  >
+//   let-bind  >  then/else  >  or  >  and  >  |>  >  concat  >
 //   comparison (incl. `is`)  >  +/-  >  * / %  >  unary -  >  application  >
 //   postfix (. [] !: !.)  >  primary
 //
@@ -64,6 +64,16 @@ advance :: proc(p: ^Parser) -> Token {
   return t
 }
 
+// One-token lookahead, needed only to tell `let rec <name> ...` from a `let`
+// binding an ordinary name spelled "rec" (SPEC.md §10's contextual-keyword
+// rule). Lexing is pure and the Lexer is a plain {source, pos} value, so a
+// copy re-lexes the next token without disturbing the real stream.
+@(private = "file")
+peek_kind :: proc(p: ^Parser) -> Node_Kind {
+  lookahead := p.lexer
+  return next_token(&lookahead).kind
+}
+
 @(private = "file")
 expect :: proc(p: ^Parser, kind: Node_Kind, what: string) -> (span: Span, ok: bool) {
   if p.cur.kind == kind {
@@ -104,7 +114,7 @@ is_hole_signal :: proc(kind: Node_Kind) -> bool {
        .Op_And, .Op_Or, .Op_Concat, .Op_Is, .Op_Pipe,
        .Op_Dot, .Op_Bracket, .Op_CheckColon, .Op_CheckDot,
        .Kw_As, .Kw_WithCtx, .Kw_ChCtx,
-       .Right_Paren, .Right_Bracket, .Right_Brace, .Comma, .End_Of_File:
+       .Right_Paren, .Right_Bracket, .Right_Brace, .Comma, .Semicolon, .End_Of_File:
     return true
   }
   return false
@@ -122,7 +132,7 @@ is_name_token :: proc(kind: Node_Kind) -> bool {
   #partial switch kind {
   case .Identifier,
        .Op_And, .Op_Or, .Op_Concat, .Op_Is,
-       .Kw_Then, .Kw_Else, .Kw_As, .Kw_WithCtx, .Kw_ChCtx,
+       .Kw_Then, .Kw_Else, .Kw_As, .Kw_Let, .Kw_Rec, .Kw_WithCtx, .Kw_ChCtx,
        .Func_Expr, .AsFunc_Expr, .AsFuncStatic_Expr, .Check_Expr, .StaticCheck_Expr,
        .Error_Expr, .Import_Expr, .Sha256_Expr, .Cached_Expr,
        .Async_Expr, .Nothing_Literal, .Table_Construct, .Variant_Construct, .Ctx_Expr:
@@ -234,14 +244,14 @@ parse_expr :: proc(p: ^Parser) -> (Node_Idx, bool) {
 // `x withctx c1 chctx c2` is `(x withctx c1) chctx c2`. `<expr>` is the
 // hard-boundary slot (may be a Hole, making the whole thing a function
 // evaluated under the new context). The right side of each parses one level
-// tighter (`parse_as_bind`, not `parse_expr`) so it doesn't re-enter this
+// tighter (`parse_let_bind`, not `parse_expr`) so it doesn't re-enter this
 // same loop and swallow a *sibling* withctx/chctx suffix meant for the
-// growing left side instead - same greedy-tail hazard as an as-bind's body
+// growing left side instead - same greedy-tail hazard as a let-bind's body
 // (which still recurses through the full grammar, and so still absorbs a
 // *trailing* context-op the way the gotcha in SPEC.md §7 describes).
 @(private = "file")
 parse_context_ops :: proc(p: ^Parser) -> (Node_Idx, bool) {
-  left, ok := parse_as_bind(p)
+  left, ok := parse_let_bind(p)
   if !ok do return left, false
 
   for {
@@ -253,7 +263,7 @@ parse_context_ops :: proc(p: ^Parser) -> (Node_Idx, bool) {
     }
 
     advance(p)
-    right, rok := parse_as_bind(p)
+    right, rok := parse_let_bind(p)
     if !rok {
       msg := "expected a context expression after 'withctx'" if kw == .With_Ctx_Expr else "expected a context-change function after 'chctx'"
       right = push_missing(p, p.cur.span, msg)
@@ -268,30 +278,64 @@ parse_context_ops :: proc(p: ^Parser) -> (Node_Idx, bool) {
   }
 }
 
-// `<expr> as <name> <body>` (§7/§10) - `<expr>` is the bound value (may be a
-// Hole, making the whole thing a function), `<body>` recurses to the top of
-// the grammar since it's its own hard-boundary slot.
+// `let [rec] <name> <expr>; <body>` (§7/§10) - the language's one binding
+// form. Unlike the `as`-bind it replaced, this is a *prefix* construct: it
+// takes no left operand, so it starts an expression rather than continuing
+// one, and the `;` hard-terminates `<expr>`.
+//
+// That terminator is the whole reason the bound value parses at `parse_expr`
+// (the top of the grammar) rather than one level tighter the way the old
+// `as`-bind's did: with a `;` to stop at, a `withctx`/`chctx` on the bound
+// side can no longer escape past the binding, so `let a 9 withctx c; a`
+// means what it reads as, with no parens needed. The body is still a greedy
+// tail through the full grammar, so a *trailing* context op is still absorbed
+// into it - see SPEC.md §7's gotcha, and parse_context_ops above.
+//
+// The cost of that terminator: a `let` nested directly in the *bound-value*
+// position steals the outer `;` for itself, so it needs parens -
+// `let a (let b 1; b + 1); a`. A `let` in *body* position needs none, which
+// is the case that actually comes up (`let a 1; let b 2; a + b`).
+//
+// `rec` is contextual like every other keyword here (§10): it only reads as
+// the recursion marker when a name follows it, so `let rec 5; 42` still binds
+// an ordinary name spelled "rec". (Reading such a name back is a separate
+// matter and still doesn't work - a bare `rec` in value position is a
+// keyword, exactly as a bare `then` is.)
 @(private = "file")
-parse_as_bind :: proc(p: ^Parser) -> (Node_Idx, bool) {
-  left, ok := parse_then_chain(p)
-  if !ok do return left, false
-  if p.cur.kind != .Kw_As do return left, true
-
+parse_let_bind :: proc(p: ^Parser) -> (Node_Idx, bool) {
+  if p.cur.kind != .Kw_Let do return parse_then_chain(p)
+  start_pos := p.cur.span.start
   advance(p)
+
+  is_rec := false
+  if p.cur.kind == .Kw_Rec && is_name_token(peek_kind(p)) {
+    is_rec = true
+    advance(p)
+  }
+
   name: Node_Idx
   if is_name_token(p.cur.kind) {
     name = push_name_leaf(p)
   } else {
-    name = push_missing(p, p.cur.span, "expected a name after 'as'")
+    name = push_missing(p, p.cur.span, "expected a name after 'let'")
   }
-  body, bok := parse_expr(p)
-  if !bok do body = push_missing(p, p.cur.span, "expected a body after 'as <name>'")
 
-  start, count := push_children(p.ast, []Node_Idx{left, name, body})
-  span := Span{p.ast.nodes[left].span.start, p.ast.nodes[body].span.end}
+  // A bare `;` here is an omitted bound value, not an error: `is_hole_signal`
+  // lists Semicolon, so parse_expr hands back a zero-width Hole and §7 rule 2
+  // turns the whole Let_Bind into a function of it.
+  bound, bound_ok := parse_expr(p)
+  if !bound_ok do bound = push_missing(p, p.cur.span, "expected a bound value after 'let <name>'")
+  expect(p, .Semicolon, "expected ';' after the bound value in 'let <name> <value>;'")
+
+  body, body_ok := parse_expr(p)
+  if !body_ok do body = push_missing(p, p.cur.span, "expected a body after 'let <name> <value>;'")
+
+  flags := node_flags(p.ast, bound, name, body)
+  if is_rec do flags += {.Is_Rec}
+  start, count := push_children(p.ast, []Node_Idx{bound, name, body})
   return push_node(p.ast, Node{
-    kind = .As_Bind, flags = node_flags(p.ast, left, name, body),
-    span = span, children_start = start, children_count = count,
+    kind = .Let_Bind, flags = flags,
+    span = Span{start_pos, p.ast.nodes[body].span.end}, children_start = start, children_count = count,
   }), true
 }
 

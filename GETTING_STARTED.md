@@ -62,11 +62,11 @@ If a freshly built binary refuses to start with *"An Application Control policy 
 `-a` is the same flag used in the video:
 
 ```sh
-echo '5 |> (*2 + 1) |> (as x x * x)' > demo.hb
+echo '5 |> (*2 + 1) |> (let x; x * x)' > demo.hb
 ./hb -a demo.hb
 ```
 
-You'll see the whole expression grammar at work - pipe chaining (`|>`), an omission section (`*2 + 1`, a function of its omitted argument), and an `as`-bind - as one real tree, followed by the evaluated result.
+You'll see the whole expression grammar at work - pipe chaining (`|>`), an omission section (`*2 + 1`, a function of its omitted argument), and a `let`-bind with its value omitted (`let x; x * x`, a function whose argument is named) - as one real tree, followed by the evaluated result.
 
 ### 2. The evaluator - the REPL
 
@@ -78,7 +78,7 @@ Type `12 * (3 + 4) - 5`, press Enter, then Enter again on an empty line. You sho
 
 ### 3. Real concurrency - `async`
 
-The video's timing demo used a deliberately slow computation (a large lookup-heavy sum) specifically so the speedup was visible on a stopwatch - the language has no loops/recursion yet, so there's no real `fib`/`primegen` to reach for. A much simpler, everyday example is in the repo:
+The video's timing demo used a deliberately slow computation (a large lookup-heavy sum) specifically so the speedup was visible on a stopwatch. There is a real `fib` to reach for now that `let rec` exists (`./hb -e 'let rec fib (let n; (n < 2) then n else (fib (n - 1)) + (fib (n - 2))); fib 25'` takes a visible moment), but the everyday example already in the repo makes the point with less ceremony:
 
 ```sh
 ./hb examples/async-basics.hb
@@ -86,7 +86,7 @@ The video's timing demo used a deliberately slow computation (a large lookup-hea
 
 Open `examples/async-basics.hb` in an editor - it reads two files with `async`, so both reads fire concurrently rather than one after the other, and each is only actually awaited once something (here, `concat`) needs its real value. `examples/async-table.hb` (concurrent entries in a `Table`) and `examples/async-branching.hb` (an untaken branch's `async` work still has to finish, per SPEC.md §2) are worth a look too.
 
-If you want to reproduce something closer to the video's *measured* 2-second comparison: `{0, 0, ..., 0} as t  t[1] + t[2] + ... + t[N]` (many bracket lookups into a large sequence-shaped table) gets slower roughly with `N²`; wrapping several of those in `async` and timing `hb` with and without it will show the same effect. Tune `N` for your machine.
+If you want to reproduce something closer to the video's *measured* 2-second comparison: `let t {0, 0, ..., 0}; t[1] + t[2] + ... + t[N]` (many bracket lookups into a large sequence-shaped table) gets slower roughly with `N²`; wrapping several of those in `async` and timing `hb` with and without it will show the same effect. Tune `N` for your machine.
 
 ### 4. The debugger - genuinely pausable
 

@@ -285,28 +285,87 @@ test_hole_as_dot_accessor_section :: proc(t: ^testing.T) {
   testing.expect_value(t, kind_of(&ast, child(&ast, e, 1)), Node_Kind.Op_Dot)
 }
 
-// ---- as-bind, func, asfunc (§7) --------------------------------------------
+// ---- let-bind, func, asfunc (§7/§10) ----------------------------------------
 
 @(test)
-test_as_bind_named_function :: proc(t: ^testing.T) {
-  // as my_arg my_arg + 1
-  ast := parse_string("as my_arg my_arg + 1")
+test_let_bind_named_function :: proc(t: ^testing.T) {
+  // let my_arg; my_arg + 1 - nothing between the name and the `;` is a Hole,
+  // which makes the whole Let_Bind a function of it (§7 rule 2).
+  ast := parse_string("let my_arg; my_arg + 1")
   defer ast_destroy(&ast)
   testing.expect_value(t, len(ast.errors), 0)
   e := root_expr(&ast)
-  testing.expect_value(t, kind_of(&ast, e), Node_Kind.As_Bind)
+  testing.expect_value(t, kind_of(&ast, e), Node_Kind.Let_Bind)
   testing.expect_value(t, kind_of(&ast, child(&ast, e, 0)), Node_Kind.Hole) // bound expr omitted
   testing.expect_value(t, kind_of(&ast, child(&ast, e, 1)), Node_Kind.Identifier) // my_arg
   testing.expect_value(t, kind_of(&ast, child(&ast, e, 2)), Node_Kind.Binary_Expr) // my_arg + 1
+  testing.expect(t, .Is_Rec not_in ast.nodes[e].flags)
 }
 
 @(test)
-test_as_bind_with_explicit_value :: proc(t: ^testing.T) {
-  ast := parse_string("compute() as result result * 2")
+test_let_bind_with_explicit_value :: proc(t: ^testing.T) {
+  ast := parse_string("let result compute(); result * 2")
   defer ast_destroy(&ast)
   e := root_expr(&ast)
-  testing.expect_value(t, kind_of(&ast, e), Node_Kind.As_Bind)
+  testing.expect_value(t, kind_of(&ast, e), Node_Kind.Let_Bind)
   testing.expect_value(t, kind_of(&ast, child(&ast, e, 0)), Node_Kind.Binary_Expr) // compute()
+}
+
+@(test)
+test_let_rec_sets_the_flag :: proc(t: ^testing.T) {
+  src := "let rec f (let n; n); f 1"
+  ast := parse_string(src)
+  defer ast_destroy(&ast)
+  testing.expect_value(t, len(ast.errors), 0)
+  e := root_expr(&ast)
+  testing.expect_value(t, kind_of(&ast, e), Node_Kind.Let_Bind)
+  testing.expect(t, .Is_Rec in ast.nodes[e].flags)
+  testing.expect_value(t, text_of(&ast, src, child(&ast, e, 1)), "f")
+}
+
+@(test)
+test_rec_is_contextual_and_can_still_be_a_name :: proc(t: ^testing.T) {
+  // `rec` only reads as the recursion marker when a *name* follows it (§10) -
+  // here a number does, so this binds an ordinary name spelled "rec". Reading
+  // it back bare is a different matter, and still doesn't work: like `then`,
+  // `rec` is a name only where a name is expected, never as a bare primary -
+  // hence the body below never mentions it.
+  src := "let rec 5; 42"
+  ast := parse_string(src)
+  defer ast_destroy(&ast)
+  testing.expect_value(t, len(ast.errors), 0)
+  e := root_expr(&ast)
+  testing.expect_value(t, kind_of(&ast, e), Node_Kind.Let_Bind)
+  testing.expect(t, .Is_Rec not_in ast.nodes[e].flags)
+  testing.expect_value(t, text_of(&ast, src, child(&ast, e, 1)), "rec")
+}
+
+@(test)
+test_let_body_chains_without_parens :: proc(t: ^testing.T) {
+  // let a 1; let b 2; a + b - the body is a greedy tail, so a following `let`
+  // nests inside it. This is the case that actually comes up.
+  ast := parse_string("let a 1; let b 2; a + b")
+  defer ast_destroy(&ast)
+  testing.expect_value(t, len(ast.errors), 0)
+  e := root_expr(&ast)
+  testing.expect_value(t, kind_of(&ast, e), Node_Kind.Let_Bind)
+  inner := child(&ast, e, 2)
+  testing.expect_value(t, kind_of(&ast, inner), Node_Kind.Let_Bind)
+  testing.expect_value(t, kind_of(&ast, child(&ast, inner, 2)), Node_Kind.Binary_Expr)
+}
+
+@(test)
+test_let_bound_value_takes_a_whole_expression :: proc(t: ^testing.T) {
+  // The `;` terminator is what lets the bound value be a full expression: a
+  // trailing `withctx` there can no longer escape past the binding the way it
+  // did when this was an `as`-bind (SPEC.md §7's gotcha, §10's resolution).
+  ast := parse_string("let a 9 withctx c; a")
+  defer ast_destroy(&ast)
+  testing.expect_value(t, len(ast.errors), 0)
+  e := root_expr(&ast)
+  testing.expect_value(t, kind_of(&ast, e), Node_Kind.Let_Bind)
+  testing.expect_value(t, kind_of(&ast, child(&ast, e, 0)), Node_Kind.With_Ctx_Expr)
+  testing.expect_value(t, kind_of(&ast, child(&ast, e, 2)), Node_Kind.Identifier) // a
 }
 
 @(test)
@@ -685,7 +744,7 @@ test_withctx_basic_and_omitted_left :: proc(t: ^testing.T) {
   testing.expect_value(t, kind_of(&ast, child(&ast, e, 1)), Node_Kind.Ctx_Expr)
 
   // withctx ctx - omitted left is a function of the omitted value, same rule
-  // as |>'s and as-bind's omitted slots (§7).
+  // as |>'s and a let-bind's omitted bound value (§7).
   ast2 := parse_string("withctx ctx")
   defer ast_destroy(&ast2)
   testing.expect_value(t, len(ast2.errors), 0)
@@ -695,31 +754,31 @@ test_withctx_basic_and_omitted_left :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_withctx_absorbed_into_as_bind_body_without_parens :: proc(t: ^testing.T) {
-  // x as a a withctx c - even though withctx is the LOOSEST operator, an
-  // as-bind's body (§10) recurses through the full grammar (same greedy-tail
+test_withctx_absorbed_into_let_body_without_parens :: proc(t: ^testing.T) {
+  // let a x; a withctx c - even though withctx is the LOOSEST operator, a
+  // let-bind's body (§10) recurses through the full grammar (same greedy-tail
   // shape as present/:./:: 's payload), so a trailing withctx gets absorbed
-  // into the body rather than reaching back to wrap the whole as-bind:
-  // x as a (a withctx c), NOT (x as a a) withctx c.
-  ast := parse_string("x as a a withctx c")
+  // into the body rather than reaching back to wrap the whole let-bind:
+  // let a x; (a withctx c), NOT (let a x; a) withctx c.
+  ast := parse_string("let a x; a withctx c")
   defer ast_destroy(&ast)
   testing.expect_value(t, len(ast.errors), 0)
   e := root_expr(&ast)
-  testing.expect_value(t, kind_of(&ast, e), Node_Kind.As_Bind)
+  testing.expect_value(t, kind_of(&ast, e), Node_Kind.Let_Bind)
   body := child(&ast, e, 2)
   testing.expect_value(t, kind_of(&ast, body), Node_Kind.With_Ctx_Expr)
 }
 
 @(test)
-test_withctx_wraps_as_bind_with_explicit_parens :: proc(t: ^testing.T) {
-  // (x as a a) withctx c - parenthesizing the as-bind gets the "wraps a whole
-  // computation" grouping the loosest-operator precedence otherwise suggests.
-  ast := parse_string("(x as a a) withctx c")
+test_withctx_wraps_let_bind_with_explicit_parens :: proc(t: ^testing.T) {
+  // (let a x; a) withctx c - parenthesizing the let-bind gets the "wraps a
+  // whole computation" grouping the loosest-operator precedence suggests.
+  ast := parse_string("(let a x; a) withctx c")
   defer ast_destroy(&ast)
   testing.expect_value(t, len(ast.errors), 0)
   e := root_expr(&ast)
   testing.expect_value(t, kind_of(&ast, e), Node_Kind.With_Ctx_Expr)
-  testing.expect_value(t, kind_of(&ast, child(&ast, e, 0)), Node_Kind.As_Bind)
+  testing.expect_value(t, kind_of(&ast, child(&ast, e, 0)), Node_Kind.Let_Bind)
   testing.expect_value(t, kind_of(&ast, child(&ast, e, 1)), Node_Kind.Identifier)
 }
 
@@ -778,16 +837,16 @@ test_ctx_and_withctx_are_context_sensitive_keywords :: proc(t: ^testing.T) {
   testing.expect_value(t, kind_of(&ast1, tag), Node_Kind.Tag_Name)
   testing.expect_value(t, text_of(&ast1, ":.ctx 1", tag), "ctx")
 
-  // x as ctx ctx - "ctx" as an as-bind target is just a name; the *body's*
+  // let ctx x; ctx - "ctx" as a let-bind target is just a name; the *body's*
   // bare "ctx" is still the reserved context-read leaf, not a reference to it.
-  ast2 := parse_string("x as ctx ctx")
+  ast2 := parse_string("let ctx x; ctx")
   defer ast_destroy(&ast2)
   testing.expect_value(t, len(ast2.errors), 0)
   e2 := root_expr(&ast2)
-  testing.expect_value(t, kind_of(&ast2, e2), Node_Kind.As_Bind)
+  testing.expect_value(t, kind_of(&ast2, e2), Node_Kind.Let_Bind)
   name := child(&ast2, e2, 1)
   testing.expect_value(t, kind_of(&ast2, name), Node_Kind.Identifier)
-  testing.expect_value(t, text_of(&ast2, "x as ctx ctx", name), "ctx")
+  testing.expect_value(t, text_of(&ast2, "let ctx x; ctx", name), "ctx")
   body := child(&ast2, e2, 2)
   testing.expect_value(t, kind_of(&ast2, body), Node_Kind.Ctx_Expr)
 }
@@ -820,12 +879,12 @@ test_keywords_are_context_sensitive_as_names :: proc(t: ^testing.T) {
   // positions (.field/:.tag/as-target), not to standalone value references: `then`
   // still can't be used as a bare primary, since that's a genuinely different
   // (unnamed) grammar slot that parse_primary doesn't special-case for keywords.
-  ast3 := parse_string("x as then 42")
+  ast3 := parse_string("let then x; 42")
   defer ast_destroy(&ast3)
   testing.expect_value(t, len(ast3.errors), 0)
   e3 := root_expr(&ast3)
-  testing.expect_value(t, kind_of(&ast3, e3), Node_Kind.As_Bind)
+  testing.expect_value(t, kind_of(&ast3, e3), Node_Kind.Let_Bind)
   name3 := child(&ast3, e3, 1)
   testing.expect_value(t, kind_of(&ast3, name3), Node_Kind.Identifier)
-  testing.expect_value(t, text_of(&ast3, "x as then 42", name3), "then")
+  testing.expect_value(t, text_of(&ast3, "let then x; 42", name3), "then")
 }

@@ -25,14 +25,25 @@ A program is **one expression**. There are no statements, no top-level
 declarations, and no entry point — the value that expression evaluates to is the
 program's output, which `hb` prints.
 
-Names come from `as`, which binds a value for the expression that follows it:
+Names come from `let`, which binds a value for the expression that follows the
+`;`:
 
 ```hashedbuild
-5 as x  x * x        // => 25
+let x 5; x * x       // => 25
 ```
 
-That is also all the "sequencing" there is: `<value> as <name> <body>` nests,
-so a chain of `as` reads top-to-bottom while remaining a single expression.
+That is also all the "sequencing" there is: `let <name> <value>; <body>` nests,
+so a chain of `let` reads top-to-bottom while remaining a single expression:
+
+```hashedbuild
+let a 1; let b 2; a + b        // => 3
+```
+
+The `;` terminates the bound value, so that value can be any expression without
+needing parens — including one ending in `withctx` (below), which is the one
+place the nesting can surprise you in reverse: a `let` written *inside* another
+one's bound value has to be parenthesized, `let a (let b 1; b + 1); a`, or it
+takes the outer `;` for itself.
 
 ## Values
 
@@ -114,7 +125,7 @@ The one composite type, used as both record and sequence.
 { .name = "xz", .version = "5.8.3" }    // map-style
 { 10, 20, 30 }                          // sequence-style: keys 1, 2, 3
 empty                                   // the zero-entry Table
-"sha256" as k  { [k] = "abc123" }       // computed key: { sha256: "abc123" }
+let k "sha256"; { [k] = "abc123" }      // computed key: { sha256: "abc123" }
 ```
 
 Read a field with `.name`, an element with `[i]` (1-based), and update by
@@ -138,14 +149,20 @@ around, and call:
 ```hashedbuild
 (*2 + 1)                    // omission section: the blank operand is the argument
 func (#arg * #arg)          // explicit; the argument is #arg
+let x; x * x                // named argument: the bound value is the blank
 asfunc <expr>               // asserts an existing value is callable
 ```
+
+The third is an ordinary `let` with nothing written between the name and the
+`;`. That blank is the same omission as the first line's — it just makes the
+whole binding a function of the value that fills it, which is how an argument
+gets a name.
 
 Calling is juxtaposition — `f x` — and `|>` pipes a value into a function,
 which is what makes chains read left-to-right:
 
 ```hashedbuild
-5 |> (*2 + 1) |> (as x x * x)      // => 121
+5 |> (*2 + 1) |> (let x; x * x)    // => 121
 ```
 
 `#arg2` reaches the *enclosing* call's argument while that call is still
@@ -153,6 +170,46 @@ running. It's a call stack, not a lexical capture: a function that has already
 been returned can't reach back through it.
 
 → `examples/functions.hb`, `examples/functions-and-holes.hb` (§7)
+
+## Recursion
+
+A plain `let` evaluates its value before the name exists, so a function bound
+that way can't call itself. `let rec` binds the name first:
+
+```hashedbuild
+let rec fact (let n; (n == 0) then 1 else n * (fact (n - 1))); fact 10
+// => 3628800
+```
+
+A function with no name recurses through `#self` — the function currently
+running, alongside `#arg` for the value it was called with. `#self2` reaches
+one call further out, exactly as `#arg2` does:
+
+```hashedbuild
+(func (#arg == 0) then 1 else #arg * (#self (#arg - 1))) 5      // => 120
+```
+
+Two functions that call each other can't be bound one after the other — the
+first would name something that doesn't exist yet — so bind one Table of them
+recursively instead:
+
+```hashedbuild
+let rec fns {
+  .even = (let n; (n == 0) then 1 else fns.odd (n - 1)),
+  .odd = (let n; (n == 0) then 0 else fns.even (n - 1)),
+};
+fns.even 8       // => 1  (there are no true/false literals)
+```
+
+Recursion has no *specified* depth. The evaluator walks the tree on the host's
+own call stack and stops with `evaluation nested too deeply` before running out
+of it — a fatal failure like any other, catchable by nothing. How deep that is
+depends on the shape of the function's body, not on a fixed number of calls: a
+body that nests heavily exhausts the budget in fewer recursions than a simple
+one. Deep recursion is not what this language is for; if you hit the limit,
+that is the message you get rather than a crash.
+
+→ `examples/recursion.hb`, `examples/recursion-anonymous.hb` (§9/§10)
 
 ## Branching and pattern matching
 
@@ -199,7 +256,7 @@ empty                   // …and this is its absence
 
 ## Failure
 
-Four distinct failure sources, and exactly one of them is recoverable:
+Five distinct failure sources, and exactly one of them is recoverable:
 
 | | Recoverable? |
 |---|---|
@@ -207,6 +264,7 @@ Four distinct failure sources, and exactly one of them is recoverable:
 | `check(<cond>, <msg>) <body>` | **no** — fatal, no `else` anywhere catches it |
 | `error <msg>` | **no** — same |
 | a failed builtin call — missing file, escaping path, denied `io` | **no** — same |
+| evaluation nested too deeply — see [Recursion](#recursion) | **no** — same |
 
 `check` is for invariants that must hold; `then`/`else` is for branching. There
 is deliberately no way to catch the fatal kinds (§8, §11).
@@ -355,9 +413,9 @@ runs. Building it means first deciding what a directory hashes as somewhere
 that cannot see an exec bit. `Function` is unbuilt because §15 needs it for `cached` but never
 says how a closure is encoded.
 
-Also absent: `true`/`false` literals, loops and recursion of any kind, a
-`Bytes`-returning counterpart to `filetext`, directory listing as a value, and
-the `#context` implicit name. `SPEC.md` describes several of these as settled
+Also absent: `true`/`false` literals, loops of any kind (recursion is the only
+repetition there is — see above), a `Bytes`-returning counterpart to
+`filetext`, directory listing as a value, and the `#context` implicit name. `SPEC.md` describes several of these as settled
 design; none of them run today.
 
 Removed rather than pending: `serialize` and `serialize_file` were specified in
