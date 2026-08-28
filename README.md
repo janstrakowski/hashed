@@ -43,7 +43,7 @@ A real parser and tree-walking evaluator exist now (`src/`, with a full test sui
 // optiona.txt's content; "option B" does the analogous thing with
 // optionb.txt; anything else is an unrecoverable runtime error. The result
 // goes into ctx.cache, which names it by its own content hash.
-loadfile "choice.txt" |> filetext as choice
+let choice loadfile "choice.txt" |> filetext;
   choice == "option A" then
     createfile {
       .dir = ctx.cache,

@@ -6,7 +6,7 @@
 // concat {99}` replaces element 1 rather than appending - the result is no
 // longer gap-free-from-1 in source order, so it prints its keys again.
 // Evaluates to { second: 20, sum: 60, merged: {2: 20, 3: 30, 1: 99} }.
-{10, 20, 30} as xs
+let xs {10, 20, 30};
   {
     .second = xs[2],
     .sum = xs[1] + xs[2] + xs[3],

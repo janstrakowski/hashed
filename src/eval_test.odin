@@ -3,6 +3,7 @@
 #+build linux, windows
 package hashedbuild
 
+import "core:strings"
 import "core:testing"
 
 @(private = "file")
@@ -240,8 +241,8 @@ test_eval_hole_with_no_active_call_fails :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_eval_as_bind_explicit_value :: proc(t: ^testing.T) {
-  src := "5 as x x + 1"
+test_eval_let_bind_explicit_value :: proc(t: ^testing.T) {
+  src := "let x 5; x + 1"
   ast := parse_src(src)
   defer ast_destroy(&ast)
   val, ok, err := eval_top(&ast, src)
@@ -249,10 +250,10 @@ test_eval_as_bind_explicit_value :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_eval_as_bind_named_function :: proc(t: ^testing.T) {
-  // §7 rule 2: "as my_arg my_arg + 1" is itself a named function - applying it
-  // should behave exactly like the anonymous "func #arg + 1" case.
-  src := "(as my_arg my_arg + 1) 5"
+test_eval_let_bind_named_function :: proc(t: ^testing.T) {
+  // §7 rule 2: "let my_arg; my_arg + 1" - the bound value omitted entirely -
+  // is itself a named function, behaving exactly like "func #arg + 1".
+  src := "(let my_arg; my_arg + 1) 5"
   ast := parse_src(src)
   defer ast_destroy(&ast)
   val, ok, err := eval_top(&ast, src)
@@ -260,15 +261,118 @@ test_eval_as_bind_named_function :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_eval_as_bind_curried_hole_is_independent_slot :: proc(t: ^testing.T) {
-  // "(*2) as x ..." - the bound value ISN'T entirely omitted, it's a bigger
+test_eval_let_bind_curried_hole_is_independent_slot :: proc(t: ^testing.T) {
+  // "let x (*2); ..." - the bound value ISN'T entirely omitted, it's a bigger
   // expression that merely contains a hole, so per §7 rule 1 that's its own
   // curried slot: x is bound to a doubling Function, not to a raw number.
-  src := "(*2) as x x 5"
+  src := "let x (*2); x 5"
   ast := parse_src(src)
   defer ast_destroy(&ast)
   val, ok, err := eval_top(&ast, src)
   expect_int(t, val, ok, err, 10)
+}
+
+// ---- let rec and #self: recursion (§9/§10) --------------------------------------
+
+@(test)
+test_eval_let_rec_lets_a_function_call_itself :: proc(t: ^testing.T) {
+  src := "let rec fact (let n; (n == 0) then 1 else n * (fact (n - 1))); fact 10"
+  ast := parse_src(src)
+  defer ast_destroy(&ast)
+  val, ok, err := eval_top(&ast, src)
+  expect_int(t, val, ok, err, 3628800)
+}
+
+@(test)
+test_eval_plain_let_does_not_see_its_own_name :: proc(t: ^testing.T) {
+  // Without `rec` the bound value is evaluated in the parent scope, so the
+  // name isn't there yet - the whole point of the distinction.
+  src := "let fact (let n; (n == 0) then 1 else n * (fact (n - 1))); fact 3"
+  ast := parse_src(src)
+  defer ast_destroy(&ast)
+  _, ok, err := eval_top(&ast, src)
+  testing.expect(t, !ok)
+  testing.expect(t, strings.contains(err, "undefined name: fact"), err)
+}
+
+@(test)
+test_eval_let_rec_on_a_non_function_fails_with_undefined_name :: proc(t: ^testing.T) {
+  // `rec` binds the name into the scope the value is computed in, but nothing
+  // is *stored* there until that value exists - so a self-reference that has
+  // to be read immediately (rather than captured in a closure and read later)
+  // lands in the window before the bind and reports the ordinary error.
+  src := "let rec x x + 1; x"
+  ast := parse_src(src)
+  defer ast_destroy(&ast)
+  _, ok, err := eval_top(&ast, src)
+  testing.expect(t, !ok)
+  testing.expect(t, strings.contains(err, "undefined name: x"), err)
+}
+
+@(test)
+test_eval_let_rec_table_gives_mutual_recursion :: proc(t: ^testing.T) {
+  // One `rec` covering a Table of closures is how two functions reach each
+  // other: neither could be bound first with its own `let rec`.
+  src := "let rec fns { .even = (let n; (n == 0) then 1 else fns.odd (n - 1)), .odd = (let n; (n == 0) then 0 else fns.even (n - 1)) }; fns.even 8"
+  ast := parse_src(src)
+  defer ast_destroy(&ast)
+  val, ok, err := eval_top(&ast, src)
+  expect_int(t, val, ok, err, 1)
+}
+
+@(test)
+test_eval_self_recurses_without_a_name :: proc(t: ^testing.T) {
+  src := "(func (#arg == 0) then 1 else #arg * (#self (#arg - 1))) 5"
+  ast := parse_src(src)
+  defer ast_destroy(&ast)
+  val, ok, err := eval_top(&ast, src)
+  expect_int(t, val, ok, err, 120)
+}
+
+@(test)
+test_eval_self2_reaches_the_enclosing_call :: proc(t: ^testing.T) {
+  // The inner function makes the recursive step by calling the *outer* one
+  // back, exactly as #arg2 reaches the outer call's argument.
+  src := "(func (#arg == 0) then 0 else ((func #arg2 + (#self2 (#arg2 - 1))) #arg)) 5"
+  ast := parse_src(src)
+  defer ast_destroy(&ast)
+  val, ok, err := eval_top(&ast, src)
+  expect_int(t, val, ok, err, 15)
+}
+
+@(test)
+test_eval_self_outside_any_call_fails :: proc(t: ^testing.T) {
+  src := "#self"
+  ast := parse_src(src)
+  defer ast_destroy(&ast)
+  _, ok, err := eval_top(&ast, src)
+  testing.expect(t, !ok)
+  testing.expect(t, strings.contains(err, "no such enclosing function"), err)
+}
+
+@(test)
+test_eval_tightest_runaway_self_call_fails_instead_of_crashing :: proc(t: ^testing.T) {
+  // The worst case for the nesting budget, and the one that caught an earlier
+  // version of it: one eval and one call per level and nothing else, so almost
+  // none of the stack being burned shows up as eval frames. See MAX_NEST_DEPTH.
+  src := "(func #self 0) 5"
+  ast := parse_src(src)
+  defer ast_destroy(&ast)
+  _, ok, err := eval_top(&ast, src)
+  testing.expect(t, !ok)
+  testing.expect(t, strings.contains(err, "nested too deeply"), err)
+}
+
+@(test)
+test_eval_runaway_recursion_fails_instead_of_crashing :: proc(t: ^testing.T) {
+  // Unbounded recursion must come back as an ordinary fatal failure (§8), not
+  // as a native stack overflow - see MAX_EVAL_DEPTH in eval.odin.
+  src := "let rec f (let n; n + (f (n + 1))); f 1"
+  ast := parse_src(src)
+  defer ast_destroy(&ast)
+  _, ok, err := eval_top(&ast, src)
+  testing.expect(t, !ok)
+  testing.expect(t, strings.contains(err, "nested too deeply"), err)
 }
 
 // ---- guard chains: and / or / is, then / else ----------------------------------
@@ -296,13 +400,13 @@ test_eval_and_or_short_circuit_shape :: proc(t: ^testing.T) {
 
 @(test)
 test_eval_is_literal_pattern :: proc(t: ^testing.T) {
-  src1 := "5 as x x is 5"
+  src1 := "let x 5; x is 5"
   ast1 := parse_src(src1)
   defer ast_destroy(&ast1)
   val1, ok1, err1 := eval_top(&ast1, src1)
   expect_bool(t, val1, ok1, err1, true)
 
-  src2 := "3 as x x is 5"
+  src2 := "let x 3; x is 5"
   ast2 := parse_src(src2)
   defer ast_destroy(&ast2)
   val2, ok2, err2 := eval_top(&ast2, src2)
@@ -313,7 +417,7 @@ test_eval_is_literal_pattern :: proc(t: ^testing.T) {
 test_eval_is_binds_name_into_and_chain :: proc(t: ^testing.T) {
   // x is n as m and m > 0 - a successful `is` binds `m`, visible to the `and`
   // chain's right side (§8's scope-threading rule).
-  src := "5 as x (x is n as m and m > 0)"
+  src := "let x 5; (x is n as m and m > 0)"
   ast := parse_src(src)
   defer ast_destroy(&ast)
   val, ok, err := eval_top(&ast, src)
@@ -322,7 +426,7 @@ test_eval_is_binds_name_into_and_chain :: proc(t: ^testing.T) {
 
 @(test)
 test_eval_then_without_else_fails_on_false_condition :: proc(t: ^testing.T) {
-  src := "3 as x x > 5 then x"
+  src := "let x 3; x > 5 then x"
   ast := parse_src(src)
   defer ast_destroy(&ast)
   _, ok, _ := eval_top(&ast, src)
@@ -331,7 +435,7 @@ test_eval_then_without_else_fails_on_false_condition :: proc(t: ^testing.T) {
 
 @(test)
 test_eval_then_else_takes_bad_path_on_failure :: proc(t: ^testing.T) {
-  src := "3 as x x > 5 then 100 else 200"
+  src := "let x 3; x > 5 then 100 else 200"
   ast := parse_src(src)
   defer ast_destroy(&ast)
   val, ok, err := eval_top(&ast, src)
@@ -340,7 +444,7 @@ test_eval_then_else_takes_bad_path_on_failure :: proc(t: ^testing.T) {
 
 @(test)
 test_eval_then_else_takes_happy_path_on_success :: proc(t: ^testing.T) {
-  src := "10 as x x > 5 then 100 else 200"
+  src := "let x 10; x > 5 then 100 else 200"
   ast := parse_src(src)
   defer ast_destroy(&ast)
   val, ok, err := eval_top(&ast, src)
@@ -351,7 +455,7 @@ test_eval_then_else_takes_happy_path_on_success :: proc(t: ^testing.T) {
 test_eval_canonical_pipe_guard_chain_example :: proc(t: ^testing.T) {
   // object |> (c1 and is p1 and c2) then happy else bad - SPEC.md §8's own
   // example, instantiated with concrete values.
-  src := "5 as object object |> (object > 0 and is n as p1 and p1 < 100) then p1 else 0"
+  src := "let object 5; object |> (object > 0 and is n as p1 and p1 < 100) then p1 else 0"
   ast := parse_src(src)
   defer ast_destroy(&ast)
   val, ok, err := eval_top(&ast, src)
@@ -389,19 +493,19 @@ test_eval_present_and_empty :: proc(t: ^testing.T) {
 
 @(test)
 test_eval_is_variant_and_optional_patterns :: proc(t: ^testing.T) {
-  src1 := "(present 42) as x x is present as v and v > 0"
+  src1 := "let x (present 42); x is present as v and v > 0"
   ast1 := parse_src(src1)
   defer ast_destroy(&ast1)
   val1, ok1, err1 := eval_top(&ast1, src1)
   expect_bool(t, val1, ok1, err1, true)
 
-  src2 := "empty as x x is empty"
+  src2 := "let x empty; x is empty"
   ast2 := parse_src(src2)
   defer ast_destroy(&ast2)
   val2, ok2, err2 := eval_top(&ast2, src2)
   expect_bool(t, val2, ok2, err2, true)
 
-  src3 := "(:.pending 42) as x x is :.pending v and v > 0"
+  src3 := "let x (:.pending 42); x is :.pending v and v > 0"
   ast3 := parse_src(src3)
   defer ast_destroy(&ast3)
   val3, ok3, err3 := eval_top(&ast3, src3)
@@ -412,7 +516,7 @@ test_eval_is_variant_and_optional_patterns :: proc(t: ^testing.T) {
 
 @(test)
 test_eval_is_table_destructure_pattern :: proc(t: ^testing.T) {
-  src := `{ .a = 1, .b = 2 } as t t is { .a, .b as bound } and bound > 0`
+  src := `let t { .a = 1, .b = 2 }; t is { .a, .b as bound } and bound > 0`
   ast := parse_src(src)
   defer ast_destroy(&ast)
   val, ok, err := eval_top(&ast, src)
@@ -421,13 +525,13 @@ test_eval_is_table_destructure_pattern :: proc(t: ^testing.T) {
 
 @(test)
 test_eval_is_sequence_pattern :: proc(t: ^testing.T) {
-  src := "{10, 20} as t t is {{2}: .1 as first, [2] as second} and first < second"
+  src := "let t {10, 20}; t is {{2}: .1 as first, [2] as second} and first < second"
   ast := parse_src(src)
   defer ast_destroy(&ast)
   val, ok, err := eval_top(&ast, src)
   expect_bool(t, val, ok, err, true)
 
-  src2 := "{10, 20, 30} as t t is {{2}}" // wrong length
+  src2 := "let t {10, 20, 30}; t is {{2}}" // wrong length
   ast2 := parse_src(src2)
   defer ast_destroy(&ast2)
   val2, ok2, err2 := eval_top(&ast2, src2)
@@ -438,7 +542,7 @@ test_eval_is_sequence_pattern :: proc(t: ^testing.T) {
 
 @(test)
 test_eval_check_passes_through_on_success :: proc(t: ^testing.T) {
-  src := "5 as x check(x > 0) x"
+  src := "let x 5; check(x > 0) x"
   ast := parse_src(src)
   defer ast_destroy(&ast)
   val, ok, err := eval_top(&ast, src)
@@ -447,7 +551,7 @@ test_eval_check_passes_through_on_success :: proc(t: ^testing.T) {
 
 @(test)
 test_eval_check_fails_with_message :: proc(t: ^testing.T) {
-  src := `-5 as x static_check(x > 0, "must be positive") x`
+  src := `let x -5; static_check(x > 0, "must be positive") x`
   ast := parse_src(src)
   defer ast_destroy(&ast)
   _, ok, err := eval_top(&ast, src)
@@ -474,7 +578,7 @@ test_eval_ctx_reads_the_active_context :: proc(t: ^testing.T) {
 @(test)
 test_eval_withctx_scoped_to_its_expr_only :: proc(t: ^testing.T) {
   // ctx read outside a withctx is unaffected by one that already finished.
-  src := "(ctx withctx { .a = 1 }) as inner ctx"
+  src := "let inner (ctx withctx { .a = 1 }); ctx"
   ast := parse_src(src)
   defer ast_destroy(&ast)
   val, ok, err := eval_top(&ast, src)
@@ -491,7 +595,7 @@ test_eval_closure_captures_ctx_at_creation_not_call_site :: proc(t: ^testing.T) 
   // called from inside a withctx that has since widened ctx to {tag:2} -
   // SPEC.md §9's security boundary: a called function only ever sees its own
   // context, never a wider one supplied by whoever happens to call it.
-  src := "((func ctx) withctx { .tag = 1 }) as f (f 0) withctx { .tag = 2 }"
+  src := "let f ((func ctx) withctx { .tag = 1 }); (f 0) withctx { .tag = 2 }"
   ast := parse_src(src)
   defer ast_destroy(&ast)
   val, ok, err := eval_top(&ast, src)
@@ -548,7 +652,7 @@ test_eval_error_with_and_without_message :: proc(t: ^testing.T) {
 // the literal key "k" for `[k] = ...`.
 @(test)
 test_eval_table_computed_key_is_evaluated :: proc(t: ^testing.T) {
-  src := `"sha256" as k { [k] = 1, .k = 2, [1 + 1] = 3 }`
+  src := `let k "sha256"; { [k] = 1, .k = 2, [1 + 1] = 3 }`
   ast := parse_src(src)
   defer ast_destroy(&ast)
   val, ok, err := eval_top(&ast, src)

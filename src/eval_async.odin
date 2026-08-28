@@ -35,7 +35,7 @@ Async_Registry :: struct {
 
 Async_Handle :: struct {
   task:   Task, // nil if the target couldn't spawn one - see run_async_body
-  interp: Interpreter, // this async's own independent sub-evaluation (own arg_stack snapshot, own ctx)
+  interp: Interpreter, // this async's own independent sub-evaluation (own arg/self stack snapshots, own ctx)
   body:   Node_Idx,
   env:    ^Env,
 
@@ -56,8 +56,10 @@ run_async_body :: proc(data: rawptr) {
 // Starts `body` (evaluated under `env`) running on a new thread right now,
 // returning a handle to it without waiting. The new thread gets its own
 // Interpreter - sharing the read-only `ast`/`src`, a snapshot of the current
-// `arg_stack` (so `#arg`/a Hole inside the async body resolves exactly as it
-// would have synchronously), the current `ctx` (captured by value, same as a
+// `arg_stack` and `self_stack` (so `#arg`/`#self`/a Hole inside the async body
+// resolves exactly as it would have synchronously - a recursive function that
+// spawns an `async` in its own body still sees itself), the current
+// `ctx` (captured by value, same as a
 // closure would), and the current `discard_depth` (a discarded then/else or
 // and/or side that itself spawns an async is still discarded). Its own
 // trace state (Steps panel) is never propagated - that mechanism's full,
@@ -87,6 +89,8 @@ spawn_async :: proc(interp: ^Interpreter, body: Node_Idx, env: ^Env) -> (^Async_
   }
   h.interp.arg_stack = make([dynamic]Value, len(interp.arg_stack))
   copy(h.interp.arg_stack[:], interp.arg_stack[:])
+  h.interp.self_stack = make([dynamic]Value, len(interp.self_stack))
+  copy(h.interp.self_stack[:], interp.self_stack[:])
 
   spawned: bool
   h.task, spawned = task_spawn(run_async_body, h)
@@ -97,6 +101,7 @@ spawn_async :: proc(interp: ^Interpreter, body: Node_Idx, env: ^Env) -> (^Async_
     // program asks for it, not silently hand back a value that took the time
     // it was written to avoid.
     delete(h.interp.arg_stack)
+    delete(h.interp.self_stack)
     free(h)
     return nil, false
   }

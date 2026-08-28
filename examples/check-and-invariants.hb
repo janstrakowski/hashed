@@ -8,7 +8,7 @@
 //
 // `static_check` has the same shape, for conditions meant to be settled
 // before the program ever runs. Evaluates to 100.
-50 as base
+let base 50;
   check(base > 0, "base must be positive")
     static_check(1 == 1, "arithmetic still works")
       base * 2

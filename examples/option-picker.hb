@@ -7,7 +7,7 @@
 // (§9/§16) rather than a named path - `.dir = ctx.cache` with no `.path`
 // content-addresses it under the XDG cache dir (or --cache-dir) instead of
 // landing next to this source file.
-loadfile "choice.txt" |> filetext as choice
+let choice loadfile "choice.txt" |> filetext;
   choice == "option A" then
     createfile {
       .dir = ctx.cache,

@@ -14,7 +14,7 @@
 // reads a path back out as a value. Evaluates to a Table whose `dir` and
 // `file` entries are the paths of this directory and of optiona.txt in it,
 // with `contained_read` holding that file's text.
-loadfile "." as here
+let here loadfile ".";
   {
     .dir = here,
     .file = loadfile { .dir = here, .path = "optiona.txt" },

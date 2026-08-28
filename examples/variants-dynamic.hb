@@ -9,7 +9,7 @@
 //
 // `present` (optional.hb) is just this with the tag `present`. Evaluates to
 // { literal: 42, computed: "green", tested: 42, other_tag: "not err" }.
-"status" as key
+let key "status";
   {
     .literal = (:.ok 42) !. ok,
     .computed = (::key "green") !: key,
