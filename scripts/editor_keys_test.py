@@ -9,6 +9,10 @@ caught: Alt+3 (which a browser steals) and Ctrl+N (which a browser never
 delivers at all). The browser test covers the substitutes there; this covers the
 same chords here, so the two targets cannot drift apart.
 
+`editor_keys_test_windows.py` makes these same checks on a Windows console,
+where there is no pty to fork - see its header for why it injects key events
+rather than reaching for ConPTY.
+
 Usage: python3 scripts/editor_keys_test.py [path/to/hb]
 """
 

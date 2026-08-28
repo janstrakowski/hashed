@@ -1,9 +1,10 @@
 // Tests run natively, never in a WASI build: core:testing pulls in
 // core:log and core:terminal, neither of which compiles for wasm32.
-#+build linux
+#+build linux, windows
 package hashedbuild
 
 import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -175,12 +176,39 @@ test_file_display_shows_path :: proc(t: ^testing.T) {
 
 // ---- symlink / readlink ---------------------------------------------------------
 
+// Creating a symlink on Windows needs a privilege an ordinary process does
+// not have: either Developer Mode is on or the process is elevated
+// (fs_windows.odin). Where neither holds, §16's documented answer is the
+// .Access refusal - "not allowed" - and there is no way to go on and test the
+// round trip. Skipping is the honest outcome; failing would leave the suite
+// permanently red on a stock Windows machine and say nothing about the code.
+//
+// Deliberately narrow: it only excuses .Access, only on Windows, and only
+// after asserting the refusal reads the way §16 says it should. A symlink
+// failure anywhere else, or for any other reason, is still a failure.
+@(private = "file")
+symlinks_unavailable :: proc(t: ^testing.T, err: string) -> bool {
+  when ODIN_OS != .Windows {
+    return false
+  } else {
+    if !strings.contains(err, "(Access)") do return false
+    testing.expect(t, strings.contains(err, "symlink"), err)
+    log.infof(
+      "skipping the symlink round trip: this Windows process may not create symlinks "+
+      "(enable Developer Mode, or run elevated, to cover it). Refusal was: %s",
+      err,
+    )
+    return true
+  }
+}
+
 @(test)
 test_builtin_symlink_and_readlink_round_trip :: proc(t: ^testing.T) {
   sd := make_scratch_dir(t, "symlink_dir")
   defer remove_scratch_dir(sd)
 
   _, ok1, err1 := eval_with_builtins(`symlink { .dir = d, .path = "link", .target = "some/target" }`, "d", sd.handle)
+  if !ok1 && symlinks_unavailable(t, err1) do return
   testing.expect(t, ok1, err1)
 
   val, ok2, err2 := eval_with_builtins(`readlink { .dir = d, .path = "link" }`, "d", sd.handle)

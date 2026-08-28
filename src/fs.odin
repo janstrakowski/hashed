@@ -2,7 +2,8 @@ package hashedbuild
 
 // The filesystem operations §16's builtins are built from, named once here
 // and implemented per target: fs_linux.odin against core:sys/linux's *at()
-// syscalls, fs_wasi.odin against WASI preview1.
+// syscalls, fs_wasi.odin against WASI preview1, fs_windows.odin against
+// Win32.
 //
 // The split exists because the interpreter has to run in a browser, and it is
 // deliberately thin: everything portable stays in builtins_fs.odin - the
@@ -17,9 +18,17 @@ package hashedbuild
 // handle plus a name within it, never a bare path - except the two the cache
 // needs (§9), which are the one place a path arrives from outside the
 // program.
+//
+// Windows is the one target that has no descriptor-relative open at all, so
+// fs_windows.odin keeps a numbered table of handles and reaches a child by
+// joining onto its parent's path. That file's header says what that costs and
+// what it does not: containment still holds for every path a program can
+// write.
 
-// A directory or file descriptor. Both targets number theirs as i32; neither
-// interprets the other's, and nothing outside the fs_* files should do
+// A directory or file descriptor. Every target numbers its own as i32 - Linux
+// and WASI because that is what the OS hands back, Windows because a HANDLE
+// is a pointer and has to be indexed into a table to fit here. No target
+// interprets another's, and nothing outside the fs_* files should do
 // arithmetic on one.
 Fs_Fd :: distinct i32
 
