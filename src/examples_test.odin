@@ -1,9 +1,10 @@
 // Tests run natively, never in a WASI build: core:testing pulls in
 // core:log and core:terminal, neither of which compiles for wasm32.
-#+build linux
+#+build linux, windows
 package hashedbuild
 
 import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -59,6 +60,26 @@ EXAMPLE_CASES := []Example_Case{
 @(private = "file")
 EXAMPLES_WITH_THEIR_OWN_TEST := []string{"option-picker.hb", "files-sandboxed.hb"}
 
+// examples/link-to-optiona is committed as a symlink, and files-symlink.hb
+// reads its target. Git only materialises it as a real symlink where it can:
+// on Windows that needs core.symlinks, which needs the same privilege
+// creating a symlink does, and without it git writes an ordinary file holding
+// the target as text - leaving nothing for readlink to read.
+//
+// Asked of the checkout rather than assumed from the OS, because a Windows
+// clone made with Developer Mode on has the real thing and should run the
+// example like anywhere else.
+@(private = "file")
+repo_has_real_symlinks :: proc() -> bool {
+  dir_fd, err := fs_open_dir_path(fmt.tprintf("%s/examples", repo_root()))
+  if err != .None do return false
+  defer fs_close(dir_fd)
+  target, rerr := fs_readlink_at(dir_fd, "link-to-optiona")
+  if rerr != .None do return false
+  delete(target)
+  return true
+}
+
 @(test)
 test_examples_evaluate_to_their_documented_values :: proc(t: ^testing.T) {
   cache := fmt.tprintf("%s/.examples_test_cache", repo_root())
@@ -69,7 +90,16 @@ test_examples_evaluate_to_their_documented_values :: proc(t: ^testing.T) {
   clear_branch_markers()
   defer clear_branch_markers()
 
+  has_symlinks := repo_has_real_symlinks()
   for c in EXAMPLE_CASES {
+    if c.file == "files-symlink.hb" && !has_symlinks {
+      log.infof(
+        "skipping %s: examples/link-to-optiona is a plain file in this checkout, not a "+
+        "symlink - clone with core.symlinks=true (and the privilege for it) to cover it",
+        c.file,
+      )
+      continue
+    }
     path := fmt.tprintf("%s/examples/%s", repo_root(), c.file)
     formatted, err_msg, ok := eval_source_file(path, false, cache)
     if !testing.expect(t, ok, fmt.tprintf("%s failed to evaluate: %s", c.file, err_msg)) do continue

@@ -22,6 +22,29 @@ Sanity check:
 
 You should see an AST dump followed by `121`.
 
+### On Windows
+
+The same, with `hb.exe`. Odin links Windows binaries through the MSVC toolchain, so you also need the **Windows SDK** — otherwise the build stops at `Windows SDK not found.` before compiling anything. Visual Studio Build Tools with the "Desktop development with C++" workload is the smallest thing that provides it:
+
+```
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+Get Odin itself from the [release page](https://github.com/odin-lang/Odin/releases), not from winget: the `odin-lang.Odin` package lags the nightlies badly enough to matter — it was still on `dev-2026-05` while CI pinned `dev-2026-08`, and `winget upgrade` reports nothing available. Unzip `odin-windows-amd64-<version>.zip` somewhere and put that directory on your `PATH`; it is self-contained, linkers included.
+
+Then clone and build. Clone with `core.symlinks=true` so `examples/link-to-optiona` arrives as a real symlink rather than a text file — that needs Developer Mode on, or an elevated shell, which is the same privilege `symlink` itself needs:
+
+```
+git clone -c core.symlinks=true https://github.com/janstrakowski/hashedbuild.git
+cd hashedbuild
+odin build src -out:hb.exe -debug
+.\hb.exe -a examples/functions.hb
+```
+
+Everything below reads `./hb`; on Windows that is `.\hb.exe`. Read `-out:hb` as `-out:hb.exe` too. `scripts/` is shell, so the WASI builds want Git Bash (which ships with Git for Windows) rather than PowerShell.
+
+If a freshly built binary refuses to start with *"An Application Control policy has blocked this file"*, that is [Smart App Control](https://support.microsoft.com/en-us/topic/what-is-smart-app-control-285ea03d-fa88-4495-bf75-c251c8d88d29) rather than anything wrong with the build — it blocks unsigned executables it has no reputation for. Building to a path outside the repository, or simply building again, usually gets past it.
+
 ## The ways to run something
 
 - **`./hb path/to/program.hb`** - run a file for real, print its result.
@@ -29,7 +52,7 @@ You should see an AST dump followed by `121`.
 - **`./hb`** (no arguments) - a line-based REPL. Type an expression, then an empty line to evaluate it; `:q` to quit.
 - **`./hb -a path/to/program.hb`** - print the full AST before evaluating. Works with `-e` too.
 - **`./hb -i`** - the live terminal editor (needs a real terminal, not a pipe).
-- **`./hb --cache-dir <path> ...`** - override where `ctx.cache` writes to (defaults to your XDG cache dir).
+- **`./hb --cache-dir <path> ...`** - override where `ctx.cache` writes to (defaults to your XDG cache dir; `%LOCALAPPDATA%\hashedbuild` on Windows).
 - **`./hb --help`**, **`./hb --version`** - usage and version.
 
 ## Try each part of the video

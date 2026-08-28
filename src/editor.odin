@@ -589,9 +589,15 @@ start_prompt :: proc(e: ^Editor, mode: Prompt_Mode) {
 // Splits a partial path into the directory to list, the name fragment being
 // completed, and the prefix to re-attach to whatever that fragment completes
 // to. "examples/gu" -> ("examples/", "gu", "examples/"); "gu" -> (".", "gu", "").
+//
+// The split is on whatever counts as a separator here (is_path_sep,
+// builtins_fs.odin), so a Windows user who types "examples\gu" gets the same
+// completion as one who types "examples/gu" - and a Linux user's backslash
+// stays what it is there, an ordinary character in a filename.
 @(private = "file")
 split_for_completion :: proc(prefix: string) -> (dir_for_listing: string, name_part: string, result_prefix: string) {
-  idx := strings.last_index(prefix, "/")
+  idx := -1
+  for i in 0 ..< len(prefix) do if is_path_sep(prefix[i]) do idx = i
   if idx < 0 do return ".", prefix, ""
   return prefix[:idx + 1], prefix[idx + 1:], prefix[:idx + 1]
 }

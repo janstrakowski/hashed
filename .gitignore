@@ -1,13 +1,19 @@
 target
 SPEC.html
 /hb
+# The same binary on Windows, plus the test executable `odin test` drops in the
+# working directory when it isn't told to put it somewhere else. `odin build`
+# also emits a .pdb next to the .exe.
+/hb.exe
+/hbtest.exe
+/src.exe
+*.pdb
 .claude/
 hb.wasm
 .cache/
 hb-threads.wasm
+__pycache__/
 # Both of the playground's artifacts are generated - by the Pages workflow for
 # the real site, and by scripts/ for a local one. Committing them coupled every
 # tracked file to a build product.
 docs/repo-files.json
-node_modules/
-package-lock.json
