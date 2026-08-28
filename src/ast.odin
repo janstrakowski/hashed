@@ -30,8 +30,6 @@ Node_Kind :: enum u16 {
   StaticCheck_Expr,   // same shape as Check_Expr - `static_check(cond,[msg]) body`
   Error_Expr,         // children: [] or [msg] - `error [msg]`
   Import_Expr,        // children: [expr]
-  Serialize_Expr,     // children: [expr]
-  SerializeFile_Expr, // children: [expr]
   Sha256_Expr,        // children: [expr]
   Cached_Expr,        // children: [expr]
   Async_Expr,         // children: [expr]

@@ -64,16 +64,12 @@ jobs:
             sudo apt-get install -y $missing
           fi
 
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-
       # The threaded flavour: it imports its memory, which is what lets every
       # spawned thread share one heap (see LANGUAGE.md).
       - name: Build the interpreter and the filesystem
         run: |
           scripts/build_wasi.sh --threads-web -out:docs/hb.wasm
-          node scripts/build_playground_files.mjs
+          python3 scripts/build_playground_files.py
 
       - uses: actions/upload-pages-artifact@v4
         with:

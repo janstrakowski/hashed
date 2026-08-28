@@ -66,7 +66,7 @@ Printing/displaying a `File` — in the REPL, the live editor's result pane, or 
 - **Digit separator**: `_`, freely between digits in either form, including within an exponent (`1_000_000`, `0xFF_FF_FF`, `1_000.5e1_0`) — not leading, trailing, doubled, or adjacent to a base prefix or the decimal point.
 - A literal is `Float` iff it contains a `.` or an exponent; otherwise it's `Integer` — no suffix needed to disambiguate.
 
-> TODO: Is there a conversion between `Bytes` and `Utf8` (encode/decode, presumably fallible one way since not all `Bytes` are valid UTF-8)? Also unclear whether `serialize`'s (§15) "canonical binary representation" is itself conceptually a `Bytes` value before being base64-encoded into the `Utf8` it actually returns.
+> TODO: Is there a conversion between `Bytes` and `Utf8` (encode/decode, presumably fallible one way since not all `Bytes` are valid UTF-8)? (The related question of whether §15's canonical byte encoding is itself conceptually a `Bytes` value went away with `serialize`'s removal on 2026-08-28 — that encoding is now purely internal, the thing the hash is computed over, and no builtin hands it back.)
 
 ## 4. Operators
 
@@ -119,7 +119,7 @@ Mixing the two forms in one literal is an error — not necessarily a *syntax*-l
 ## 6. Value semantics
 
 - All values are **hashable** and have some arbitrary total order defined by HashedBuild, such that any value can be compared with any other value.
-- All values are **serializable** — see §15 for the `serialize`/`serialize_file`/`sha256`/`cached` builtins that operationalize this.
+- All values are **serializable** — a canonical byte encoding exists for every value, and is what §15's hash is computed over. It is internal: as of 2026-08-28 no builtin returns it (see §15 on `serialize`/`serialize_file`'s removal). §15's `sha256`/`cached` are what operationalize this.
 - All values are **immutable**.
 - Complex types **reference** their subtypes rather than copying them — cycles are possible.
 - There is **no type system** in the conventional sense (as in most other languages) — instead there is static analysis (§11).
@@ -298,18 +298,18 @@ Any `Utf8` value or `File` can be imported, which turns it into a function. Synt
 - Line comments: `//`
 - Block comments: `/* ... */`
 
-## 15. Serialization, hashing & caching
+## 15. Hashing & caching
 
-Four builtins operationalizing §6's "every value is hashable and serializable" claims. Like `import` and `func`, each is a bare keyword prefix taking one trailing expression — no parentheses:
+Two builtins operationalizing §6's "every value is hashable" claim. Like `import` and `func`, each is a bare keyword prefix taking one trailing expression — no parentheses:
 
-- **`serialize <expr>`** — serializes a value to its canonical binary representation, then base64-encodes that as a `Utf8` string.
-- **`serialize_file <expr>`** — the same underlying serialization as `serialize`, but writes the raw binary bytes directly to a file rather than base64-encoding them as text. **Resolved 2026-08-26**: returns the `File` (§3) it just wrote.
 - **`sha256 <expr>`** — hashes a value, returning the digest base64-encoded as `Utf8`. **Resolved 2026-08-26**: this *is* §6's "every value is hashable" mechanism — the same one, not a second cryptographic-specific hash living alongside it.
 - **`cached <expr>`** — caches a value, or loads it from cache if already present.
 
 (`check`/`static_check` (§11) are the odd ones out, needing parens — plausibly because they take two comma-separated arguments, one optional, and parens are what make multiple arguments unambiguous; a single trailing expression needs no such grouping. Not confirmed as a general rule, just the pattern so far.)
 
-**Resolved 2026-08-26**: `serialize`/`serialize_file`/`sha256` are all part of one consistent underlying system — one canonical binary format, one hash mechanism, shared with §6's general value-hash (used for ordering/equality everywhere, e.g. `Table`'s key-sorted hash and `File`'s directory hash, §3/§5).
+**Removed 2026-08-28: `serialize` and `serialize_file`.** This section used to specify two more builtins — `serialize <expr>`, which base64-encoded a value's canonical binary representation as `Utf8`, and `serialize_file <expr>`, which wrote those raw bytes to a file and returned the resulting `File` (§3). Both are withdrawn from the language for now, hashing being the half kept. Withdrawn rather than left unimplemented so the surface stays honest: reserving the two keywords cost `serialize` and `serialize_file` as ordinary names in every program, in exchange for nothing that ran. Nothing about the value model changes — §6 still says every value is serializable, and a canonical byte encoding still exists as the thing the hash is computed over (below); what is gone is *exposing* that encoding as a value a program can hold. Reintroducing either is an ordinary design decision, not a resurrection: the shape above is a starting point, not a commitment.
+
+**Resolved 2026-08-26, amended 2026-08-28**: the hash is one consistent underlying system — one canonical byte encoding, one hash mechanism, shared with §6's general value-hash (used for ordering/equality everywhere, e.g. `Table`'s key-sorted hash and `File`'s directory hash, §3/§5). The encoding is a Merkle construction: a composite value hashes its children to fixed-width digests and mixes *those*, never inlining a child's own encoding. That is forced by §3, which pins a regular `File`'s hash to `hash(content_bytes)` with no tag or length of its own — so that `sha256 <file>` is the digest `sha256sum` reports for the same bytes — and an untagged, variable-length encoding cannot be inlined unambiguously. Leaves are otherwise domain-separated by a tag byte, so that values of different types with the same payload (`Integer` 5 and `Float` 5.0, which §6 does not equate) do not collide.
 
 **`cached`'s mechanism (resolved 2026-08-26):** the cached expression is treated *as a function* and hashed as one — the cache key is the hash (per the one system above) of that function representation, not a hash of its resolved output value. `cached` is not inherently async by itself; async-ness is controlled explicitly by *where* `async` (§2) is placed: `async cached <expr>` makes the cache lookup/store itself asynchronous, while `cached async <expr>` instead makes the underlying expression's own evaluation asynchronous, with the caching wrapper around it synchronous.
 

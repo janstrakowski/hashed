@@ -163,8 +163,6 @@ next_token :: proc(l: ^Lexer) -> Token {
     case "static_check":  return Token{kind = .StaticCheck_Expr, span = Span{start, l.pos}}
     case "error":         return Token{kind = .Error_Expr, span = Span{start, l.pos}}
     case "import":        return Token{kind = .Import_Expr, span = Span{start, l.pos}}
-    case "serialize":     return Token{kind = .Serialize_Expr, span = Span{start, l.pos}}
-    case "serialize_file":return Token{kind = .SerializeFile_Expr, span = Span{start, l.pos}}
     case "sha256":        return Token{kind = .Sha256_Expr, span = Span{start, l.pos}}
     case "cached":        return Token{kind = .Cached_Expr, span = Span{start, l.pos}}
     case "async":         return Token{kind = .Async_Expr, span = Span{start, l.pos}}

@@ -413,7 +413,10 @@ eval :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (ret_val: Value
     }
     return h, true
 
-  case .Cached_Expr, .Import_Expr, .Serialize_Expr, .SerializeFile_Expr, .Sha256_Expr:
+  case .Sha256_Expr:
+    return eval_sha256(interp, node, env)
+
+  case .Cached_Expr, .Import_Expr:
     return fail(interp, fmt.tprintf("%v is not implemented by this evaluator yet", n.kind))
   }
   return fail(interp, fmt.tprintf("evaluation not implemented for %v", n.kind))
@@ -1052,6 +1055,29 @@ eval_then_or_else :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (V
 
   if result do return eval_slot(interp, happy_idx, guard_env)
   return eval_slot(interp, bad_idx, guard_env)
+}
+
+// ---- sha256 (§15) ----------------------------------------------------------------
+
+// §15: hashes a value, returning the digest base64-encoded as Utf8. This is
+// §6's "every value is hashable" mechanism itself (hash.odin), not a second
+// hash living alongside it - the same digest File equality is defined by (§3).
+@(private = "file")
+eval_sha256 :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, bool) {
+  n := interp.ast.nodes[node]
+  val, ok := eval_slot(interp, interp.ast.extra_children[n.children_start], env)
+  if !ok do return nil, false
+  // An operand that is still an async handle gets awaited first, exactly as
+  // every other operator does - `sha256 async <expr>` hashes the result, not
+  // the handle.
+  val, ok = await_value(interp, val)
+  if !ok do return nil, false
+
+  encoded, herr := value_digest_base64(val)
+  if herr != .None {
+    return fail(interp, fmt.tprintf("sha256: %s", hash_error_message(herr)))
+  }
+  return encoded, true
 }
 
 // ---- check / static_check / error (§11) ----------------------------------------

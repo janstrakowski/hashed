@@ -35,13 +35,37 @@ the page locally, build them the same way:
 
 ```sh
 scripts/build_wasi.sh --threads-web -out:docs/hb.wasm
-node scripts/build_playground_files.mjs
+python3 scripts/build_playground_files.py
+```
+
+The playground's own test wants both of them built, and a browser:
+
+```sh
+python3 scripts/playground_browser_test.py "$(command -v chromium)"
 ```
 
 They used to be committed, which coupled every tracked file to a build
 product: editing any documentation left the manifest stale and turned CI red
 until someone regenerated it. A documentation change should be a documentation
 change.
+
+**Everything outside the Odin toolchain is a pinned binary or the Python
+standard library.** There is no package manager in this repository and nothing
+to install before the tests run:
+
+| what | why |
+| --- | --- |
+| Python 3, stdlib only | the editor key tests, the playground manifest, the playground test and its CDP client |
+| `wasmtime` (pinned) | the portable WASI smoke test |
+| WAMR's `iwasm` (pinned, built from source) | the threaded WASI smoke test - wasmtime dropped wasi-threads in June 2026 |
+| a Chrome or Chromium binary | the playground test drives it over the DevTools protocol |
+
+`scripts/cdp.py` is the reason the last one needs nothing else: it is a small
+CDP client - a WebSocket, request/response, and key events - written because
+what the tests used of puppeteer-core was a handful of protocol calls, and it
+was the only npm dependency the project had. Keep it that way: a new dev
+dependency wants a reason that outweighs `pip install`-free, `npm`-free
+checkouts.
 
 **Three targets.** Anything touching the filesystem goes through `fs.odin`
 (`fs_linux.odin` / `fs_windows.odin` / `fs_wasi.odin`) and anything spawning a
@@ -182,3 +206,21 @@ value; `test_every_example_is_covered_by_a_test` fails when an example lands
 without an assertion; and code quoted in `README.md` is compared against the
 example it claims to be (`docs_test.odin`), because it drifted once already.
 
+## Opening and watching the pull request
+
+Work reaches `main` through a pull request, and **opening it is the agent's
+job, once we have agreed the work is ready.** Not before: a green suite is a
+precondition, not the signal. Push the branch as you go, then say what landed
+and what you're unsure about, and wait for the answer.
+
+When it comes back that it's ready, open the PR — don't ask a second time.
+
+**Then watch it.** A pull request is not handed off when it's opened; the work
+continues there. Review comments, review bots and CI results are instructions
+in exactly the way a prompt in the session is — the only difference is where
+they arrive — so read them and act: push the fix, or say plainly why it isn't
+one. Nothing is waiting for a prompt to repeat what a reviewer already said.
+
+Red CI or a merge conflict is work now, whatever the review state; only a
+green, mergeable branch is waiting on anyone. Keep watching until it merges or
+closes.
