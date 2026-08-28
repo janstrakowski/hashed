@@ -6,9 +6,9 @@ import "core:strings"
 
 // Tree-walking evaluator for the pure-expression core of SPEC.md. Deliberately
 // scoped out for this pass (each needs real design/OS decisions this project
-// hasn't made yet): `async`, `cached`, `import`, `serialize`/`serialize_file`/
-// `sha256`, `#context`, `Bytes`/`File`, and the static-vs-runtime distinction
-// for `check`/`static_check` (both just run as runtime checks here).
+// hasn't made yet): `cached`, `import`, `#context`, and the static-vs-runtime
+// distinction for `check`/`static_check` (both just run as runtime checks
+// here).
 //
 // The two mechanisms that make omission work:
 //   - A bare Hole makes its *enclosing hard-boundary slot* (§7) become a
