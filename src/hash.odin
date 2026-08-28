@@ -75,7 +75,7 @@ sha256_tagged :: proc(tag: u8, payload: []u8) -> Value_Digest {
 // than emitting one "not hashable" for every case.
 Hash_Error :: enum {
   None,
-  Directory_File, // §3's directory hash needs an executable bit WASI cannot report
+  Directory_File, // §3's directory hash needs an exec bit only Linux can report
   Function,       // §15 needs it for `cached`, but never specifies the encoding
   Cache,          // §9's ctx.cache is write-only and has no identity to hash
   Async,          // an un-awaited handle - callers await before hashing

@@ -152,8 +152,9 @@ values_equal :: proc(a: Value, b: Value) -> bool {
     // two Files built from different paths are equal whenever their content
     // matches. A Regular file compares by its content digest (hash.odin).
     // A Directory still compares by reference: §3 hashes one over its entries
-    // including each file's executable bit, and WASI's filestat has no
-    // permission bits to report, so that half isn't built (see LANGUAGE.md).
+    // including each file's executable bit, which only the Linux target can
+    // report - WASI's filestat has no permission bits at all, and Windows has
+    // no POSIX exec bit - so that half isn't built (see LANGUAGE.md).
     if av.kind == .Directory || bv.kind == .Directory do return av == bv
     return values_hash_equal(av, bv)
   case ^Cache_Value:

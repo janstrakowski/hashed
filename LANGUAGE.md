@@ -285,7 +285,8 @@ same value when their bytes match, however they were reached.
 
 Three kinds of value have no digest yet, and say so rather than inventing one:
 a **directory** `File` (§3 hashes one over its entries including each file's
-executable bit, which WASI cannot report — see below), a `Function`, and
+executable bit, which only the Linux target can report — see below), a
+`Function`, and
 `ctx.cache`. Hashing one is a fatal failure like any other (§8).
 
 → `examples/hashing.hb` (§3, §6, §15)
@@ -347,10 +348,11 @@ Parsed, specified, and rejected by the evaluator with "not implemented":
 Partly built: **hashing**. `sha256` works for every value except a directory
 `File`, a `Function`, and `ctx.cache`. The directory case is the interesting
 one — `SPEC.md` §3 defines a directory's hash over its entries including each
-file's executable bit, and WASI's `filestat` has no permission bits at all, so
-there is no way to compute the specified digest on both targets. Building it
-means first deciding what a directory hashes as somewhere that cannot see an
-exec bit. `Function` is unbuilt because §15 needs it for `cached` but never
+file's executable bit, and two of the three targets cannot report one: WASI's
+`filestat` has no permission bits at all, and Windows has no POSIX exec bit.
+So there is no way to compute the specified digest everywhere the interpreter
+runs. Building it means first deciding what a directory hashes as somewhere
+that cannot see an exec bit. `Function` is unbuilt because §15 needs it for `cached` but never
 says how a closure is encoded.
 
 Also absent: `true`/`false` literals, loops and recursion of any kind, a
