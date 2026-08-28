@@ -55,6 +55,18 @@ Windows are covered by the suite itself (a CI job each) while the WASI backends
 are covered by the smoke script above - once per flavour, the threaded one
 under WAMR's iwasm, since wasmtime dropped wasi-threads.
 
+**The editor's keys are covered on both native targets, by different means.**
+`scripts/editor_keys_test.py` drives a pty; `scripts/editor_keys_test_windows.py`
+drives a real console, injecting `KEY_EVENT_RECORD`s with `WriteConsoleInputW`
+and reading the rendered screen back with `ReadConsoleOutputCharacterW`.
+Deliberately not ConPTY: that would turn written bytes into key events and back
+into escape sequences, testing its own round trip rather than conhost's
+VT-input translation - which is the thing `term_windows.odin` bets on and the
+only thing that covers it. The two scripts make the same eight checks, so the
+targets can't drift; they read differently because on Windows there is no byte
+stream to capture, only a screen. Both assert against observable editor state,
+and removing `ENABLE_VIRTUAL_TERMINAL_INPUT` fails five of the eight.
+
 **Windows has no `openat()`,** and that is the one place the three backends
 genuinely differ rather than just spelling the same call differently. Nothing
 in Win32 opens a name relative to a directory descriptor, so `fs_windows.odin`

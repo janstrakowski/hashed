@@ -133,10 +133,19 @@ jobs:
       - name: Test
         run: odin test src -out:hbtest.exe
 
-      # scripts/editor_keys_test.py drives the TUI through a pty, which is a
-      # Unix thing (Python's `pty` module is POSIX-only), so the Linux job
-      # remains the one that covers the editor's key handling. The Windows
-      # console layer that replaces termios is term_windows.odin.
+      # The same keys the Linux job checks through a pty, checked here through a
+      # real console instead - see the script's header for why not ConPTY. This
+      # is the only thing that exercises term_windows.odin: `odin test` cannot
+      # press keys, and removing ENABLE_VIRTUAL_TERMINAL_INPUT from it fails
+      # five of these eight checks.
+      #
+      # The script allocates its own console, because a workflow step has none
+      # (its stdio is a pipe). If that ever stops working on the runner image it
+      # will say so and exit non-zero rather than passing quietly.
+      - name: Editor keys
+        run: |
+          odin build src -out:hb.exe
+          python scripts/editor_keys_test_windows.py .\hb.exe
 
   # The Odin suite only ever builds natively, so nothing in it can execute
   # fs_wasi.odin. This job builds the WASI target and checks the examples
