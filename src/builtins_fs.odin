@@ -45,11 +45,23 @@ make_root_context :: proc(cache_dir_override: string = "") -> Value {
 
 // XDG Base Directory spec: $XDG_CACHE_HOME/hashedbuild, falling back to
 // $HOME/.cache/hashedbuild if XDG_CACHE_HOME isn't set (or is empty).
+//
+// On Windows the fallback is %LOCALAPPDATA%\hashedbuild instead - the place
+// Windows keeps regenerable per-user data, which is the role $HOME/.cache
+// plays elsewhere. $HOME is normally unset there, so the XDG fallback would
+// otherwise land on "/.cache/hashedbuild", i.e. the root of whichever drive
+// happened to be current. XDG_CACHE_HOME still wins when it is set, on every
+// target, so the documented override behaves the same wherever a program runs.
 @(private = "file")
 resolve_cache_dir :: proc(override: string) -> string {
   if override != "" do return override
   if xdg := os.get_env_alloc("XDG_CACHE_HOME", context.temp_allocator); xdg != "" {
-    return strings.concatenate({xdg, "/hashedbuild"})
+    return strings.concatenate({to_forward_slashes(xdg), "/hashedbuild"})
+  }
+  when WINDOWS_PATHS {
+    if local := os.get_env_alloc("LOCALAPPDATA", context.temp_allocator); local != "" {
+      return strings.concatenate({to_forward_slashes(local), "/hashedbuild"})
+    }
   }
   return strings.concatenate({os.get_env_alloc("HOME", context.temp_allocator), "/.cache/hashedbuild"})
 }
@@ -109,14 +121,26 @@ unsandboxed_dir_fd :: proc(interp: ^Interpreter) -> Fs_Fd {
 // split below was wrong, not that this single name escapes anything.
 @(private = "file")
 resolve_parent_beneath :: proc(base_fd: Fs_Fd, sub_path: string) -> (parent_fd: Fs_Fd, basename: string, err: Fs_Error) {
-  if len(sub_path) == 0 || sub_path[0] == '/' {
+  if len(sub_path) == 0 || is_absolute_path(sub_path) {
     return FS_INVALID_FD, "", .Access
+  }
+  when WINDOWS_PATHS {
+    // A colon is never part of an ordinary name on Windows. It introduces
+    // either a drive-relative path ("C:x", which resolves against that
+    // drive's own working directory, not against anything here) or an
+    // alternate data stream ("name:stream", a second body hidden behind the
+    // same entry). Neither is a sub path of this directory, so both are
+    // refused outright rather than walked - the walk below splits on
+    // separators, and would otherwise hand either one through as a basename.
+    if strings.index_byte(sub_path, ':') >= 0 {
+      return FS_INVALID_FD, "", .Access
+    }
   }
 
   cur_fd := base_fd
   remaining := sub_path
   for {
-    slash := strings.index_byte(remaining, '/')
+    slash := index_path_sep(remaining)
     if slash < 0 {
       if remaining == "" || remaining == ".." {
         if cur_fd != base_fd do fs_close(cur_fd)
@@ -208,6 +232,90 @@ unsandboxed_dir_path :: proc(interp: ^Interpreter) -> string {
   return cwd
 }
 
+// ---- what a path looks like on this target ------------------------------------
+//
+// Linux and WASI have one separator ('/') and one root ("/"). Windows has two
+// separators and three kinds of root - a named drive ("C:/"), the current
+// drive ("/"), and a UNC share ("//server/share") - and, decisively, treats
+// '\' as a separator where Linux treats it as an ordinary character in a
+// filename. That last difference is why none of this can simply be switched
+// on everywhere: folding '\' to '/' on Linux would rename files.
+//
+// Paths are still carried '/'-separated on every target, so a Windows display
+// path reads "C:/Users/you/project" (§3). Win32 accepts that form, and
+// fs_windows.odin translates to backslashes at the syscall boundary.
+WINDOWS_PATHS :: ODIN_OS == .Windows
+
+is_path_sep :: proc(c: u8) -> bool {
+  when WINDOWS_PATHS {
+    return c == '/' || c == '\\'
+  } else {
+    return c == '/'
+  }
+}
+
+// The first separator in `s`, or -1. What resolve_parent_beneath splits a sub
+// path on, which is why it has to know about '\' on Windows: treating a
+// backslash as an ordinary character there would hand "..\..\escape" through
+// as a single basename, and §16's containment would be enforced on a name
+// the OS would then read as three components.
+index_path_sep :: proc(s: string) -> int {
+  for i in 0 ..< len(s) do if is_path_sep(s[i]) do return i
+  return -1
+}
+
+// "C:/..." - rooted on a named drive. Always false off Windows, where a colon
+// is an ordinary character in a filename.
+is_drive_absolute :: proc(p: string) -> bool {
+  when !WINDOWS_PATHS {
+    return false
+  } else {
+    if len(p) < 3 || p[1] != ':' || !is_path_sep(p[2]) do return false
+    return (p[0] >= 'a' && p[0] <= 'z') || (p[0] >= 'A' && p[0] <= 'Z')
+  }
+}
+
+// The length of `p`'s root: 0 when relative, 1 for "/x", 3 for "C:/x", and
+// through the share name for "//server/share/x".
+path_root_len :: proc(p: string) -> int {
+  when WINDOWS_PATHS {
+    if is_drive_absolute(p) do return 3
+    if len(p) >= 2 && is_path_sep(p[0]) && is_path_sep(p[1]) {
+      i := 2
+      for i < len(p) && !is_path_sep(p[i]) do i += 1 // server
+      if i < len(p) do i += 1
+      for i < len(p) && !is_path_sep(p[i]) do i += 1 // share
+      return i
+    }
+  }
+  if len(p) > 0 && is_path_sep(p[0]) do return 1
+  return 0
+}
+
+// Does this path start at a root rather than somewhere relative?
+is_absolute_path :: proc(p: string) -> bool {
+  return path_root_len(p) > 0
+}
+
+// Folds '\' to '/' on Windows, where both are separators. A no-op elsewhere -
+// and it has to be, since '\' is a legal character in a Linux filename.
+// Returns `path` itself when there is nothing to fold, so the result is only
+// ever a view; clone it if it needs to outlive the argument.
+to_forward_slashes :: proc(path: string, allocator := context.temp_allocator) -> string {
+  when !WINDOWS_PATHS {
+    return path
+  } else {
+    if strings.index_byte(path, '\\') < 0 do return path
+    b := strings.builder_make(allocator)
+    for i in 0 ..< len(path) {
+      c := path[i]
+      if c == '\\' do c = '/'
+      strings.write_byte(&b, c)
+    }
+    return strings.to_string(b)
+  }
+}
+
 // Joins `name` onto `dir` and cleans the result lexically: an absolute name
 // replaces the directory outright, "." segments drop out, and ".." pops one
 // segment. Lexical on purpose - it must not touch the filesystem, since it
@@ -215,7 +323,7 @@ unsandboxed_dir_path :: proc(interp: ^Interpreter) -> string {
 display_join :: proc(dir: string, name: string) -> string {
   joined: string
   switch {
-  case len(name) > 0 && name[0] == '/':
+  case is_absolute_path(name):
     joined = name
   case dir == "":
     joined = name
@@ -229,18 +337,23 @@ display_join :: proc(dir: string, name: string) -> string {
 // directory a source file's relative paths resolve against. Called once per
 // run, at setup, by whoever opens that directory (main.odin, editor.odin).
 absolute_dir_path :: proc(dir_path: string) -> string {
-  if len(dir_path) > 0 && dir_path[0] == '/' do return clean_path(dir_path)
+  if is_absolute_path(dir_path) do return clean_path(dir_path)
   cwd, err := os.get_working_directory(context.temp_allocator)
   if err != nil do return clean_path(dir_path)
   return display_join(cwd, dir_path)
 }
 
 // Lexical path cleanup: collapses "//", drops "." segments, pops a segment
-// for each "..", and keeps a leading "/" if there was one.
-clean_path :: proc(path: string) -> string {
-  absolute := len(path) > 0 && path[0] == '/'
+// for each "..", and keeps whatever root the path started at.
+clean_path :: proc(path: string, allocator := context.allocator) -> string {
+  p := to_forward_slashes(path)
+
+  root_len := path_root_len(p)
+  root := p[:root_len]
+  absolute := root_len > 0
+
   segments := make([dynamic]string, 0, 8, context.temp_allocator)
-  for segment in strings.split(path, "/", context.temp_allocator) {
+  for segment in strings.split(p[root_len:], "/", context.temp_allocator) {
     switch segment {
     case "", ".":
       continue
@@ -257,9 +370,14 @@ clean_path :: proc(path: string) -> string {
     }
   }
   body := strings.join(segments[:], "/", context.temp_allocator)
-  if absolute do return strings.concatenate({"/", body})
-  if body == "" do return strings.clone(".")
-  return strings.clone(body)
+  if absolute {
+    // "/" and "C:/" already end in a separator; a UNC root does not.
+    if is_path_sep(root[len(root) - 1]) do return strings.concatenate({root, body}, allocator)
+    if body == "" do return strings.clone(root, allocator)
+    return strings.concatenate({root, "/", body}, allocator)
+  }
+  if body == "" do return strings.clone(".", allocator)
+  return strings.clone(body, allocator)
 }
 
 // ---- loadfile ---------------------------------------------------------------------

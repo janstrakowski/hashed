@@ -16,6 +16,17 @@ scripts/build_wasi.sh --threads-web -out:docs/hb.wasm  # what the browser runs
 scripts/wasi_smoke.sh ./hb ./hb.wasm wasmtime     # both targets agree
 ```
 
+On Windows the same two commands, spelled `-out:hb.exe` and
+`-out:hbtest.exe` — `odin test` otherwise drops `src.exe` in the working
+directory. Linking needs the Windows SDK (Visual Studio Build Tools' C++
+workload); without it Odin stops at `Windows SDK not found.` before compiling.
+`scripts/` is shell, so the WASI targets want Git Bash there. Two local
+environment traps, neither a project problem: **Smart App Control** blocks
+freshly built unsigned binaries with "An Application Control policy has blocked
+this file" (build outside the repo, or just build again), and **`symlink` needs
+Developer Mode** or an elevated shell, without which the symlink round trip and
+`files-symlink.hb` skip themselves with a logged reason rather than failing.
+
 **The playground's two artifacts are generated, never committed.**
 `docs/hb.wasm` is the interpreter and `docs/repo-files.json` is the repository
 as the terminal's filesystem; both are built by `.github/workflows/pages.yml`
@@ -32,15 +43,33 @@ product: editing any documentation left the manifest stale and turned CI red
 until someone regenerated it. A documentation change should be a documentation
 change.
 
-**Two targets.** Anything touching the filesystem goes through `fs.odin`
-(`fs_linux.odin` / `fs_wasi.odin`) and anything spawning a thread through
-`task.odin` (`task_linux.odin` / `task_wasi.odin`); nothing above them names a
-syscall or a thread API. Odin picks the file by suffix, so a `_linux.odin` file simply isn't
-compiled for WASI - which is also why the terminal UI and the test files are
-named or tagged that way. `odin test` only ever builds natively, so the WASI
-backends are covered by the smoke script above, not by the suite - once per
-flavour, the threaded one under WAMR's iwasm, since wasmtime dropped
-wasi-threads.
+**Three targets.** Anything touching the filesystem goes through `fs.odin`
+(`fs_linux.odin` / `fs_windows.odin` / `fs_wasi.odin`) and anything spawning a
+thread through `task.odin` (`task_native.odin` for both native targets, since
+`core:thread` is already portable; `task_wasi.odin` where a spawn can fail);
+nothing above them names a syscall or a thread API. Odin picks the file by
+suffix, so a `_linux.odin` file simply isn't compiled for the others - which is
+also why the terminal layer is split that way, and why the test files carry
+`#+build linux, windows`. `odin test` only ever builds natively, so Linux and
+Windows are covered by the suite itself (a CI job each) while the WASI backends
+are covered by the smoke script above - once per flavour, the threaded one
+under WAMR's iwasm, since wasmtime dropped wasi-threads.
+
+**Windows has no `openat()`,** and that is the one place the three backends
+genuinely differ rather than just spelling the same call differently. Nothing
+in Win32 opens a name relative to a directory descriptor, so `fs_windows.odin`
+numbers its handles in a table and reaches a child by joining onto its parent's
+path. Its header says exactly what that preserves (no-follow on the final
+component is still atomic; containment still holds for every path a program can
+write) and what it does not (the walk is not immune to a concurrent rename).
+Read it before changing anything there.
+
+**Paths are `/`-separated on every target,** including Windows, where a display
+path reads `C:/Users/you/project`. The Windows-shaped parts of that - a drive
+or UNC root, backslash as a second separator, a colon meaning a drive or an
+alternate data stream - live behind `WINDOWS_PATHS` in `builtins_fs.odin` and
+are `when`-guarded rather than universal, because a backslash is an ordinary
+character in a Linux filename and folding it there would rename files.
 
 **The threaded WASI build has a hand-written piece.** `src/thread_start.s` is
 the wasi-threads entry point: the host instantiates the module afresh per

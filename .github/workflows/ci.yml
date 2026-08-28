@@ -67,6 +67,77 @@ jobs:
           odin build src -out:hb
           python3 scripts/editor_keys_test.py ./hb
 
+  # The third backend. `odin test` builds natively, so this job is what
+  # actually executes fs_windows.odin, task_native.odin's Windows half and
+  # term_windows.odin - the same suite as the Linux job, on the other native
+  # target. Nothing here is skipped by the runner: the whole point is that the
+  # 138 tests run, not that they compile.
+  windows:
+    runs-on: windows-latest
+    env:
+      ODIN_VERSION: dev-2026-08
+    steps:
+      # Before the checkout, deliberately: git only materialises a committed
+      # symlink as one when core.symlinks is on, and on Windows that is off by
+      # default because creating a symlink needs a privilege. Without this,
+      # examples/link-to-optiona arrives as an ordinary file holding the target
+      # as text, and files-symlink.hb skips itself (examples_test.odin) instead
+      # of being covered. The runner has the privilege, so ask for the real thing.
+      - name: Let git check out real symlinks
+        run: git config --global core.symlinks true
+
+      - uses: actions/checkout@v7
+
+      - name: Cache Odin
+        id: cache-odin
+        uses: actions/cache@v6
+        with:
+          path: C:\odin
+          key: odin-windows-amd64-${{ env.ODIN_VERSION }}
+
+      # Same shape as the Linux install: the archive's top-level directory is
+      # named after the nightly it was cut from rather than after the tag, so
+      # it is found rather than predicted.
+      - name: Install Odin ${{ env.ODIN_VERSION }}
+        if: steps.cache-odin.outputs.cache-hit != 'true'
+        run: |
+          $url = "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_VERSION/odin-windows-amd64-$env:ODIN_VERSION.zip"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\odin.zip"
+          Expand-Archive "$env:RUNNER_TEMP\odin.zip" -DestinationPath "$env:RUNNER_TEMP\odin-extract"
+          $inner = Get-ChildItem "$env:RUNNER_TEMP\odin-extract" -Directory
+          if ($inner.Count -eq 1 -and -not (Test-Path "$env:RUNNER_TEMP\odin-extract\odin.exe")) {
+            Move-Item $inner[0].FullName C:\odin
+          } else {
+            Move-Item "$env:RUNNER_TEMP\odin-extract" C:\odin
+          }
+
+      - name: Put Odin on PATH
+        run: Add-Content -Path $env:GITHUB_PATH -Value 'C:\odin'
+
+      # Odin links Windows binaries through the MSVC toolchain and needs the
+      # Windows SDK to find kernel32 and friends; without it the build stops at
+      # "Windows SDK not found." before it compiles anything. The runner image
+      # ships both, but that is their choice to change, and the failure reads
+      # like a project bug rather than a missing dependency.
+      - name: Check the Windows SDK is present
+        run: |
+          if (-not (Test-Path 'C:\Program Files (x86)\Windows Kits\10\Lib')) {
+            throw 'No Windows SDK on this runner - Odin cannot link a Windows binary without one.'
+          }
+
+      - run: odin version
+
+      - name: Build
+        run: odin build src -out:hb.exe
+
+      - name: Test
+        run: odin test src -out:hbtest.exe
+
+      # scripts/editor_keys_test.py drives the TUI through a pty, which is a
+      # Unix thing (Python's `pty` module is POSIX-only), so the Linux job
+      # remains the one that covers the editor's key handling. The Windows
+      # console layer that replaces termios is term_windows.odin.
+
   # The Odin suite only ever builds natively, so nothing in it can execute
   # fs_wasi.odin. This job builds the WASI target and checks the examples
   # produce the same values there as they do native - the one thing that

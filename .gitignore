@@ -1,6 +1,13 @@
 target
 SPEC.html
 /hb
+# The same binary on Windows, plus the test executable `odin test` drops in the
+# working directory when it isn't told to put it somewhere else. `odin build`
+# also emits a .pdb next to the .exe.
+/hb.exe
+/hbtest.exe
+/src.exe
+*.pdb
 .claude/
 hb.wasm
 .cache/

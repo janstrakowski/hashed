@@ -1,9 +1,17 @@
+#+build linux, windows
+
 package hashedbuild
 
 import "core:thread"
 
-// The native half of task.odin: core:thread, with the callback shape
-// flattened to (proc, data) so callers don't carry a ^thread.Thread around.
+// The native half of task.odin, shared by Linux and Windows: core:thread,
+// with the callback shape flattened to (proc, data) so callers don't carry a
+// ^thread.Thread around.
+//
+// One file for both, rather than one per OS the way the filesystem is split:
+// core:thread is already the portable layer here, so there is nothing left
+// for a per-target file to differ about. WASI still needs its own
+// (task_wasi.odin), because there a spawn can genuinely fail.
 
 @(private = "file")
 Task_State :: struct {
@@ -23,9 +31,9 @@ task_trampoline :: proc(t: ^thread.Thread) {
   state.fn(state.data)
   // Nothing is freed here on purpose. A spawned thread gets its own context,
   // so freeing this block from inside it hands the pointer to a different
-  // allocator than the one that produced it - which aborts with "free():
-  // invalid pointer". Cleanup belongs to task_join, on the side that
-  // allocated.
+  // allocator than the one that produced it - which aborts outright (glibc
+  // says "free(): invalid pointer"; the Windows CRT just faults). Cleanup
+  // belongs to task_join, on the side that allocated.
 }
 
 task_spawn :: proc(fn: Task_Proc, data: rawptr) -> (Task, bool) {
