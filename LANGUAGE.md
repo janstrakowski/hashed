@@ -210,6 +210,9 @@ filetext <file>                                       // a regular file's bytes 
 A directory `File` doubles as a handle, and the handle form is **contained**: a
 sub-path can't escape it via `..`, an absolute path, or a symlink pointing
 outward. Hand a program one directory handle and it cannot read outside it.
+On Windows the same guarantee covers the forms that platform adds — a
+backslash-separated `..\..\x`, a drive-qualified `C:\x` or `C:x`, an alternate
+data stream (`name:stream`), and a junction as well as a symlink.
 
 Paths in the single-argument form resolve relative to the source file being
 run, not to your shell's working directory — so a script behaves the same
@@ -278,6 +281,52 @@ the `#context` implicit name. `SPEC.md` describes several of these as settled
 design; none of them run today.
 
 ## Running somewhere other than Linux
+
+### Windows
+
+Windows is a native target like Linux, built and tested the same way:
+
+```
+odin build src -out:hb.exe
+.\hb.exe examples/option-picker.hb
+```
+
+Everything in this document works there — the same parser, evaluator, `async`
+on real threads, the filesystem builtins, and `hb.exe -i` for the live editor
+and debugger (the console is put into virtual-terminal mode, so the keys are
+the ones listed above, not a separate Windows set).
+
+Four things are visibly Windows rather than Linux, and none of them is a
+different language:
+
+- **Paths display with forward slashes and a drive**, so a file shows as
+  `<file: C:/Users/you/project/out.txt>`. One form for every target, and Win32
+  accepts it as readily as backslashes.
+- **You may type either separator.** `"src\lib\x.txt"` and `"src/lib/x.txt"`
+  mean the same thing in a sub-path, and both are contained the same way. (On
+  Linux a backslash is an ordinary character in a filename, and stays one.)
+- **`ctx.cache` lives in `%LOCALAPPDATA%\hashedbuild`** rather than
+  `~/.cache/hashedbuild`. `XDG_CACHE_HOME` still wins where it is set, and
+  `--cache-dir` still overrides both.
+- **`symlink` needs the privilege Windows requires for it**: turn on Developer
+  Mode, or run elevated. Without it the call fails the way any refused
+  operation does — `symlink: could not create l (Access)`. `readlink` needs no
+  privilege and reads junctions as well as symlinks.
+
+That last point also affects **cloning this repository on Windows**:
+`examples/link-to-optiona` is committed as a symlink, and git only checks it
+out as one when `core.symlinks` is on, which needs the same privilege. Clone
+with it enabled to get the real thing:
+
+```
+git clone -c core.symlinks=true https://github.com/janstrakowski/hashedbuild.git
+```
+
+Without it, git writes an ordinary file holding the target as text, and
+`examples/files-symlink.hb` has nothing to read — the test suite detects that
+and skips just that example rather than failing.
+
+### WASI
 
 The interpreter also builds for **WASI**, which is what lets it run in a
 browser or any wasm runtime. There are two flavours, because no single module
