@@ -155,6 +155,64 @@ test_self_referential_table_equals_itself :: proc(t: ^testing.T) {
   expect_prints(t, "let rec p { .n = 1, .self = p }; p == p.self", "true")
 }
 
+@(test)
+test_cyclic_equality_of_different_period_can_still_differ :: proc(t: ^testing.T) {
+  // The mirror of the test above: same 1-against-2 shape, but the 2-cycle
+  // alternates payloads, so unrolling the two against each other diverges on
+  // the second step.
+  src := `let rec g { .n = 1, .next = g };
+          let rec h { .a = { .n = 1, .next = h.b }, .b = { .n = 2, .next = h.a } };
+          g == h.a`
+  expect_prints(t, src, "false")
+}
+
+@(test)
+test_a_cycle_is_not_equal_to_a_finite_unrolling :: proc(t: ^testing.T) {
+  // Any finite unrolling has to bottom out in something the cycle does not,
+  // so no depth of it is ever the same value.
+  expect_prints(t, "let rec g { .n = 1, .self = g }; g == { .n = 1, .self = { .n = 1, .self = 1 } }", "false")
+}
+
+@(test)
+test_cyclic_equality_is_symmetric :: proc(t: ^testing.T) {
+  // Comparing entries walks the left operand and looks each key up in the
+  // right, so the two operands are not handled identically. The answer must
+  // not depend on which side is which.
+  src := `let rec g { .a = { .t = "a", .next = g.b }, .b = { .t = "b", .next = g.a } };
+          let rec h { .a = { .t = "a", .next = h.b }, .b = { .t = "ZZ", .next = h.a } };
+          { (g.a == h.a), (h.a == g.a) }`
+  expect_prints(t, src, "{false, false}")
+}
+
+@(test)
+test_a_cyclic_value_works_as_a_key :: proc(t: ^testing.T) {
+  // Nothing stops a cyclic Table being a key, and matching one is the same
+  // bisimulation question as matching a value.
+  src := `let rec p { .n = 1, .self = p };
+          let rec q { .n = 1, .self = q };
+          { [p] = "x" } == { [q] = "x" }`
+  expect_prints(t, src, "true")
+}
+
+@(test)
+test_a_failed_key_match_does_not_taint_a_later_comparison :: proc(t: ^testing.T) {
+  // Regression. Matching `g.a` against the candidate key `h.b` fails, but the
+  // optimistic walk had already recorded "assume g.a and h.b are equal" on its
+  // way down. When that state was shared across candidates, the later `.z`
+  // comparison of exactly that pair short-circuited to true on the discredited
+  // assumption, and two unequal Tables compared equal. `.z` is the whole point
+  // of the case: everything else about X and Y genuinely does match.
+  base :: `let rec g { .a = { .tag = "a", .next = g.b }, .b = { .tag = "b", .next = g.a } };
+           let rec h { .a = { .tag = "a", .next = h.b }, .b = { .tag = "b", .next = h.a } };
+           let X { [g.a] = 1, [g.b] = 2, .z = g.a };`
+  expect_prints(t, base + ` let Y { [h.b] = 2, [h.a] = 1, .z = h.b }; X == Y`, "false")
+  // The same shape where `.z` really does match, so the false above is the
+  // mismatch being found and not the comparison having become useless.
+  expect_prints(t, base + ` let Y { [h.b] = 2, [h.a] = 1, .z = h.a }; X == Y`, "true")
+  // ...and the pair on its own, which is what the tainted state got wrong.
+  expect_prints(t, base + ` g.a == h.b`, "false")
+}
+
 // ---- printing a graph --------------------------------------------------------
 
 @(test)

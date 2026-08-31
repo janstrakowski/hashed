@@ -142,16 +142,19 @@ resolve_forward :: proc(v: Value) -> (Value, bool) {
   }
 }
 
+// Each candidate is compared with its own assumption state (values_equal makes
+// a fresh one), which matters and is not just tidiness: this loop is the one
+// place in the comparison machinery that *keeps going* after a comparison
+// returns false. The optimistic algorithm below records "assume these two are
+// equal" as it descends, and those assumptions are only sound if the descent
+// succeeds - a failed one leaves claims that were never justified. Sharing
+// state across candidates would let a later candidate short-circuit to `true`
+// on the wreckage of an earlier failure. Asking whether two keys match is a
+// self-contained question about their own two subgraphs, so answering it in
+// isolation is both sound and enough.
 table_find :: proc(t: ^Table_Value, key: Value) -> (Value, bool) {
-  bs: Bisim
-  defer bisim_destroy(&bs)
-  return table_find_bisim(t, key, &bs)
-}
-
-@(private = "file")
-table_find_bisim :: proc(t: ^Table_Value, key: Value, bs: ^Bisim) -> (Value, bool) {
   for entry in t.entries {
-    if values_equal_bisim(entry.key, key, bs) do return entry.value, true
+    if values_equal(entry.key, key) do return entry.value, true
   }
   return nil, false
 }
@@ -164,8 +167,12 @@ table_find_bisim :: proc(t: ^Table_Value, key: Value, bs: ^Bisim) -> (Value, boo
 // meeting a pair of Tables, *assume* they are equal, record that assumption,
 // and compare their entries under it. A back-edge then arrives at a pair
 // already assumed equal and stops, instead of recursing forever. If any
-// entry actually mismatches, the whole comparison returns false and every
-// assumption is discarded with it - which is why nothing needs to be undone.
+// entry actually mismatches, the whole comparison returns false, and it does so
+// all the way out: every caller down the value spine propagates a false rather
+// than trying something else, so the discredited assumptions die with the walk
+// that made them and nothing has to be rolled back. That argument holds only
+// because of it - table_find, the one loop that does try something else, is
+// therefore kept out of this state entirely (see its comment).
 //
 // What that computes is bisimulation: two separately built cycles of the same
 // shape are equal, which is what §6's "equality is about content" requires -
@@ -261,7 +268,7 @@ values_equal_bisim :: proc(a: Value, b: Value, bs: ^Bisim) -> bool {
     if bisim_find(bs, x) == bisim_find(bs, y) do return true // already assumed
     bisim_assume_equal(bs, x, y)
     for entry in x.entries {
-      other_val, found := table_find_bisim(y, entry.key, bs)
+      other_val, found := table_find(y, entry.key)
       if !found || !values_equal_bisim(entry.value, other_val, bs) do return false
     }
     return true
