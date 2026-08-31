@@ -1,280 +1,261 @@
 package hashedbuild
 
 import "core:slice"
-import "core:strconv"
-import "core:strings"
 
-// The Function half of SPEC.md §6's "every value is hashable", which §15 needs
-// before `cached` can exist at all: the cache key is the hash of the cached
-// expression *treated as a function*, so a closure has to have a digest.
+// A Function's digest (SPEC.md §15), which the rest of hash.odin's Merkle fold
+// treats as just another composite.
 //
-// A closure is three things, and the digest mixes exactly those three:
+// §15 says `cached` hashes the cached expression "as a function", and asks for
+// the cache key to be the hash of that function representation - but it never
+// says what a closure's representation *is*, which is the decision this file
+// makes. A closure is two things and nothing else:
 //
-//   1. **its code** - the AST subtree of its body, encoded structurally, so
-//      that reformatting an expression or writing a comment inside it does
-//      not change the key;
-//   2. **its captured `ctx`** (§9), whole - which is why ctx.cache had to
-//      become hashable (hash.odin's TAG_CACHE) rather than staying the
-//      "no identity" case it was;
-//   3. **the free names its code actually uses**, each paired with the value
-//      it resolves to in the closure's environment.
+//   * **the shape of its body** - the AST, node kind by node kind, with each
+//     leaf's own spelling folded in; and
+//   * **the values it captures** - the free names of that body, looked up in
+//     the environment the closure was made in, each hashed as an ordinary
+//     value and mixed in under its name.
 //
-// (3) is the part that has to be right for `cached` to be *correct* rather
-// than merely deterministic. Hashing the code alone would give `cached x + 1`
-// one key for every value of `x`, so the second call would happily hand back
-// the first call's answer. Hashing the whole environment instead would be
-// correct but useless - the global scope is in there, and so is every
-// unrelated binding in every enclosing `let`.
+// So two closures hash alike exactly when they would compute the same thing:
+// the same expression, reading the same values. Where they were written, and
+// what else happened to be in scope there, does not enter into it - which is
+// the property `cached` actually needs, since a cache keyed on irrelevant
+// surroundings misses every time the surroundings change.
 //
-// **The collection is deliberately conservative.** free_names below gathers
-// every Identifier that sits in a value position anywhere in the subtree,
-// without tracking which of them an inner `let` or pattern binder has already
-// bound. So a name the expression shadows locally is still included, if a
-// binding of that name also exists outside. That direction is safe: an extra
-// name can only split one cache entry into two, never merge two into one.
-// Under-collecting is the direction that would return a wrong value, and it
-// cannot happen here - every name a lookup could resolve is offered to the
-// lookup.
+// Three things follow, and are worth being plain about:
 //
-// Names that don't resolve are skipped rather than hashed as "absent": an
-// unresolvable name is either locally bound (so not part of the closure's
-// captured state) or genuinely unbound (so the expression fails when it runs,
-// and never gets as far as storing anything).
+//   * **Bound names count.** `func (let x 1; x)` and `func (let y 1; y)` are
+//     the same function and hash differently, because the shape includes every
+//     leaf's spelling. Alpha-equivalence would need the binders renumbered,
+//     which is a bigger analysis than this buys back - a closure's digest
+//     surviving a rename is not something §15 asks for.
+//   * **Literals hash as written.** `"a"` and `"\x61"` are the same Utf8 value
+//     and hash differently as *shapes*, for the same reason. The digest is of
+//     the program, not of what the program would evaluate to.
+//   * **The free-name set is an over-approximation.** free_names below collects
+//     every identifier in a reference position, including ones an inner `let`
+//     goes on to bind. A name bound inside the body simply is not in the
+//     closure's environment, so it contributes nothing; one that is *also* a
+//     name outside contributes a value the body never reads. That costs
+//     precision - two closures that differ only in such a shadow hash apart -
+//     and never correctness, which is the direction that matters: every name
+//     the body can actually read is in the set.
+//
+// A builtin (§16) has no body to take a shape from, so it hashes as its name
+// plus whatever it carries in `native_closure` - `chperm { .name = "io" }`
+// returns a function, and two of those are the same function when they were
+// built from the same permission.
 
-// A closure being hashed right now, so a recursive one terminates. `let rec f`
-// puts `f` in its own environment, so f's free-name digest reaches f again;
-// the second visit hashes as a back-reference to the enclosing occurrence
-// instead of recursing. The distance is counted from the top of the stack, so
-// two structurally identical recursive closures still hash alike.
-Seen_Stack :: [dynamic]^Function_Value
-
-function_digest :: proc(f: ^Function_Value, seen: ^Seen_Stack = nil) -> (Value_Digest, Hash_Error) {
-  if f.native != nil {
-    // A proc address is not stable from one run to the next, so a native
-    // hashes as the name it is bound under plus whatever it captured -
-    // see Function_Value.native_name.
-    closure_d, err := value_digest(f.native_closure, seen)
-    if err != .None do return {}, err
-    return mix_digests(TAG_NATIVE, sha256_tagged(TAG_UTF8, transmute([]u8)f.native_name), closure_d, nil), .None
-  }
-
-  if f.ast == nil do return {}, .Function_Ast
-
-  stack: Seen_Stack
-  s := seen
-  if s == nil {
-    stack = make(Seen_Stack, 0, 8, context.temp_allocator)
-    s = &stack
-  }
-  for entry, i in s^ {
-    if entry == f {
-      depth := len(s^) - i // 1 = the closure immediately enclosing this point
-      back: [2]u8 = {u8(depth), u8(depth >> 8)}
-      return sha256_tagged(TAG_FUNCTION, back[:]), .None
-    }
-  }
-  append(s, f)
-  defer pop(s)
-
-  code_d := ast_digest(f.ast, f.src, f.body)
-  ctx_d, ctx_err := value_digest(f.ctx, s)
-  if ctx_err != .None do return {}, ctx_err
-  free_d, free_err := free_names_digest(f, s)
-  if free_err != .None do return {}, free_err
-
-  return mix_digests(TAG_FUNCTION, code_d, ctx_d, free_d[:]), .None
+// One captured name and the value it stood for. Exposed because two other
+// places walk a closure's children: hash.odin warms directory digests before a
+// comparison, and hash_cyclic.odin treats a closure as a graph node whose
+// out-edges are exactly these.
+Function_Capture :: struct {
+  name:  string,
+  value: Value,
 }
 
-// ---- the code ---------------------------------------------------------------
-
-// A node hashes as its kind, its flags, the digest of its own source text, and
-// the digests of its children in order. Fixed-width throughout (2 + 1 + 32,
-// then a whole number of digests), so the encoding stays unambiguous under
-// hash.odin's Merkle rule.
-//
-// Source text is mixed in for leaves only - a leaf is where the text carries
-// meaning the kind does not (which Identifier, which literal). An inner node's
-// span is just whatever its children cover, so leaving it out is what makes
-// the digest insensitive to whitespace, line breaks and comments.
-//
-// It is *not* insensitive to how a literal is spelled: `1_000` and `1000` are
-// different text, so they get different keys for the same value. Conservative
-// in the harmless direction again - a split entry, never a wrong hit.
-@(private = "file")
-ast_digest :: proc(ast: ^ast_t, src: string, node: Node_Idx) -> Value_Digest {
-  n := ast.nodes[node]
-
-  head: [3]u8 = {u8(u16(n.kind)), u8(u16(n.kind) >> 8), u8(transmute(u8)n.flags)}
-  text_d: Value_Digest
-  if n.children_count == 0 {
-    start := int(n.span.start)
-    end := int(n.span.end)
-    if start <= end && end <= len(src) {
-      text_d = sha256_tagged(TAG_UTF8, transmute([]u8)src[start:end])
-    } else {
-      text_d = sha256_tagged(TAG_UTF8, nil) // a synthesized node has no text
-    }
-  } else {
-    text_d = sha256_tagged(TAG_UTF8, nil)
+function_digest :: proc(fv: ^Function_Value, w: ^Hash_Walk) -> (Value_Digest, Hash_Fail) {
+  if fv.native != nil {
+    closure_digest, f := value_digest_walk(fv.native_closure, w)
+    if f.kind != .None do return {}, f
+    payload: [2 * DIGEST_SIZE]u8
+    nd := sha256_text(fv.name)
+    copy(payload[0:], nd[:])
+    copy(payload[DIGEST_SIZE:], closure_digest[:])
+    return sha256_tagged(TAG_NATIVE, payload[:]), HASH_OK
   }
 
-  buf := make([]u8, len(head) + DIGEST_SIZE + int(n.children_count) * DIGEST_SIZE, context.temp_allocator)
-  copy(buf[:], head[:])
-  copy(buf[len(head):], text_d[:])
-  for i in 0 ..< int(n.children_count) {
-    child_d := ast_digest(ast, src, ast.extra_children[int(n.children_start) + i])
-    copy(buf[len(head) + DIGEST_SIZE + i * DIGEST_SIZE:], child_d[:])
+  if w.interp == nil do return {}, Hash_Fail{kind = .No_Program}
+
+  // A closure that captures itself - `let rec f func (f #arg)`, the ordinary
+  // way to write a recursive function - is a cycle like any other, and goes
+  // to hash_cyclic.odin by the same route a cyclic Table does.
+  for open in w.open {
+    if open == rawptr(fv) do return {}, Hash_Fail{kind = .Cyclic}
   }
-  return sha256_tagged(TAG_AST_NODE, buf)
+  append(&w.open, rawptr(fv))
+  defer pop(&w.open)
+
+  shape := function_shape_digest(w.interp, fv)
+  captures := function_captures(w.interp, fv)
+
+  buf := make([]u8, DIGEST_SIZE + len(captures) * 2 * DIGEST_SIZE, context.temp_allocator)
+  copy(buf[0:], shape[:])
+  for capture, i in captures {
+    vd, f := value_digest_walk(capture.value, w)
+    if f.kind != .None do return {}, f
+    nd := sha256_text(capture.name)
+    at := DIGEST_SIZE + i * 2 * DIGEST_SIZE
+    copy(buf[at:], nd[:])
+    copy(buf[at + DIGEST_SIZE:], vd[:])
+  }
+  return sha256_tagged(TAG_FUNCTION, buf), HASH_OK
 }
 
-// ---- the free names ---------------------------------------------------------
+// The body's shape, plus the captured `ctx` when - and only when - the body
+// can see it. A closure carries the context it was made in (§9), and two
+// closures with different authority genuinely are different functions; but
+// folding `ctx` in unconditionally would make every closure's digest depend on
+// the whole permission table, so a body that never writes `ctx` does not pay
+// for it.
+function_shape_digest :: proc(interp: ^Interpreter, fv: ^Function_Value) -> Value_Digest {
+  body := node_shape_digest(interp, fv.body)
+  _, uses_ctx := free_names(interp, fv.body)
+  if !uses_ctx do return body
 
-@(private = "file")
-free_names_digest :: proc(f: ^Function_Value, seen: ^Seen_Stack) -> (Value_Digest, Hash_Error) {
-  names := make([dynamic]string, 0, 8, context.temp_allocator)
-  collect_names(f.ast, f.src, f.body, &names)
-  slice.sort(names[:])
+  ctx_walk := Hash_Walk{interp = interp, open = make([dynamic]rawptr, 0, 4, context.temp_allocator)}
+  ctx_digest, f := value_digest_walk(fv.ctx, &ctx_walk)
+  // A context that cannot be hashed - it holds a directory nobody has read, say
+  // - folds in as a bare tag rather than failing the whole function: `ctx` is
+  // ambient authority, not an argument, and refusing to hash a closure because
+  // of what its caller could do is not a distinction §15 wants.
+  if f.kind != .None do ctx_digest = sha256_tagged(TAG_CACHE, nil)
 
-  pairs := make([dynamic][2]Value_Digest, 0, len(names), context.temp_allocator)
-  last := ""
+  payload: [2 * DIGEST_SIZE]u8
+  copy(payload[0:], body[:])
+  copy(payload[DIGEST_SIZE:], ctx_digest[:])
+  return sha256_tagged(TAG_FUNCTION, payload[:])
+}
+
+// The free names of the closure's body, paired with what they stood for where
+// it was written. Sorted by name, so the digest does not depend on the order
+// the walk happened to meet them in. A name the environment does not hold is
+// dropped: it is bound inside the body (see the over-approximation note above),
+// or it is an undefined name the program will fail on anyway.
+//
+// **That order is part of the encoding**, not an internal detail: a closure
+// caught in a cycle is encoded by hash_cyclic.odin instead, and it mirrors this
+// order exactly rather than imposing its own. The two must agree, or the same
+// closure would have two digests depending on how it was reached.
+function_captures :: proc(interp: ^Interpreter, fv: ^Function_Value) -> []Function_Capture {
+  if fv.native != nil do return nil
+
+  names, _ := free_names(interp, fv.body)
+  captures := make([dynamic]Function_Capture, 0, len(names), context.temp_allocator)
   for name in names {
-    if name == last do continue // an identifier used twice contributes once
-    last = name
-    val, found := env_lookup(f.env, name)
-    if !found do continue // locally bound, or unbound and about to fail anyway
-    vd, err := value_digest(val, seen)
-    if err != .None do return {}, err
-    append(&pairs, [2]Value_Digest{sha256_tagged(TAG_UTF8, transmute([]u8)name), vd})
+    if v, found := env_lookup(fv.env, name); found {
+      append(&captures, Function_Capture{name = name, value = v})
+    }
   }
-
-  buf := make([]u8, len(pairs) * 2 * DIGEST_SIZE, context.temp_allocator)
-  for i in 0 ..< len(pairs) {
-    copy(buf[i * 2 * DIGEST_SIZE:], pairs[i][0][:])
-    copy(buf[(i * 2 + 1) * DIGEST_SIZE:], pairs[i][1][:])
-  }
-  return sha256_tagged(TAG_FREE_NAMES, buf), .None
+  slice.sort_by(captures[:], proc(a, b: Function_Capture) -> bool { return a.name < b.name })
+  return captures[:]
 }
 
-// Every Identifier in the subtree that stands for a *variable*, as opposed to
-// a literal name the grammar happens to spell the same way. The exclusions
-// below are the whole list of the latter; see this file's header for why
-// over-collecting beyond them is deliberate and safe.
-@(private = "file")
-collect_names :: proc(ast: ^ast_t, src: string, node: Node_Idx, out: ^[dynamic]string) {
-  n := ast.nodes[node]
+// ---- the body's shape ---------------------------------------------------------
 
-  if n.kind == .Identifier {
-    start := int(n.span.start)
-    end := int(n.span.end)
-    if start <= end && end <= len(src) do append(out, src[start:end])
+// One node as a fixed-width record - kind, the flags that change meaning,
+// child count, then either the leaf's own text or the children's digests. The
+// count is what makes concatenating the children unambiguous without any
+// separator, the same argument the Merkle encoding rests on in hash.odin.
+@(private = "file")
+node_shape_digest :: proc(interp: ^Interpreter, idx: Node_Idx) -> Value_Digest {
+  n := interp.ast.nodes[idx]
+
+  // Only the two flags that mean something semantically. Has_Error and
+  // Is_Missing describe a program that isn't going to run.
+  flags: u8
+  if .Computed_Key in n.flags do flags |= 1
+  if .Is_Rec in n.flags do flags |= 2
+
+  header: [5]u8
+  header[0] = u8(u16(n.kind) & 0xff)
+  header[1] = u8(u16(n.kind) >> 8)
+  header[2] = flags
+  header[3] = u8(n.children_count & 0xff)
+  header[4] = u8(n.children_count >> 8)
+
+  if n.children_count == 0 {
+    text := sha256_text(node_text(interp, idx))
+    payload: [5 + DIGEST_SIZE]u8
+    copy(payload[0:], header[:])
+    copy(payload[5:], text[:])
+    return sha256_tagged(TAG_AST, payload[:])
+  }
+
+  buf := make([]u8, 5 + int(n.children_count) * DIGEST_SIZE, context.temp_allocator)
+  copy(buf[0:], header[:])
+  for i in 0 ..< int(n.children_count) {
+    child := node_shape_digest(interp, interp.ast.extra_children[int(n.children_start) + i])
+    copy(buf[5 + i * DIGEST_SIZE:], child[:])
+  }
+  return sha256_tagged(TAG_AST, buf)
+}
+
+// A leaf's own spelling. Operators and punctuation have a kind and nothing
+// else worth hashing, but taking the span uniformly costs nothing and means a
+// new leaf kind that *does* carry text needs no change here.
+@(private = "file")
+node_text :: proc(interp: ^Interpreter, idx: Node_Idx) -> string {
+  n := interp.ast.nodes[idx]
+  if int(n.span.end) > len(interp.src) || n.span.start > n.span.end do return ""
+  return interp.src[n.span.start:n.span.end]
+}
+
+// ---- free names ----------------------------------------------------------------
+
+// Every identifier in the subtree that is a *reference* to a name, plus
+// whether the subtree mentions `ctx`. The work is in telling a reference from
+// the several places an Identifier leaf means something else entirely - a
+// field's spelling, a binder, a pattern's selector - none of which reads
+// anything from the enclosing scope.
+@(private = "file")
+free_names :: proc(interp: ^Interpreter, idx: Node_Idx) -> (names: []string, uses_ctx: bool) {
+  found := make([dynamic]string, 0, 8, context.temp_allocator)
+  ctx_seen := false
+  collect_names(interp, idx, &found, &ctx_seen)
+
+  slice.sort(found[:])
+  unique := make([dynamic]string, 0, len(found), context.temp_allocator)
+  for name, i in found {
+    if i > 0 && found[i - 1] == name do continue
+    append(&unique, name)
+  }
+  return unique[:], ctx_seen
+}
+
+@(private = "file")
+collect_names :: proc(interp: ^Interpreter, idx: Node_Idx, out: ^[dynamic]string, uses_ctx: ^bool) {
+  n := interp.ast.nodes[idx]
+
+  #partial switch n.kind {
+  case .Identifier:
+    append(out, node_text(interp, idx))
+    return
+  case .Ctx_Expr:
+    uses_ctx^ = true
     return
   }
 
-  skip := -1 // index of the one child to walk past, if any
+  for i in 0 ..< int(n.children_count) {
+    if child_is_a_spelling(interp, n, i) do continue
+    collect_names(interp, interp.ast.extra_children[int(n.children_start) + i], out, uses_ctx)
+  }
+}
+
+// Whether child `i` of `n` is an Identifier used as a literal spelling rather
+// than as a variable. Each of these is a place the parser reuses the
+// Identifier leaf for a name that is written down rather than looked up, and
+// descending into one would invent a capture out of a field name.
+@(private = "file")
+child_is_a_spelling :: proc(interp: ^Interpreter, n: Node, i: int) -> bool {
   #partial switch n.kind {
   case .Binary_Expr:
-    // `.field`, and `!.name` - the right operand names a Table key literally,
-    // it is not a variable reference. (`[expr]` and `!: expr` are the dynamic
-    // forms and do read variables, so they are not excluded.)
-    if n.children_count >= 3 {
-      op := ast.nodes[ast.extra_children[int(n.children_start) + 1]].kind
-      if op == .Op_Dot || op == .Op_CheckDot do skip = 2
-    }
+    // [left, op_leaf, right]. `a.b` and `a !.b` name a field on the left
+    // operand; the right leaf is that field's spelling, not a variable.
+    if i != 2 do return false
+    op := interp.ast.nodes[interp.ast.extra_children[int(n.children_start) + 1]].kind
+    return op == .Op_Dot || op == .Op_CheckDot
   case .Table_Entry:
-    // `.name = v` writes the literal key `name`; `[name] = v` (Computed_Key)
-    // reads the variable.
-    if .Computed_Key not_in n.flags do skip = 0
+    // [key, value]. A `.name = v` key is the literal text; a `[expr] = v` key
+    // is an expression, and Computed_Key is the only thing telling them apart.
+    return i == 0 && .Computed_Key not_in n.flags
   case .Let_Bind:
-    skip = 1 // the name being introduced
+    return i == 1 // [bound_expr, name_leaf, body]
   case .Pattern_Bind:
-    skip = 1 // `<pattern> as <name>`
+    return i == 1 // [pattern, name_leaf]
   case .Table_Pattern_Field:
-    skip = 0 // a bare `.field` selector
+    return i == 0 // [name_leaf]
   }
-
-  for i in 0 ..< int(n.children_count) {
-    if i == skip do continue
-    collect_names(ast, src, ast.extra_children[int(n.children_start) + i], out)
-  }
-}
-
-// ---- what a closure does *not* capture --------------------------------------
-
-// `#arg`/`#argN`, `#self`/`#selfN` and a bare Hole are dynamic lookups into the
-// interpreter's own stacks (§9), deliberately so - that is what lets them reach
-// through a hard boundary the way a lexical name cannot. They are therefore
-// *not* in the closure's environment, and function_digest above cannot see
-// them. Left at that, `let f func (cached (#arg + 1)); f 1` and `f 10` would
-// share one entry, and the second call would answer 2.
-//
-// So `cached` mixes them in separately, and this is that mix: the stack entries
-// the expression could possibly reach, in order, deepest reach last.
-//
-// **How far it can reach is decided statically**, by the largest N written
-// anywhere in the expression (a bare `#arg` or Hole counting as 1). That bound
-// holds even for a `#argN` nested inside a function the expression itself
-// calls: entering that function pushes a frame, so an N there reaches N-1 of
-// the frames that were already on the stack. Anything the expression pushes for
-// itself follows from its code and its captured environment, both of which the
-// closure digest already covers.
-//
-// A level that isn't on the stack hashes as Nothing - the expression will fail
-// when it runs, and it has not got as far as storing anything.
-implicit_reach_digest :: proc(base: Value_Digest, args: []Value, selves: []Value) -> (Value_Digest, Hash_Error) {
-  buf := make([]u8, (len(args) + len(selves)) * DIGEST_SIZE, context.temp_allocator)
-  i := 0
-  for group in ([][]Value{args, selves}) {
-    for v in group {
-      d, err := value_digest(v)
-      if err != .None do return {}, err
-      copy(buf[i * DIGEST_SIZE:], d[:])
-      i += 1
-    }
-  }
-  return mix_digests(TAG_IMPLICIT_REACH, base, sha256_tagged(TAG_FREE_NAMES, buf), nil), .None
-}
-
-// How deep into each stack the expression can reach - see above. Zero for both
-// means it reads neither, and `cached` skips the mix entirely, so an ordinary
-// expression's key is unchanged by any of this.
-implicit_reach :: proc(ast: ^ast_t, src: string, node: Node_Idx, max_arg: ^int, max_self: ^int) {
-  n := ast.nodes[node]
-
-  #partial switch n.kind {
-  case .Hole:
-    // An evaluated Hole is `#arg` by another spelling (eval.odin).
-    if max_arg^ < 1 do max_arg^ = 1
-  case .Implicit_Name:
-    start, end := int(n.span.start), int(n.span.end)
-    if start <= end && end <= len(src) do note_implicit(src[start:end], max_arg, max_self)
-  }
-
-  for i in 0 ..< int(n.children_count) {
-    implicit_reach(ast, src, ast.extra_children[int(n.children_start) + i], max_arg, max_self)
-  }
-}
-
-// "#arg" / "#arg3" / "#self" / "#self2". Anything else - `#context`, or a
-// malformed name - is left alone: it has no stack to reach into, and it fails
-// when the expression runs.
-@(private = "file")
-note_implicit :: proc(text: string, max_arg: ^int, max_self: ^int) {
-  rest := text[1:] if len(text) > 0 else text
-
-  target: ^int
-  prefix: string
-  switch {
-  case strings.has_prefix(rest, "arg"):  target, prefix = max_arg, "arg"
-  case strings.has_prefix(rest, "self"): target, prefix = max_self, "self"
-  case: return
-  }
-
-  level := 1
-  if digits := rest[len(prefix):]; len(digits) > 0 {
-    v, ok := strconv.parse_int(digits)
-    if !ok do return
-    level = v
-  }
-  if level > target^ do target^ = level
+  return false
 }

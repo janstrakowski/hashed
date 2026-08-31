@@ -66,12 +66,17 @@ resolve_cache_dir :: proc(override: string) -> string {
   return strings.concatenate({os.get_env_alloc("HOME", context.temp_allocator), "/.cache/hashedbuild"})
 }
 
+// `name` is what the builtin hashes as (hash_function.odin): a native has no
+// body to take a shape from, so its identity is the operation it *is*, and
+// the name is how that gets written down. It is the binding's own spelling
+// below, and must stay stable for the same reason a tag byte must - see the
+// note on renumbering in hash.odin.
 @(private = "file")
 new_native_function :: proc(name: string, fn: Native_Fn, closure: Value = nil) -> Value {
   f := new(Function_Value)
+  f.name = name
   f.native = fn
   f.native_closure = closure
-  f.native_name = name // a native hashes as its name, not its address - see Function_Value
   return f
 }
 
@@ -88,9 +93,10 @@ make_global_env :: proc() -> ^Env {
   return env
 }
 
-// Also read by eval.odin, where `cached` (§15) gates on it: the cache is a
-// directory on disk, so reading or writing an entry is as much an I/O
-// operation as §16's builtins are.
+// Package-visible rather than file-private because two other places ask it: a
+// directory File's digest is read off the disk the first time anything needs
+// it (hash.odin), and §15's `cached` reads and writes cache entries
+// (eval.odin). Both are I/O operations like any other here (SPEC.md §3/§9).
 ctx_allows_io :: proc(interp: ^Interpreter) -> bool {
   t, is_table := interp.current_ctx.(^Table_Value)
   if !is_table do return false
@@ -638,10 +644,6 @@ builtin_chperm :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, bo
   closure := new(Table_Value)
   append(&closure.entries, Table_Entry_Value{key = "name", value = name_str})
   append(&closure.entries, Table_Entry_Value{key = "enabled", value = enabled_bool})
-  // The name is what this function hashes as (§15, Function_Value), so it has
-  // to distinguish the ctx-changer chperm returns from chperm itself; its
-  // captured {name, enabled} closure hashes alongside it, which is what makes
-  // two differently-configured ctx-changers different values.
   return new_native_function("chperm.apply", apply_chperm, closure), true
 }
 

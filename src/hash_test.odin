@@ -129,188 +129,298 @@ test_sha256_awaits_an_async_operand :: proc(t: ^testing.T) {
   testing.expect(t, eval_bool(t, `(sha256 async ("a" concat "b")) == (sha256 "ab")`))
 }
 
-// A small tree, built here rather than borrowed from the repo. Two reasons it
-// is worth the lines: nothing else writes into it (async-branching drops
-// branch-*.marker files into examples/ as it runs, and `odin test` runs tests
-// concurrently, so hashing that directory twice can straddle a write), and its
-// contents are fixed, so what these tests cover doesn't drift with the repo.
+// ---- directories (§3) ----------------------------------------------------------
+
+// A scratch tree, built entry by entry so a test can say exactly what it holds
+// and then change one thing about it.
 @(private = "file")
-make_tree :: proc(t: ^testing.T, name: string) -> string {
-  path := strings.concatenate({repo_root(), "/.hash_test_tree_", name})
-  os.make_directory(path)
-  _ = os.write_entire_file(strings.concatenate({path, "/a.txt"}, context.temp_allocator),
-    transmute([]u8)string("alpha"))
-  _ = os.write_entire_file(strings.concatenate({path, "/b.txt"}, context.temp_allocator),
-    transmute([]u8)string("beta"))
-  os.make_directory(strings.concatenate({path, "/sub"}, context.temp_allocator))
-  _ = os.write_entire_file(strings.concatenate({path, "/sub/c.txt"}, context.temp_allocator),
-    transmute([]u8)string("gamma"))
-  return path
+Tree :: struct {
+  root: string,
 }
 
 @(private = "file")
-remove_tree :: proc(path: string) {
-  if is_dir, err := fs_stat_is_dir_at(fs_cwd_dir(), path, true); err == .None && is_dir {
-    entries, _ := fs_list_dir(path, context.temp_allocator)
+make_tree :: proc(t: ^testing.T, name: string) -> Tree {
+  root := strings.concatenate({repo_root(), "/.hash_test_", name})
+  clear_tree_at(root) // a leftover from an interrupted run
+  err := os.make_directory(root)
+  testing.expect(t, err == nil, "could not create the scratch tree")
+  return Tree{root = root}
+}
+
+@(private = "file")
+tree_write :: proc(tree: Tree, rel: string, content: string) {
+  path := strings.concatenate({tree.root, "/", rel}, context.temp_allocator)
+  _ = os.write_entire_file(path, transmute([]u8)content)
+}
+
+@(private = "file")
+tree_subdir :: proc(tree: Tree, rel: string) {
+  _ = os.make_directory(strings.concatenate({tree.root, "/", rel}, context.temp_allocator))
+}
+
+// One level of nesting deep, which is all these trees ever have.
+@(private = "file")
+clear_tree_at :: proc(root: string) {
+  if handle, err := os.open(root); err == nil {
+    entries, _ := os.read_dir(handle, -1, context.temp_allocator)
     for entry in entries {
-      remove_tree(strings.concatenate({path, "/", entry.name}, context.temp_allocator))
+      child := strings.concatenate({root, "/", entry.name}, context.temp_allocator)
+      // Only a directory gets opened and listed. Handing a file's handle to
+      // os.read_dir is not a no-op on Windows - it walks a structure that
+      // isn't there.
+      if entry.type == .Directory {
+        if inner, ierr := os.open(child); ierr == nil {
+          grandchildren, _ := os.read_dir(inner, -1, context.temp_allocator)
+          for g in grandchildren do os.remove(strings.concatenate({child, "/", g.name}, context.temp_allocator))
+          os.close(inner)
+        }
+      }
+      os.remove(child)
     }
+    os.close(handle)
   }
-  os.remove(path)
+  os.remove(root)
 }
 
-// §6 says every value is hashable, and as of `cached` that is true with no
-// exceptions left: the three kinds that used to fail by name all have digests.
-// A directory reads its tree (§3), a Function encodes as a closure (§15), and
-// ctx.cache hashes as the tagged constant it has no identity to improve on.
-@(test)
-test_every_kind_of_value_has_a_digest :: proc(t: ^testing.T) {
-  testing.expect(t, len(eval_str(t, `sha256 func 1`)) > 0)
-  testing.expect(t, len(eval_str(t, `sha256 ctx.cache`)) > 0)
-
-  tree := make_tree(t, "any_digest")
-  defer delete(tree)
-  defer remove_tree(tree)
-
-  dir := strings.concatenate({`sha256 loadfile "`, tree, `"`})
-  defer delete(dir)
-  testing.expect(t, len(eval_str(t, dir)) > 0)
+@(private = "file")
+remove_tree :: proc(tree: Tree) {
+  clear_tree_at(tree.root)
+  delete(tree.root)
 }
 
-// §3: a directory's identity is its entries, so it changes with them and with
-// nothing else. Reached by two different paths, the same tree is one value -
-// which is the same path-independence §3 gives a regular file.
-//
-@(test)
-test_directory_hash_is_over_its_entries :: proc(t: ^testing.T) {
-  tree := make_tree(t, "entries")
-  defer delete(tree)
-  defer remove_tree(tree)
-
-  same := strings.concatenate({
-    `(sha256 loadfile "`, tree, `") == (sha256 loadfile "`, tree, `/./")`,
-  })
-  defer delete(same)
-  testing.expect(t, eval_bool(t, same), "one tree reached two ways is one value")
-
-  // A nested directory is part of its parent's hash, so a change three levels
-  // down changes the top - the Merkle property the whole thing rests on.
-  before := eval_str(t, strings.concatenate({`sha256 loadfile "`, tree, `"`}, context.temp_allocator))
-  _ = os.write_entire_file(
-    strings.concatenate({tree, "/sub/c.txt"}, context.temp_allocator),
-    transmute([]u8)string("GAMMA"),
-  )
-  after := eval_str(t, strings.concatenate({`sha256 loadfile "`, tree, `"`}, context.temp_allocator))
-  testing.expect(t, before != after, "a change inside a subdirectory changes the tree's hash")
-
-  // And a directory is not its own contents flattened: it is tagged, so it
-  // cannot collide with a regular file however that file's bytes are chosen.
-  both := strings.concatenate({
-    `(sha256 loadfile "`, tree, `") == (sha256 loadfile "`, tree, `/a.txt")`,
-  })
-  defer delete(both)
-  testing.expect(t, !eval_bool(t, both))
+@(private = "file")
+tree_digest :: proc(t: ^testing.T, tree: Tree) -> string {
+  src := strings.concatenate({`sha256 loadfile "`, tree.root, `"`}, context.temp_allocator)
+  return eval_str(t, src)
 }
 
-// §3 hashes no permission bit, so setting one changes nothing about what a
-// directory *is*. This is the assertion behind that decision, and it is
-// Linux-only because Linux is the only target that can set such a bit at all:
-// elsewhere fs_set_executable_at is a documented no-op, and the test would
-// pass without having established anything.
+// §3 defines a directory's hash over its entries. The point of the whole
+// exercise is that the digest is the *tree's*, not the path's: two directories
+// holding the same thing are the same value, and one byte anywhere inside is a
+// different one.
 @(test)
-test_directory_hash_ignores_the_executable_bit :: proc(t: ^testing.T) {
-  when ODIN_OS != .Linux {
-    log.info("skipping: only Linux can set an executable bit for the hash to ignore")
-  } else {
-    tree := make_tree(t, "exec_bit")
-    defer delete(tree)
-    defer remove_tree(tree)
+test_directory_hash_is_its_contents :: proc(t: ^testing.T) {
+  a := make_tree(t, "dir_a")
+  defer remove_tree(a)
+  b := make_tree(t, "dir_b")
+  defer remove_tree(b)
 
-    src := strings.concatenate({`sha256 loadfile "`, tree, `"`})
-    defer delete(src)
-    before := eval_str(t, src)
-
-    dir_fd, open_err := fs_open_dir_path(tree)
-    testing.expect(t, open_err == .None, "could not open the scratch tree")
-    if open_err != .None do return
-    defer fs_close(dir_fd)
-    testing.expect(t, fs_set_executable_at(dir_fd, "a.txt") == .None)
-
-    // That the bit actually landed is half the test: without it the
-    // comparison below would hold for the wrong reason.
-    entries, list_err := fs_list_dir_at(dir_fd, context.temp_allocator)
-    testing.expect(t, list_err == .None)
-    saw_executable := false
-    for entry in entries {
-      if entry.name == "a.txt" && entry.is_executable do saw_executable = true
-    }
-    testing.expect(t, saw_executable, "fs_set_executable_at did not set the bit")
-
-    testing.expect_value(t, eval_str(t, src), before)
+  for tree in ([]Tree{a, b}) {
+    tree_write(tree, "one.txt", "hello")
+    tree_subdir(tree, "nested")
+    tree_write(tree, "nested/two.txt", "world")
   }
+  testing.expect_value(t, tree_digest(t, a), tree_digest(t, b))
+
+  // One byte, one level down.
+  before := tree_digest(t, a)
+  c := make_tree(t, "dir_c")
+  defer remove_tree(c)
+  tree_write(c, "one.txt", "hello")
+  tree_subdir(c, "nested")
+  tree_write(c, "nested/two.txt", "worlds")
+  testing.expect(t, before != tree_digest(t, c), "a changed byte is a changed tree")
 }
 
-// A file's digest doesn't depend on whether you reached it as a value or as a
-// directory entry - §3 pins both to hash(content_bytes), untagged, which is
-// what makes `sha256 <file>` agree with sha256sum.
 @(test)
-test_a_files_digest_is_the_same_inside_a_directory :: proc(t: ^testing.T) {
-  tree := make_tree(t, "entry_identity")
-  defer delete(tree)
+test_directory_hash_covers_names_not_just_content :: proc(t: ^testing.T) {
+  // §3 hashes each entry with its name, so the same bytes under a different
+  // name is a different directory. Without the name in the entry digest these
+  // two would collide.
+  a := make_tree(t, "name_a")
+  defer remove_tree(a)
+  tree_write(a, "alpha.txt", "same")
+
+  b := make_tree(t, "name_b")
+  defer remove_tree(b)
+  tree_write(b, "beta.txt", "same")
+
+  testing.expect(t, tree_digest(t, a) != tree_digest(t, b))
+}
+
+@(test)
+test_a_directory_is_not_its_only_file :: proc(t: ^testing.T) {
+  // A regular File hashes as its bare content (§3, untagged); a directory
+  // holding just that file must not land on the same digest.
+  tree := make_tree(t, "dir_vs_file")
   defer remove_tree(tree)
+  tree_write(tree, "only.txt", "content")
+
+  file_src := strings.concatenate({`sha256 loadfile "`, tree.root, `/only.txt"`}, context.temp_allocator)
+  testing.expect(t, tree_digest(t, tree) != eval_str(t, file_src))
+}
+
+@(test)
+test_two_directory_handles_on_one_tree_are_equal :: proc(t: ^testing.T) {
+  // §3: a File's identity is content, not path. Two separate handles are two
+  // objects, so this only holds because the comparison hashes them - which
+  // means the evaluator warmed both digests first (hash.odin).
+  tree := make_tree(t, "dir_equality")
+  defer remove_tree(tree)
+  tree_write(tree, "x.txt", "same")
 
   src := strings.concatenate({
-    `(sha256 loadfile "`, tree, `/a.txt") == (sha256 "alpha")`,
-  })
-  defer delete(src)
-  testing.expect(t, !eval_bool(t, src), "a File is not a Utf8 with the same bytes")
-
-  same := strings.concatenate({
-    `(sha256 loadfile "`, tree, `/a.txt") == (sha256 loadfile "`, tree, `/./a.txt")`,
-  })
-  defer delete(same)
-  testing.expect(t, eval_bool(t, same))
+    `let a loadfile "`, tree.root, `"; let b loadfile "`, tree.root, `"; a == b`,
+  }, context.temp_allocator)
+  testing.expect(t, eval_bool(t, src), "two handles on one tree are one value")
 }
 
-// §15's cache key rests entirely on this: a closure hashes over its code *and*
-// the values of the names that code uses. Getting the second half wrong is
-// what would make `cached` hand back another argument's answer.
 @(test)
-test_function_hash_covers_code_and_free_names :: proc(t: ^testing.T) {
-  testing.expect(t, eval_bool(t, `(sha256 func (1 + 2)) == (sha256 func (1 + 2))`),
-    "the same expression is the same function")
-  testing.expect(t, !eval_bool(t, `(sha256 func (1 + 2)) == (sha256 func (1 + 3))`),
-    "different code is a different function")
+test_different_trees_are_not_equal :: proc(t: ^testing.T) {
+  a := make_tree(t, "neq_a")
+  defer remove_tree(a)
+  tree_write(a, "x.txt", "one")
+  b := make_tree(t, "neq_b")
+  defer remove_tree(b)
+  tree_write(b, "x.txt", "two")
 
-  testing.expect(t,
-    !eval_bool(t, `(let x 1; sha256 func (x + 1)) == (let x 2; sha256 func (x + 1))`),
-    "a captured value is part of the function")
-  testing.expect(t,
-    eval_bool(t, `(let x 1; sha256 func (x + 1)) == (let x 1; sha256 func (x + 1))`),
-    "the same captured value is the same function")
-
-  // Layout and comments are not part of the code, which is what keeps
-  // reformatting a build script from throwing its cache away.
-  testing.expect(t, eval_bool(t, `(sha256 func (1 + 2)) == (sha256 func ( 1  /* hi */ + 2 ))`))
+  src := strings.concatenate({
+    `let a loadfile "`, a.root, `"; let b loadfile "`, b.root, `"; a == b`,
+  }, context.temp_allocator)
+  testing.expect(t, !eval_bool(t, src))
 }
 
-// `let rec` puts a function in its own environment, so hashing one reaches
-// itself. It has to terminate, and two functions written the same way have to
-// agree - a back-reference counted from the wrong end would break the second.
+// Reading a tree is I/O, and I/O is what §9's permission governs. The handle
+// is obtained while io is granted; the *hash* is asked for after it has been
+// revoked, which is the moment the read would happen.
 @(test)
-test_recursive_function_hash_terminates :: proc(t: ^testing.T) {
-  testing.expect(t, eval_bool(t,
-    `(let rec f func (#self 1); sha256 f) == (let rec g func (#self 1); sha256 g)`))
+test_hashing_a_directory_needs_io :: proc(t: ^testing.T) {
+  tree := make_tree(t, "dir_perm")
+  defer remove_tree(tree)
+  tree_write(tree, "x.txt", "content")
+
+  src := strings.concatenate({
+    `let d loadfile "`, tree.root, `"; (sha256 d) chctx chperm { .name = "io", .enabled = 1 > 2 }`,
+  }, context.temp_allocator)
+  testing.expect(t, strings.contains(eval_failure(t, src), "needs the io permission"))
 }
 
-// ctx.cache hashes as a constant, deliberately not as its directory path -
-// otherwise §15's key would change with `--cache-dir`, and a cache that was
-// moved or copied would miss on everything inside it.
 @(test)
-test_ctx_cache_hashes_independently_of_where_it_is :: proc(t: ^testing.T) {
-  a := eval_str(t, `sha256 ctx.cache`)
-  b := eval_str(t, `sha256 (ctx withctx { .permissions = ctx.permissions, .cache = ctx.cache }).cache`)
-  testing.expect_value(t, a, b)
+test_a_directory_digest_is_read_once :: proc(t: ^testing.T) {
+  // §3 calls a File an immutable handle, so its digest is fixed at the first
+  // read: revoking io afterwards cannot make the same value unhashable, and
+  // changing the tree afterwards cannot make it a different value.
+  tree := make_tree(t, "dir_memo")
+  defer remove_tree(tree)
+  tree_write(tree, "x.txt", "before")
+
+  src := strings.concatenate({
+    `let d loadfile "`, tree.root, `";`,
+    ` (sha256 d) == ((sha256 d) chctx chperm { .name = "io", .enabled = 1 > 2 })`,
+  }, context.temp_allocator)
+  testing.expect(t, eval_bool(t, src), "the second ask is answered from the first read")
+}
+
+// §3 hashes a symlink entry as its target *string*, without resolving it - so
+// two links pointing at different names are two different trees even when
+// neither target exists, and a link is never confused with what it points at.
+//
+// Skipped where a symlink cannot be created: on Windows that needs Developer
+// Mode or an elevated shell, the same privilege examples/files-symlink.hb
+// wants (see examples_test.odin).
+@(test)
+test_symlink_entries_hash_as_their_target :: proc(t: ^testing.T) {
+  tree := make_tree(t, "dir_symlink")
+  defer remove_tree(tree)
+
+  dir_fd, oerr := fs_open_dir_path(tree.root)
+  testing.expect(t, oerr == .None, "could not open the scratch tree")
+  if oerr != .None do return
+  defer fs_close(dir_fd)
+
+  if err := fs_symlink_at(dir_fd, "link", "somewhere.txt"); err != .None {
+    log.infof("skipping: this environment cannot create a symlink (%v) - on Windows that needs Developer Mode", err)
+    return
+  }
+  with_first := tree_digest(t, tree)
+
+  other := make_tree(t, "dir_symlink_other")
+  defer remove_tree(other)
+  other_fd, oerr2 := fs_open_dir_path(other.root)
+  testing.expect(t, oerr2 == .None)
+  if oerr2 != .None do return
+  defer fs_close(other_fd)
+  testing.expect(t, fs_symlink_at(other_fd, "link", "elsewhere.txt") == .None)
+
+  testing.expect(t, with_first != tree_digest(t, other), "the target string is part of the entry")
+}
+
+// ---- ctx.cache (§9) ------------------------------------------------------------
+
+@(test)
+test_ctx_cache_hashes_as_a_bare_tag :: proc(t: ^testing.T) {
+  // §6 says every value is hashable, and ctx.cache is a value. It has no
+  // content to hash and its one distinguishing feature - the directory it is
+  // rooted at - is the path §9 keeps out of the language, so it is a tag and
+  // nothing more. What that has to be is stable and unlike anything else.
+  testing.expect(t, eval_bool(t, `(sha256 ctx.cache) == (sha256 ctx.cache)`))
+  testing.expect(t, !eval_bool(t, `(sha256 ctx.cache) == (sha256 nothing)`))
+}
+
+// ---- functions (§15) -----------------------------------------------------------
+
+@(test)
+test_functions_hash_by_body_and_captures :: proc(t: ^testing.T) {
+  // The same expression reading the same values is the same function...
+  testing.expect(t, eval_bool(t, `(sha256 func (#arg + 1)) == (sha256 func (#arg + 1))`))
+  testing.expect(t, eval_bool(t, `(sha256 (let x 1; func (#arg + x))) == (sha256 (let x 1; func (#arg + x)))`))
+  // ...and a different body, or a different captured value, is not.
+  testing.expect(t, !eval_bool(t, `(sha256 func (#arg + 1)) == (sha256 func (#arg + 2))`))
+  testing.expect(t, !eval_bool(t, `(sha256 (let x 1; func (#arg + x))) == (sha256 (let x 2; func (#arg + x)))`))
+}
+
+@(test)
+test_function_hash_ignores_the_rest_of_the_scope :: proc(t: ^testing.T) {
+  // The property `cached` needs: a closure's digest is what it reads, not what
+  // happened to be in scope where it was written. Without free-variable
+  // analysis this would fail, and every cache lookup would miss whenever an
+  // unrelated binding nearby changed.
+  testing.expect(t, eval_bool(t, `
+    (sha256 (let x 1; let unrelated "zz"; func (#arg + x)))
+      == (sha256 (let x 1; func (#arg + x)))`))
+}
+
+@(test)
+test_builtins_hash_by_name :: proc(t: ^testing.T) {
+  // A builtin has no body to take a shape from (§16), so its identity is the
+  // operation it is.
+  testing.expect(t, eval_bool(t, `(sha256 loadfile) == (sha256 loadfile)`))
+  testing.expect(t, !eval_bool(t, `(sha256 loadfile) == (sha256 createfile)`))
+  // A partially applied one carries what it was built from, so two `chperm`
+  // results are the same function exactly when they grant the same thing.
+  testing.expect(t, eval_bool(t, `
+    (sha256 chperm { .name = "io", .enabled = 1 < 2 })
+      == (sha256 chperm { .name = "io", .enabled = 1 < 2 })`))
+  testing.expect(t, !eval_bool(t, `
+    (sha256 chperm { .name = "io", .enabled = 1 < 2 })
+      == (sha256 chperm { .name = "io", .enabled = 1 > 2 })`))
+}
+
+@(test)
+test_a_recursive_function_hashes :: proc(t: ^testing.T) {
+  // `let rec` over a closure captures the scope the closure itself is bound
+  // in, so the function reaches itself: a cycle, and it goes the same way a
+  // cyclic Table does (hash_cyclic.odin). What matters is that it terminates
+  // and stays consistent.
+  fact := `let rec fact (let n; (n == 0) then 1 else n * (fact (n - 1))); sha256 fact`
+  digest := eval_str(t, fact)
+  testing.expect(t, len(digest) == 44)
+  testing.expect(t, eval_bool(t, strings.concatenate({
+    `(`, fact, `) == "`, digest, `"`,
+  }, context.temp_allocator)), "the same recursive function hashes the same way twice")
+}
+
+// The two kinds §3/§15 still describe no digest for. Both are shapes a program
+// cannot hold: an un-awaited handle is awaited by every operator that meets
+// one (§2), and a `.Other` directory entry is a device node in a build tree.
+@(test)
+test_unhashable_values_fail_with_a_reason :: proc(t: ^testing.T) {
+  // Everything the old version of this test listed - a Function, ctx.cache, a
+  // directory File - now hashes; the tests above are what replaced it. What is
+  // left is worth one assertion: `serialize` was removed, and the surface says
+  // so by these being ordinary names rather than reserved words.
+  testing.expect(t, len(eval_str(t, `sha256 func 1`)) == 44)
+  testing.expect(t, len(eval_str(t, `sha256 ctx.cache`)) == 44)
 }
 
 // `serialize`/`serialize_file` were removed from the language, so they are

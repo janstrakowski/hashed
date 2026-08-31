@@ -195,7 +195,9 @@ open_as_file_value :: proc(dir_fd: Fs_Fd, name: string, is_dir: bool, display: s
 // Writes `v` under `key_name` and returns what a lookup of that key now
 // yields. Losing the race to another run is not a failure: the entry that
 // won holds the same value, since the key is the same.
-cache_store :: proc(cache: ^Cache_Value, key_name: string, v: Value) -> (Value, bool, string) {
+// `interp` is what hashing a nested File needs (§3's directory digest reads
+// the tree, and that read is gated on `io` like any other).
+cache_store :: proc(cache: ^Cache_Value, key_name: string, v: Value, interp: ^Interpreter) -> (Value, bool, string) {
   if errno := ensure_cache_dir_open(cache); errno != .None {
     return nil, false, fmt.tprintf("could not open cache directory %s (%v)", cache.dir_path, errno)
   }
@@ -226,7 +228,7 @@ cache_store :: proc(cache: ^Cache_Value, key_name: string, v: Value) -> (Value, 
       return nil, false, msg
     }
     published = strings.concatenate({temp_name, "/entry"}, context.temp_allocator)
-  } else if msg := write_text_entry(temp_fd, v); msg != "" {
+  } else if msg := write_text_entry(temp_fd, v, interp); msg != "" {
     fs_close(temp_fd)
     remove_tree_at(cache.dir_fd, temp_name)
     return nil, false, msg
@@ -272,11 +274,13 @@ make_temp_dir :: proc(dir_fd: Fs_Fd, final_name: string) -> (string, bool) {
 }
 
 @(private = "file")
-write_text_entry :: proc(entry_fd: Fs_Fd, v: Value) -> string {
+write_text_entry :: proc(entry_fd: Fs_Fd, v: Value, interp: ^Interpreter) -> string {
   // Every File in the value, written out first, so the text can refer to each
   // by the name it landed under.
   files := make([dynamic]^File_Value, 0, 4, context.temp_allocator)
-  collect_files(v, &files)
+  seen := make(map[^Table_Value]bool)
+  defer delete(seen)
+  collect_files(v, &files, &seen)
 
   // Not the temp allocator, unlike almost everything else here: this map has
   // to survive every write below, and writing a File hashes it - which for a
@@ -287,8 +291,8 @@ write_text_entry :: proc(entry_fd: Fs_Fd, v: Value) -> string {
   defer delete(names)
   for fv in files {
     if _, already := names[fv]; already do continue
-    d, herr := value_digest(fv)
-    if herr != .None do return fmt.tprintf("cannot cache this value: %s", hash_error_message(herr))
+    d, herr := value_digest(fv, interp)
+    if herr.kind != .None do return fmt.tprintf("cannot cache this value: %s", hash_error_message(herr))
     name := cache_entry_name_for(d)
     if msg := write_file_value(entry_fd, name, fv); msg != "" do return msg
     names[fv] = name
@@ -302,15 +306,23 @@ write_text_entry :: proc(entry_fd: Fs_Fd, v: Value) -> string {
 // Every File reachable in `v`, in a deterministic order. Tables are the only
 // thing that can hold one; a Function's environment is not part of a value's
 // content, and nothing else nests.
+//
+// `seen` is not an optimisation: `let rec` can build a Table that reaches
+// itself (§10), and without it this walks a cycle forever.
 @(private = "file")
-collect_files :: proc(v: Value, out: ^[dynamic]^File_Value) {
-  #partial switch av in v {
+collect_files :: proc(v: Value, out: ^[dynamic]^File_Value, seen: ^map[^Table_Value]bool) {
+  resolved, ok := resolve_forward(v)
+  if !ok do return // still under construction; write_value reports it
+
+  #partial switch av in resolved {
   case ^File_Value:
     append(out, av)
   case ^Table_Value:
+    if seen[av] do return
+    seen[av] = true
     for entry in av.entries {
-      collect_files(entry.key, out)
-      collect_files(entry.value, out)
+      collect_files(entry.key, out, seen)
+      collect_files(entry.value, out, seen)
     }
   }
 }
@@ -342,20 +354,20 @@ write_file_value :: proc(dir_fd: Fs_Fd, name: string, fv: ^File_Value) -> string
 // build system. Nothing else about a directory is copied.
 @(private = "file")
 copy_tree :: proc(src_fd: Fs_Fd, dst_fd: Fs_Fd) -> string {
-  entries, list_err := fs_list_dir_at(src_fd, context.temp_allocator)
+  entries, list_err := fs_list_entries_at(src_fd, context.temp_allocator)
   if list_err != .None do return fmt.tprintf("could not read a directory being cached (%v)", list_err)
-  slice.sort_by(entries, proc(a, b: Fs_Entry) -> bool { return a.name < b.name })
+  slice.sort_by(entries, proc(a, b: Fs_Dir_Entry) -> bool { return a.name < b.name })
 
   for entry in entries {
-    switch {
-    case entry.is_symlink:
+    switch entry.kind {
+    case .Symlink:
       target, err := fs_readlink_at(src_fd, entry.name)
       if err != .None do return fmt.tprintf("could not read the symlink %s (%v)", entry.name, err)
       if serr := fs_symlink_at(dst_fd, entry.name, target); serr != .None {
         return fmt.tprintf("could not recreate the symlink %s in the cache (%v)", entry.name, serr)
       }
 
-    case entry.is_dir:
+    case .Directory:
       if err := fs_mkdir_at(dst_fd, entry.name); err != .None {
         return fmt.tprintf("could not create %s in the cache (%v)", entry.name, err)
       }
@@ -367,7 +379,7 @@ copy_tree :: proc(src_fd: Fs_Fd, dst_fd: Fs_Fd) -> string {
       defer fs_close(child_dst)
       if msg := copy_tree(child_src, child_dst); msg != "" do return msg
 
-    case:
+    case .Regular:
       fd, open_err := fs_open_read_at(src_fd, entry.name, true)
       if open_err != .None do return fmt.tprintf("could not open %s (%v)", entry.name, open_err)
       content, read_err := fs_read_all(fd)
@@ -375,6 +387,12 @@ copy_tree :: proc(src_fd: Fs_Fd, dst_fd: Fs_Fd) -> string {
       if read_err != .None do return fmt.tprintf("could not read %s (%v)", entry.name, read_err)
       defer delete(content)
       if msg := write_bytes(dst_fd, entry.name, content, entry.is_executable); msg != "" do return msg
+
+    case .Other:
+      // §3 encodes three shapes and this is none of them, so the directory has
+      // no digest either (hash.odin says the same). Refusing here rather than
+      // skipping keeps the copy and the hash agreeing about what a tree is.
+      return fmt.tprintf("%s is not a file, directory or symlink, and cannot be cached", entry.name)
     }
   }
   return ""
@@ -401,9 +419,9 @@ write_bytes :: proc(dir_fd: Fs_Fd, name: string, data: []u8, executable: bool) -
 remove_tree_at :: proc(parent: Fs_Fd, name: string) {
   if fs_unlink_at(parent, name) == .None do return
   if fd, err := fs_open_dir_at(parent, name, true); err == .None {
-    if entries, lerr := fs_list_dir_at(fd, context.temp_allocator); lerr == .None {
+    if entries, lerr := fs_list_entries_at(fd, context.temp_allocator); lerr == .None {
       for entry in entries {
-        if entry.is_dir && !entry.is_symlink {
+        if entry.kind == .Directory {
           remove_tree_at(fd, entry.name)
         } else {
           fs_unlink_at(fd, entry.name)

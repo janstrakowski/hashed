@@ -271,6 +271,51 @@ fs_make_dirs :: proc(path: string) -> Fs_Error {
 // preview1's fd_readdir: entries come back packed as a 24-byte header (next
 // cookie, inode, name length, filetype) followed by the raw name, and the
 // caller keeps asking until a pass returns less than it asked for.
+// ---- the directory hash's listing (SPEC.md §3) -------------------------------
+
+// preview1's fd_readdir is cookie-driven rather than offset-driven, so unlike
+// the Linux side this can read `parent` itself: nothing about the descriptor
+// changes, and a caller still holding it as a `.dir` handle (§16) sees no
+// difference.
+//
+// `is_executable` is always false here, and that is the language's answer
+// rather than a missing feature: a preview1 `filestat` has no permission bits
+// of any kind to report. See hash.odin's directory section.
+fs_list_entries_at :: proc(parent: Fs_Fd, allocator := context.allocator) -> ([]Fs_Dir_Entry, Fs_Error) {
+  entries := make([dynamic]Fs_Dir_Entry, 0, 16, allocator)
+  buf := make([]u8, 4096, context.temp_allocator)
+  cookie := wasi.dircookie_t(0)
+
+  for {
+    used, read_err := wasi.fd_readdir(wasi.fd_t(parent), buf, cookie)
+    if read_err != .SUCCESS do return entries[:], to_fs_error(read_err)
+    if used == 0 do break
+
+    offset := 0
+    for offset + size_of(wasi.dirent_t) <= int(used) {
+      dirent := (^wasi.dirent_t)(raw_data(buf[offset:]))^
+      name_start := offset + size_of(wasi.dirent_t)
+      name_end := name_start + int(dirent.d_namlen)
+      if name_end > int(used) do break // a name split across reads: ask again from d_next
+
+      name := string(buf[name_start:name_end])
+      if name != "." && name != ".." {
+        kind := Fs_Node_Kind.Other
+        #partial switch dirent.d_type {
+        case .REGULAR_FILE:  kind = .Regular
+        case .DIRECTORY:     kind = .Directory
+        case .SYMBOLIC_LINK: kind = .Symlink
+        }
+        append(&entries, Fs_Dir_Entry{name = strings.clone(name, allocator), kind = kind})
+      }
+      cookie = dirent.d_next
+      offset = name_end
+    }
+    if int(used) < len(buf) do break
+  }
+  return entries[:], .None
+}
+
 fs_list_dir :: proc(path: string, allocator := context.allocator) -> ([]Fs_Entry, Fs_Error) {
   dir, err := fs_open_dir_path(path)
   if err != .None do return nil, err
@@ -309,47 +354,6 @@ fs_list_dir :: proc(path: string, allocator := context.allocator) -> ([]Fs_Entry
 
 // ---- directory-as-a-value operations (§3's directory hash, §15's cached) ---------
 
-// The same fd_readdir loop as fs_list_dir above, against a descriptor the
-// caller already holds rather than one opened from a path - which is what a
-// directory File value actually has. preview1's dirent carries the file type,
-// and it is the *link's* type (readdir never follows), so §3's three-way
-// classification comes straight out of it.
-//
-// `is_executable` is always false here: preview1's filestat has no permission
-// bits at all, so this target cannot report one. Nothing is lost by that -
-// no hash reads it (see fs.odin's Fs_Entry).
-fs_list_dir_at :: proc(dir: Fs_Fd, allocator := context.allocator) -> ([]Fs_Entry, Fs_Error) {
-  entries := make([dynamic]Fs_Entry, 0, 16, allocator)
-  buf := make([]u8, 4096, context.temp_allocator)
-  cookie := wasi.dircookie_t(0)
-
-  for {
-    used, read_err := wasi.fd_readdir(wasi.fd_t(dir), buf, cookie)
-    if read_err != .SUCCESS do return entries[:], to_fs_error(read_err)
-    if used == 0 do break
-
-    offset := 0
-    for offset + size_of(wasi.dirent_t) <= int(used) {
-      dirent := (^wasi.dirent_t)(raw_data(buf[offset:]))^
-      name_start := offset + size_of(wasi.dirent_t)
-      name_end := name_start + int(dirent.d_namlen)
-      if name_end > int(used) do break // a name split across reads: ask again from d_next
-
-      name := string(buf[name_start:name_end])
-      if name != "." && name != ".." {
-        append(&entries, Fs_Entry{
-          name       = strings.clone(name, allocator),
-          is_dir     = dirent.d_type == .DIRECTORY,
-          is_symlink = dirent.d_type == .SYMBOLIC_LINK,
-        })
-      }
-      cookie = dirent.d_next
-      offset = name_end
-    }
-    if int(used) < len(buf) do break
-  }
-  return entries[:], .None
-}
 
 fs_mkdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
   dir, rel, ok := rebase_absolute(parent, name)

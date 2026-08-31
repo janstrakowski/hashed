@@ -37,11 +37,21 @@ EXAMPLE_CASES := []Example_Case{
   {"check-and-invariants.hb", "100"},
   {"comparison-and-logic.hb", "{ordered: true, both: true, either: true, mixed: false}"},
   {"context-permissions.hb", "{ambient: {io: nothing}, io_denied: {}, replaced: {}, still_ambient: {io: nothing}}"},
+  {"cyclic-data.hb", `{round_trip: "Alice", mutual: true, second_hop: "Carol", reordered: 3, same_shape: true}`},
   {"files-symlink.hb", `"optiona.txt"`},
   {"functions.hb", "121"},
   {"functions-and-holes.hb", "{section: 11, explicit: 49, nested: 507, stored: 42, asserted: 9}"},
   {"guard-chain.hb", "5"},
-  {"hashing.hb", `{text: "Ar9oHTBiuRDqs+ZdbYD2daaU7RcvIDTJNB3UICNP92A=", file: "ZT6vBQgoXEojRYd890EDlZWhUF/uGfXa+C9BNGBykI0=", key_order_is_irrelevant: true, same_content_same_file: true, integer_is_not_float: false, layout_is_not_part_of_a_function: true, captured_values_are: false, directory_is_not_a_file: false}`},
+  {"hashing.hb", `{text: "Ar9oHTBiuRDqs+ZdbYD2daaU7RcvIDTJNB3UICNP92A=", file: "ZT6vBQgoXEojRYd890EDlZWhUF/uGfXa+C9BNGBykI0=", key_order_is_irrelevant: true, same_content_same_file: true, integer_is_not_float: false}`},
+  // The three hashing examples assert properties rather than digests, on
+  // purpose. A directory containing an executable hashes differently on
+  // Windows and WASI than on Linux (§3, and LANGUAGE.md on why), and a
+  // closure's digest includes its body's own source text - so a literal here
+  // would be a value that is either target-specific or broken by reformatting
+  // the example it came from.
+  {"hashing-cyclic.hb", "{a_cycle_hashes: true, equal_cycles_hash_alike: true, shape_still_matters: true, either_end_agrees: true}"},
+  {"hashing-directories.hb", "{a_tree_is_not_its_file: true, one_tree_is_one_value: true, reading_twice_agrees: true}"},
+  {"hashing-functions.hb", "{same_body_same_hash: true, different_body_differs: true, captures_count: true, neighbours_do_not: true, builtins_hash_by_what_they_are: true, a_builtin_carries_its_argument: true}"},
   {"numeric-literals.hb", "{hex: 42, octal: 42, binary: 42, grouped: 1000000, exponent: 1500, bases_agree: true}"},
   {"nothing-and-empty.hb", "{unit: nothing, zero_table: {}, present_case: 42, empty_case: -1, same: false}"},
   {"optional.hb", "42"},

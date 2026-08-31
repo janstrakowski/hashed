@@ -211,6 +211,71 @@ that is the message you get rather than a crash.
 
 → `examples/recursion.hb`, `examples/recursion-anonymous.hb` (§9/§10)
 
+## Cyclic data
+
+`let rec` builds data that reaches itself, not just functions that call
+themselves. A `Table` literal bound with `rec` is created and named *before* its
+entries run, so an entry can mention the Table it is part of:
+
+```hashedbuild
+let rec p { .n = 1, .self = p };  p.self.self.self.n     // => 1
+let rec ones {1, ones};           ones[2][2][2][1]       // => 1
+```
+
+Friendship is mutual, so a social graph has to close — and mutual references
+between entries need nothing extra, because entries are evaluated **on demand
+rather than in source order**. Reaching `people.bob` while `.alice` is still
+being built simply evaluates `.bob` there and then:
+
+```hashedbuild
+let rec people {
+  .alice = { .name = "Alice", .friends = { people.bob, people.carol } },
+  .bob   = { .name = "Bob",   .friends = { people.alice } },
+  .carol = { .name = "Carol", .friends = { people.alice, people.bob } },
+};
+people.alice.friends[1].friends[1].name        // => "Alice", back where we started
+```
+
+That demand ordering also settles plain forward references, cycle or no cycle —
+`let rec p { .a = p.b + 1, .b = 2 }; p.a` is `3`. Entries still *print* in the
+order they were written, whatever order they ran in.
+
+**A cycle prints with a label**, so the back-edge is visible and the output is
+finite. The label marks the node the cycle returns to:
+
+```
+#1{n: 1, self: #1}
+#1{name: "Alice", friends: {{name: "Bob", friends: {#1}}}}
+```
+
+**Equality follows the cycle** rather than comparing pointers, so two rings of
+the same shape built by separate bindings are the same value:
+
+```hashedbuild
+let rec ring  { .x = { .tag = "x", .next = ring.y },  .y = { .tag = "y", .next = ring.x } };
+let rec other { .x = { .tag = "x", .next = other.y }, .y = { .tag = "y", .next = other.x } };
+ring.x == other.x        // => true
+```
+
+Two things this deliberately does **not** do. It builds cyclic structures —
+finite graphs with back-edges — and not unbounded ones: `let rec from (let n;
+{n, from (n + 1)})` has nothing to close a loop with and recurses to the depth
+limit, exactly as it did before. And an entry that needs another entry's value
+*while that one is still being computed* has no answer to give, so it fails
+rather than hanging:
+
+```hashedbuild
+let rec p { .a = p.b + 1, .b = p.a + 1 }; p.a
+// error: circular definition: p.a is needed before it has a value
+```
+
+Storing a reference to an entry still under construction is fine — that is what
+makes the back-edge. Looking *through* one is what fails. Only a `Table` literal
+written directly as the bound value gets any of this; `let rec x x + 1; x` still
+reports `undefined name`, as §10 says it should.
+
+→ `examples/cyclic-data.hb` (§6/§10)
+
 ## Branching and pattern matching
 
 Branching is built from ordinary composable operators rather than dedicated
@@ -343,42 +408,88 @@ same value when their bytes match, however they were reached.
 (loadfile "a.txt") == (loadfile "copy-of-a.txt")   // true, if the bytes match
 ```
 
-**Every kind of value hashes.** The three that used to have no digest all got
-one when `cached` was built, since `cached` needs them:
-
-- A **directory** `File` hashes over its entries — each name, each file's
-  content, each subdirectory's own hash, and each symlink's target string,
-  unresolved (§3). Sorted by name, so readdir order doesn't matter. **No
-  permission bits**, deliberately: only Linux can report an executable bit, so
-  hashing one would make the same source tree two different values depending on
-  which machine checked it out. (`cached` still preserves the bit when it copies
-  a tree — that is the store being faithful, not the bit being part of the
-  value.)
-- A **`Function`** hashes as its code (the shape of the expression, so
-  reformatting it or writing a comment inside changes nothing), its captured
-  `ctx`, and the values of the names it uses:
-
-  ```hashedbuild
-  (sha256 func (1 + 2)) == (sha256 func ( 1 /* two */ + 2 ))          // true
-  (let x 1; sha256 func (x + 1)) == (let x 2; sha256 func (x + 1))    // false
-  ```
-
-  That second line is the one `cached` depends on — without it, an expression
-  would share one cache entry across every value it closes over.
-- **`ctx.cache`** hashes as a constant. It is write-only and has no identity to
-  distinguish one from another, and making it a constant is what keeps a cache
-  directory valid after it is moved or copied — see below.
-
-Hashing a directory reads the whole tree, so `sha256 <directory>` and `==`
-between two directory `File`s are filesystem walks, not cheap comparisons.
-
-One cross-platform gotcha that is *not* ours: a git checkout on Windows without
-Developer Mode turns a committed symlink into an ordinary file holding the
-target as text. That is a genuine difference in what is on disk, so it hashes
-differently — the same reason `examples/files-symlink.hb` skips itself in such
-a checkout.
-
 → `examples/hashing.hb` (§3, §6, §15)
+
+### Directories
+
+A **directory** `File` hashes over its entries (§3), sorted by name so the
+digest is the tree's rather than the order the filesystem listed it in. Each
+entry contributes its name, plus its content hash and executable bit for a
+regular file, its own directory hash for a sub-directory, or its target string
+for a symlink — which is never followed, so a link to a directory is a link,
+not a directory.
+
+```hashedbuild
+sha256 loadfile "examples"                     // the digest of a whole tree
+(loadfile "examples") == (loadfile "examples") // true — one tree, two handles
+```
+
+Two things about it are worth knowing before you rely on it:
+
+- **It reads the disk, and that read needs `io`.** Everything else hashes what
+  the value already holds; a directory's children are on the filesystem. The
+  read happens at the first `sha256` or comparison that needs the digest and is
+  checked against `ctx.permissions.io` at that moment, so a context that
+  revoked `io` can't pull a tree's contents through a handle it was handed. It
+  happens once: a `File` is an immutable handle, so the digest is fixed from
+  then on, and seeing a change means loading the directory again.
+- **The executable bit is Linux-only, and a tree containing one hashes
+  differently elsewhere.** WASI's `filestat` has no permission bits and Windows
+  has no POSIX executable bit, so on those targets every file hashes as
+  non-executable. That is the language's answer rather than a gap — a Windows
+  checkout genuinely has no executable bits, and reporting one would be
+  inventing it, the same position git takes with `core.filemode`. If you need a
+  digest that agrees across all three, keep executables out of the tree.
+
+An entry that is neither a file, a directory, nor a symlink — a socket, a
+device node — fails rather than being skipped, since a digest that ignored part
+of a tree would call two different trees the same value.
+
+→ `examples/hashing-directories.hb` (§3, §9)
+
+### Functions
+
+A **closure** hashes as the shape of its body plus the values it captures
+(§15) — so two functions hash alike exactly when they would compute the same
+thing, and what else happened to be in scope where they were written doesn't
+enter into it:
+
+```hashedbuild
+(sha256 (let x 1; let unrelated "zz"; func (#arg + x)))
+  == (sha256 (let x 1; func (#arg + x)))            // true
+(sha256 (let x 1; func (#arg + x)))
+  == (sha256 (let x 2; func (#arg + x)))            // false — a different capture
+```
+
+The digest is of the program, though, not of what the program means: renaming a
+local or respelling a literal gives a different function. A builtin has no body
+to take a shape from, so it hashes as the operation it is — and a partially
+applied one carries what it was applied to, which is why two `chperm` results
+differ exactly when they grant different things.
+
+→ `examples/hashing-functions.hb` (§15, §16)
+
+### Values that reach themselves
+
+A cyclic `let rec` value (see above) hashes too, but not by the same route: an
+ordinary digest folds up from the leaves, and a cycle has none. Such a value is
+instead reduced to a canonical form of the cycle and hashed from that, with two
+properties that are the whole reason for the exercise — the digest doesn't
+depend on which node you started from, and it doesn't depend on how the cycle
+was written:
+
+```hashedbuild
+let rec g { .n = 1, .next = g };
+let rec h { .a = { .n = 1, .next = h.b }, .b = { .n = 1, .next = h.a } };
+(g == h.a) and ((sha256 g) == (sha256 h.a))         // true — both halves
+```
+
+That pairing is the requirement, not a coincidence. `g` and `h.a` are *equal*
+under §6 because unrolling either gives the same infinite tree, so a digest
+that told them apart would give a content-addressed language two addresses for
+one value.
+
+→ `examples/hashing-cyclic.hb` (§6, §10, §15)
 
 ## Caching
 
@@ -419,7 +530,13 @@ named `sha256-<key>`:
 A `File` value stays a file and a directory value stays a directory, so what a
 build produced is still something you can open, `diff` or copy out. Anything
 else is written as text you can read; the `File`s it holds cannot go in text,
-so they are stored beside it and referred to by name. Entries are built under a
+so they are stored beside it and referred to by name. A value that reaches
+itself is written with a label on each repeated Table and a back-reference
+after it, which is what lets a cycle have a finite written form:
+
+```
+node "1" { .name = "alice", .friend = node "2" { .name = "bob", .friend = ref "1" } }
+``` Entries are built under a
 temporary name and renamed into place, so an interrupted run leaves a `.tmp`
 rather than a half-written entry, and two runs racing on one key settle it
 without locking anything.
@@ -495,9 +612,12 @@ uncatchable, but the work already in flight finishes first.
 Parsed, specified, and rejected by the evaluator with "not implemented":
 `import`.
 
-Hashing is complete: every kind of value has a digest, including the three
-(directory `File`, `Function`, `ctx.cache`) that used to fail by name, and the
-digest a given value has is the same on every target. See "Hashing" above.
+**Hashing is complete**: `sha256` answers for every value, including the three
+that used to be listed here — a directory `File`, a `Function`, and a cyclic
+value — plus `ctx.cache`. See the Hashing section above for what each of them
+encodes, and for the one place the answer is target-specific: a directory
+containing an executable hashes differently on Windows and WASI than on Linux,
+because neither of those has an executable bit to report.
 
 Also absent: `true`/`false` literals, loops of any kind (recursion is the only
 repetition there is — see above), a `Bytes`-returning counterpart to

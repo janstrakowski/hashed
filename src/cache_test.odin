@@ -296,6 +296,57 @@ test_cached_composite_holds_its_files_beside_the_text :: proc(t: ^testing.T) {
   testing.expect(t, has_file, "and the File it refers to, named by content")
 }
 
+// §10's `let rec` can build a Table that reaches itself, so the format has to
+// write one down and read it back. The assertion that matters is the digest:
+// the restored value has to *be* the value that was stored, and §6 compares
+// cyclic values by bisimulation, so an unfolding to the wrong depth or a lost
+// back-edge would show up here.
+@(test)
+test_cached_round_trips_a_cyclic_value :: proc(t: ^testing.T) {
+  dir := cache_scratch("cyclic")
+  defer delete(dir)
+  defer remove_cache_scratch(dir)
+
+  self := `let rec t { .name = "alice", .self = t }; `
+  same := strings.concatenate({self, `(sha256 cached t) == (sha256 t)`})
+  defer delete(same)
+  val, ok, err := eval_cached_src(same, dir)
+  testing.expect(t, ok, err)
+  testing.expect(t, val.(bool), "a cached cyclic value is the value it was")
+
+  // ...and the back-edge is a real one, not an unfolding that ran out.
+  deep := strings.concatenate({self, `(cached t).self.self.self.name`})
+  defer delete(deep)
+  val2, ok2, err2 := eval_cached_src(deep, dir)
+  testing.expect(t, ok2, err2)
+  testing.expect_value(t, val2.(string), "alice")
+}
+
+// Two Tables that reach each other, which is the shape §10 actually produces -
+// a `let rec` whose entries mention their siblings. The cycle here runs through
+// two nodes rather than one, so a writer that only handled self-reference would
+// pass the test above and fail this one.
+@(test)
+test_cached_round_trips_a_mutual_cycle :: proc(t: ^testing.T) {
+  dir := cache_scratch("mutual")
+  defer delete(dir)
+  defer remove_cache_scratch(dir)
+
+  people := `let rec people { .alice = { .name = "alice", .friend = people.bob }, ` +
+            `.bob = { .name = "bob", .friend = people.alice } }; `
+  src := strings.concatenate({people, `(sha256 cached people) == (sha256 people)`})
+  defer delete(src)
+  val, ok, err := eval_cached_src(src, dir)
+  testing.expect(t, ok, err)
+  testing.expect(t, val.(bool))
+
+  hop := strings.concatenate({people, `(cached people).alice.friend.friend.name`})
+  defer delete(hop)
+  val2, ok2, err2 := eval_cached_src(hop, dir)
+  testing.expect(t, ok2, err2)
+  testing.expect_value(t, val2.(string), "alice")
+}
+
 // ---- what `cached` refuses --------------------------------------------------
 
 @(test)
@@ -392,6 +443,64 @@ test_cache_format_round_trips_every_writable_value :: proc(t: ^testing.T) {
   // Hash equality rather than field-by-field comparison: it is the property
   // `cached` actually depends on, and it covers the whole structure at once.
   testing.expect(t, values_hash_equal(table, back), text)
+}
+
+// The format's own round trip for a cycle, below the language: a Table holding
+// itself, written and read back. Asserted through the digest, which §6 computes
+// by bisimulation for a cyclic value - so this checks the graph, not the text.
+@(test)
+test_cache_format_round_trips_a_cycle :: proc(t: ^testing.T) {
+  cyclic := new(Table_Value)
+  append(&cyclic.entries, Table_Entry_Value{key = "name", value = "alice"})
+  append(&cyclic.entries, Table_Entry_Value{key = "self", value = cyclic})
+
+  names: map[^File_Value]string
+  text, wrote, why := cache_format_write(cyclic, names)
+  testing.expect(t, wrote, why)
+  testing.expect(t, strings.contains(text, `node "1"`), text)
+  testing.expect(t, strings.contains(text, `ref "1"`), text)
+
+  back, read := cache_format_read(text, nil, nil)
+  testing.expect(t, read, text)
+  testing.expect(t, values_hash_equal(cyclic, back), text)
+}
+
+// A Table reached twice without any cycle is written once and referred to,
+// which is why a deeply shared value doesn't expand exponentially on the way
+// out. Sharing isn't observable in the value model, so this is about size -
+// but the value still has to come back equal.
+@(test)
+test_cache_format_keeps_sharing :: proc(t: ^testing.T) {
+  shared := new(Table_Value)
+  append(&shared.entries, Table_Entry_Value{key = "n", value = i64(1)})
+
+  outer := new(Table_Value)
+  append(&outer.entries, Table_Entry_Value{key = "a", value = shared})
+  append(&outer.entries, Table_Entry_Value{key = "b", value = shared})
+
+  names: map[^File_Value]string
+  text, wrote, why := cache_format_write(outer, names)
+  testing.expect(t, wrote, why)
+  testing.expect(t, strings.contains(text, `ref "1"`), text)
+
+  back, read := cache_format_read(text, nil, nil)
+  testing.expect(t, read, text)
+  testing.expect(t, values_hash_equal(outer, back), text)
+}
+
+// A `ref` with no definition before it, and a label defined twice: both are
+// entries that no writer here produces, so both are corruption.
+@(test)
+test_cache_format_rejects_a_broken_reference :: proc(t: ^testing.T) {
+  for src in ([]string{
+    `{ .a = ref "1" }`,
+    `{ .a = node "1" { .x = 1 }, .b = node "1" { .y = 2 } }`,
+    `ref "nope"`,
+    `node "1" 5`,
+  }) {
+    _, ok := cache_format_read(src, nil, nil)
+    testing.expect(t, !ok, src)
+  }
 }
 
 // The reader accepts literals and nothing else, so an entry someone edited

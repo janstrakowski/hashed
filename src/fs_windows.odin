@@ -605,6 +605,46 @@ fs_make_dirs :: proc(path: string) -> Fs_Error {
 
 // The editor's file pickers. FindFirstFileW wants a wildcard rather than a
 // directory, and always reports "." and ".." first, which no caller wants.
+// ---- the directory hash's listing (SPEC.md §3) -------------------------------
+
+// FindFirstFileW against the path this descriptor stands for, which is how
+// every other operation on this target reaches a child (see the header). The
+// attributes the enumeration already carries answer the kind, so unlike the
+// Linux side there is no per-entry stat: a reparse point is a link, and
+// FILE_ATTRIBUTE_DIRECTORY decides the rest.
+//
+// `is_executable` is always false here, and that is the language's answer
+// rather than a missing feature: Windows has no POSIX exec bit, and what it
+// has instead - an extension the shell knows how to run - is a property of the
+// name, not of the file. See hash.odin's directory section.
+fs_list_entries_at :: proc(parent: Fs_Fd, allocator := context.allocator) -> ([]Fs_Dir_Entry, Fs_Error) {
+  dir, ok := dir_path_of(parent)
+  if !ok do return nil, .Not_Directory
+
+  data: windows.WIN32_FIND_DATAW
+  h := windows.FindFirstFileW(to_win_path(join_child(dir, "*")), &data)
+  if h == windows.INVALID_HANDLE_VALUE do return nil, last_error()
+  defer windows.FindClose(h)
+
+  entries := make([dynamic]Fs_Dir_Entry, 0, 16, allocator)
+  for {
+    name, err := windows.utf16_to_utf8(data.cFileName[:name_length(data.cFileName[:])], context.temp_allocator)
+    if err == nil && name != "." && name != ".." {
+      attrs := data.dwFileAttributes
+      kind := Fs_Node_Kind.Regular
+      switch {
+      // Checked first: a junction or a symlink *to* a directory carries both
+      // bits, and §3 hashes a link as its target string without resolving it.
+      case (attrs & windows.FILE_ATTRIBUTE_REPARSE_POINT) != 0: kind = .Symlink
+      case (attrs & windows.FILE_ATTRIBUTE_DIRECTORY) != 0:     kind = .Directory
+      }
+      append(&entries, Fs_Dir_Entry{name = strings.clone(name, allocator), kind = kind})
+    }
+    if !windows.FindNextFileW(h, &data) do break
+  }
+  return entries[:], .None
+}
+
 fs_list_dir :: proc(path: string, allocator := context.allocator) -> ([]Fs_Entry, Fs_Error) {
   abs := absolute_dir_path(path)
   defer delete(abs)
@@ -640,42 +680,6 @@ name_length :: proc(buf: []u16) -> int {
 // name onto it, and call Win32 with the result. See this file's header for
 // what that costs relative to the *at() family.
 
-// The listing fs_list_dir does, but for a descriptor rather than a path, and
-// answering §3's three-way classification. FindFirstFileW never follows a
-// reparse point, so its attributes describe the entry itself - which is the
-// no-follow guarantee Fs_Entry asks for.
-//
-// `is_executable` is always false: Windows has no POSIX execute bit, and
-// nothing here stands in for it - not the `.exe`/`.bat` extension, and not
-// what a POSIX emulation layer like MSYS guesses from a shebang. Nothing is
-// lost by that, since no hash reads it (see fs.odin's Fs_Entry).
-fs_list_dir_at :: proc(dir: Fs_Fd, allocator := context.allocator) -> ([]Fs_Entry, Fs_Error) {
-  path, ok := dir_path_of(dir)
-  if !ok do return nil, .Not_Directory
-
-  data: windows.WIN32_FIND_DATAW
-  h := windows.FindFirstFileW(to_win_path(join_child(path, "*")), &data)
-  if h == windows.INVALID_HANDLE_VALUE do return nil, last_error()
-  defer windows.FindClose(h)
-
-  entries := make([dynamic]Fs_Entry, 0, 16, allocator)
-  for {
-    name, err := windows.utf16_to_utf8(data.cFileName[:name_length(data.cFileName[:])], context.temp_allocator)
-    if err == nil && name != "." && name != ".." {
-      is_link := (data.dwFileAttributes & windows.FILE_ATTRIBUTE_REPARSE_POINT) != 0
-      append(&entries, Fs_Entry {
-        name       = strings.clone(name, allocator),
-        // A link to a directory carries the DIRECTORY attribute too, and §3
-        // wants it counted as a symlink rather than descended into - so the
-        // link check wins.
-        is_dir     = !is_link && (data.dwFileAttributes & windows.FILE_ATTRIBUTE_DIRECTORY) != 0,
-        is_symlink = is_link,
-      })
-    }
-    if !windows.FindNextFileW(h, &data) do break
-  }
-  return entries[:], .None
-}
 
 fs_mkdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
   dir, ok := dir_path_of(parent)

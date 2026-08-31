@@ -49,41 +49,57 @@ FS_INVALID_FD :: Fs_Fd(-1)
 //   fs_symlink_at           create a symlink; fs_readlink_at reads its target
 //   fs_open_dir_path        open a directory by path - ctx.cache only (§9)
 //   fs_make_dirs            mkdir -p by path - ctx.cache only (§9)
-//   fs_list_dir             names in a directory, by path - the editor's file pickers
+//   fs_list_dir             names in a directory - the editor's file pickers
 //
-// The six below were added for §3's directory hash and §15's `cached` (see
-// cache_store.odin), which are the first things here that have to read a whole
-// directory as a value and write a whole directory back out again:
+// The five below were added for §15's `cached` (see cache_store.odin), which is
+// the first thing here that has to write a whole directory back out again.
+// Reading one is `fs_list_entries_at`, further down.
 //
-//   fs_list_dir_at          entries of an open directory, classified no-follow
 //   fs_mkdir_at             create one directory, failing if it exists
 //   fs_rename_at            rename within one directory - the atomic commit
 //   fs_unlink_at            remove one non-directory name
 //   fs_rmdir_at             remove one empty directory
 //   fs_set_executable_at    set the owner-execute bit, where the target has one
 
-// One entry of a directory listing.
-//
-// `is_dir` and `is_symlink` are what SPEC.md §3's directory hash sorts an
-// entry into: a symlink is its own kind there, hashed by its target string
-// rather than followed, so the classification a listing reports has to be
-// no-follow. `fs_list_dir_at` guarantees that; the older path-taking
-// `fs_list_dir` (the editor's file pickers) does not, and leaves both
-// `is_symlink` and `is_executable` false - it never fed anything that cares.
-//
-// `is_executable` is *not* part of any hash - §3 carries no permission bit at
-// all (resolved 2026-08-31), precisely because it is the one field a target
-// can be unable to answer: WASI's filestat carries no permission bits and
-// Windows has no POSIX execute bit, so both report false always. It exists for
-// cache_store.odin, which puts the bit back when it copies a tree, so that
-// caching a build output does not quietly strip it. A reader that only wants
-// to know what a directory *is* should ignore this field.
+// One entry of a directory listing. Deliberately minimal: the editor wants
+// names, and whether to descend.
 Fs_Entry :: struct {
+  name:   string,
+  is_dir: bool,
+}
+
+// One entry of a directory in the detail SPEC.md §3's directory hash needs:
+// which of the three shapes it is, and - for a regular file - whether it is
+// executable. Distinct from Fs_Entry above, which answers the editor's much
+// smaller question (a name, and whether to descend into it).
+//
+// `kind` is decided **without following symlinks**: §3 hashes a link entry as
+// its target string rather than resolving through it, so a link *to* a
+// directory is .Symlink here, never .Directory.
+Fs_Node_Kind :: enum {
+  Regular,
+  Directory,
+  Symlink,
+  Other, // a fifo, socket, or device node - §3 describes no hash for one
+}
+
+Fs_Dir_Entry :: struct {
   name:          string,
-  is_dir:        bool,
-  is_symlink:    bool,
+  kind:          Fs_Node_Kind,
+  // .Regular only. **False wherever the target cannot report the bit**, rather
+  // than a third "unknown" state: WASI's filestat carries no permission bits
+  // at all and Windows has no POSIX exec bit, so on those two targets this is
+  // always false. That is the language's answer, not a gap - see hash.odin's
+  // directory section and LANGUAGE.md.
   is_executable: bool,
 }
+
+//   fs_list_entries_at      the above, for every name in an open directory
+//
+// Named here rather than in the list above because it is the one operation
+// added for hashing, and a directory's digest is its only caller. It takes a
+// descriptor, not a path, because §16's containment is descriptor-relative and
+// the walk must not be able to step outside the handle it was handed.
 
 // What went wrong, in terms both targets can express. Deliberately coarse:
 // these become the parenthesised detail in a §16 failure message, where the

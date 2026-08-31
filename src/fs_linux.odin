@@ -156,6 +156,64 @@ fs_make_dirs :: proc(path: string) -> Fs_Error {
   return .None
 }
 
+// ---- the directory hash's listing (SPEC.md §3) -------------------------------
+
+// getdents64 against a descriptor, plus one fstatat per name for the kind and
+// the mode. The d_type getdents already reports is deliberately *not* trusted
+// on its own: it is documented as possibly .UNKNOWN (some filesystems fill it
+// in, some don't), and the exec bit needs the stat regardless - so one call
+// answers both questions rather than two answering one each.
+//
+// The listing is done through a *fresh* descriptor rather than `parent`
+// itself. getdents advances the descriptor's own offset, and `parent` is a
+// long-lived handle a program keeps using as a `.dir` (§16) - reading its
+// entries must not be something the program can observe afterwards. Opening
+// "." relative to it costs one syscall and keeps the caller's handle exactly
+// as it was found.
+fs_list_entries_at :: proc(parent: Fs_Fd, allocator := context.allocator) -> ([]Fs_Dir_Entry, Fs_Error) {
+  listing, open_err := open_at(parent, ".", {.DIRECTORY})
+  if open_err != .None do return nil, open_err
+  defer fs_close(listing)
+
+  entries := make([dynamic]Fs_Dir_Entry, 0, 16, allocator)
+  buf := make([]u8, 4096, context.temp_allocator)
+  for {
+    written, err := linux.getdents(linux.Fd(listing), buf)
+    if err != .NONE do return entries[:], fs_errno_to_error(err)
+    if written == 0 do break
+
+    offset := 0
+    for dirent in linux.dirent_iterate_buf(buf[:written], &offset) {
+      name := linux.dirent_name(dirent)
+      if name == "." || name == ".." do continue
+
+      cname := strings.clone_to_cstring(name, context.temp_allocator)
+      stat: linux.Stat
+      // AT_SYMLINK_NOFOLLOW: a link is hashed as its target string (§3), so
+      // the entry's own type is what matters, never what it points at.
+      if serr := linux.fstatat(linux.Fd(listing), cname, &stat, {.SYMLINK_NOFOLLOW}); serr != .NONE {
+        return entries[:], fs_errno_to_error(serr)
+      }
+
+      kind := Fs_Node_Kind.Other
+      switch {
+      case linux.S_ISREG(stat.mode): kind = .Regular
+      case linux.S_ISDIR(stat.mode): kind = .Directory
+      case linux.S_ISLNK(stat.mode): kind = .Symlink
+      }
+      append(&entries, Fs_Dir_Entry {
+        name          = strings.clone(name, allocator),
+        kind          = kind,
+        // §3 hashes "the executable flag only - not full POSIX mode", and the
+        // owner bit is the one that means "this is a program". Group and other
+        // are part of who may run it, which is not part of what it is.
+        is_executable = kind == .Regular && .IXUSR in stat.mode,
+      })
+    }
+  }
+  return entries[:], .None
+}
+
 // Listing goes through core:os here, which is a perfectly good directory
 // reader on a platform that has a working directory. (WASI does not, which is
 // why fs_wasi.odin implements this against the preopen table instead.)
@@ -177,43 +235,6 @@ fs_list_dir :: proc(path: string, allocator := context.allocator) -> ([]Fs_Entry
 @(private = "file") S_IFREG :: u32(0o100000)
 @(private = "file") S_IFLNK :: u32(0o120000)
 
-// Entries of an already-open directory, classified without following links -
-// `fs_list_dir` above answers by path and through core:os, which is the wrong
-// shape for a File value (it holds a descriptor, not a trustworthy path) and
-// the wrong classification (§3 needs a symlink reported as a symlink, not as
-// whatever it points at).
-//
-// Reading the names goes through /proc/self/fd rather than getdents64 because
-// nothing else here needs a raw directory-block parser; the per-entry
-// classification below is the part that has to be no-follow, and fstatat with
-// SYMLINK_NOFOLLOW against the descriptor is what makes it so.
-fs_list_dir_at :: proc(dir: Fs_Fd, allocator := context.allocator) -> ([]Fs_Entry, Fs_Error) {
-  proc_path := fmt.tprintf("/proc/self/fd/%d", i32(dir))
-  infos, err := os.read_all_directory_by_path(proc_path, context.temp_allocator)
-  if err != nil do return nil, .Io
-
-  entries := make([dynamic]Fs_Entry, 0, len(infos), allocator)
-  for info in infos {
-    st: linux.Stat
-    cname := strings.clone_to_cstring(info.name, context.temp_allocator)
-    if errno := linux.fstatat(linux.Fd(dir), cname, &st, {.SYMLINK_NOFOLLOW}); errno != .NONE {
-      return nil, fs_errno_to_error(errno)
-    }
-    // The file type is a 4-bit field, not four independent flags - core's
-    // Mode_Bits spells the individual bits and so has no IFLNK at all (S_IFLNK
-    // is 0o120000, i.e. the IFREG and IFCHR bits together). Masking with
-    // S_IFMT is the only way to ask the question that does not misread a
-    // symlink as a regular file, or a block device as a directory.
-    kind := transmute(u32)st.mode & S_IFMT
-    append(&entries, Fs_Entry {
-      name          = strings.clone(info.name, allocator),
-      is_dir        = kind == S_IFDIR,
-      is_symlink    = kind == S_IFLNK,
-      is_executable = kind == S_IFREG && .IXUSR in st.mode,
-    })
-  }
-  return entries[:], .None
-}
 
 fs_mkdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
   cname := strings.clone_to_cstring(name, context.temp_allocator)

@@ -102,6 +102,11 @@ Interpreter :: struct {
   // has_base_dir == false.
   base_dir_path: string,
 
+  // The `let rec` Table literals currently being built, innermost last
+  // (rec_build.odin). Empty for every program that doesn't write a cyclic
+  // `let rec`, which is what keeps table_access's check to a length test.
+  rec_builds: [dynamic]^Rec_Build,
+
   // Every `async` task this run has started (eval_async.odin). Shared with
   // each task's own Interpreter so that one run's tasks are all drained
   // together before it ends, however it ends.
@@ -171,8 +176,6 @@ new_function :: proc(interp: ^Interpreter, body: Node_Idx, env: ^Env) -> Value {
   f.body = body
   f.env = env
   f.ctx = interp.current_ctx // captured now, restored around every call - see Interpreter.current_ctx
-  f.ast = interp.ast         // so the closure can be hashed later (§15) - see Function_Value
-  f.src = interp.src
   return f
 }
 
@@ -405,7 +408,7 @@ eval :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (ret_val: Value
     if n.children_count > 0 {
       msg_val, ok := eval_slot(interp, interp.ast.extra_children[n.children_start], env)
       if ok {
-        msg_val, ok = await_value(interp, msg_val)
+        msg_val, ok = concrete_value(interp, msg_val)
       }
       if ok {
         if s, is_str := msg_val.(string); is_str do return fail(interp, s)
@@ -442,7 +445,7 @@ eval_unary :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, b
   op := interp.ast.nodes[interp.ast.extra_children[n.children_start]].kind
   val, ok := eval(interp, interp.ast.extra_children[n.children_start + 1], env)
   if !ok do return nil, false
-  val, ok = await_value(interp, val)
+  val, ok = concrete_value(interp, val)
   if !ok do return nil, false
   #partial switch op {
   case .Op_Minus:
@@ -519,7 +522,7 @@ eval_binary :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
     defer pop(&interp.arg_stack)
     right_val, rok := eval(interp, right_idx, env)
     if !rok do return nil, false
-    right_val, rok = await_value(interp, right_val) // need its concrete type to know whether to call it
+    right_val, rok = concrete_value(interp, right_val) // need its concrete type to know whether to call it
     if !rok do return nil, false
     if fn, is_fn := right_val.(^Function_Value); is_fn {
       return call_function(interp, fn, left_val)
@@ -529,7 +532,7 @@ eval_binary :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
   case .Op_Call:
     fn_val, fok := eval_slot(interp, left_idx, env)
     if !fok do return nil, false
-    fn_val, fok = await_value(interp, fn_val) // need its concrete type before the is_fn check below
+    fn_val, fok = concrete_value(interp, fn_val) // need its concrete type before the is_fn check below
     if !fok do return nil, false
     arg_val, aok := eval_slot(interp, right_idx, env)
     if !aok do return nil, false
@@ -540,7 +543,7 @@ eval_binary :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
   case .Op_Dot:
     base, bok := eval(interp, left_idx, env)
     if !bok do return nil, false
-    base, bok = await_value(interp, base)
+    base, bok = concrete_value(interp, base)
     if !bok do return nil, false
     right_node := interp.ast.nodes[right_idx]
     key: Value = node_text(interp, right_idx)
@@ -552,9 +555,9 @@ eval_binary :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
     if !bok do return nil, false
     key, kok := eval(interp, right_idx, env)
     if !kok do return nil, false
-    base, bok = await_value(interp, base)
+    base, bok = concrete_value(interp, base)
     if !bok do return nil, false
-    key, kok = await_value(interp, key)
+    key, kok = concrete_value(interp, key)
     if !kok do return nil, false
     return table_access(interp, base, key)
 
@@ -569,9 +572,9 @@ eval_binary :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
       if !kok do return nil, false
       key = k
     }
-    base, bok = await_value(interp, base)
+    base, bok = concrete_value(interp, base)
     if !bok do return nil, false
-    awaited_key, kok := await_value(interp, key)
+    awaited_key, kok := concrete_value(interp, key)
     if !kok do return nil, false
     key = awaited_key
     t, is_table := base.(^Table_Value)
@@ -585,9 +588,9 @@ eval_binary :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
     if !lok do return nil, false
     r, rok := eval(interp, right_idx, env)
     if !rok do return nil, false
-    l, lok = await_value(interp, l)
+    l, lok = concrete_value(interp, l)
     if !lok do return nil, false
-    r, rok = await_value(interp, r)
+    r, rok = concrete_value(interp, r)
     if !rok do return nil, false
     if ls, lis := l.(string); lis {
       rs, ris := r.(string)
@@ -606,10 +609,21 @@ eval_binary :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
     if !lok do return nil, false
     r, rok := eval(interp, right_idx, env)
     if !rok do return nil, false
-    l, lok = await_value(interp, l)
+    l, lok = concrete_value(interp, l)
     if !lok do return nil, false
-    r, rok = await_value(interp, r)
+    r, rok = concrete_value(interp, r)
     if !rok do return nil, false
+    // Comparing a directory File means comparing what is inside it (§3), so
+    // the comparison is a read - and a read is where `io` is checked (§9).
+    // values_equal itself is reached from table_find on the hot path of every
+    // field access and can do no I/O, so the operands are warmed here, while
+    // there is still a context to ask. See hash.odin's hash_materialize.
+    if f := hash_materialize(interp, l); f.kind != .None {
+      return fail(interp, hash_error_message(f))
+    }
+    if f := hash_materialize(interp, r); f.kind != .None {
+      return fail(interp, hash_error_message(f))
+    }
     if op == .Op_EqEq do return values_equal(l, r), true
     return compare_ordered(interp, op, l, r)
 
@@ -618,9 +632,9 @@ eval_binary :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
     if !lok do return nil, false
     r, rok := eval(interp, right_idx, env)
     if !rok do return nil, false
-    l, lok = await_value(interp, l)
+    l, lok = concrete_value(interp, l)
     if !lok do return nil, false
-    r, rok = await_value(interp, r)
+    r, rok = concrete_value(interp, r)
     if !rok do return nil, false
     return arithmetic(interp, op, l, r)
   }
@@ -718,6 +732,14 @@ table_concat :: proc(a: ^Table_Value, b: ^Table_Value) -> ^Table_Value {
 table_access :: proc(interp: ^Interpreter, base: Value, key: Value) -> (Value, bool) {
   t, is_table := base.(^Table_Value)
   if !is_table do return fail(interp, "cannot index a non-Table value")
+  // A Table still being built by a `let rec` (§10) answers through
+  // rec_build.odin instead: the entry asked for may not have run yet, and
+  // reading it is exactly the demand that makes it run. Ordinary Tables -
+  // every Table in a program that has no cyclic `let rec` - skip this on a
+  // length check.
+  if len(interp.rec_builds) > 0 {
+    if rb := rec_build_for(interp, t); rb != nil do return rec_access(interp, rb, key)
+  }
   val, found := table_find(t, key)
   if !found do return fail(interp, "no such key in Table")
   return val, true
@@ -823,6 +845,18 @@ eval_let_bind :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value
   child_env := env_make_child(env)
   bound_env := env if .Is_Rec not_in n.flags else child_env
 
+  // `let rec <name> <table literal>;` is the one shape whose entries can be
+  // reordered, so it gets §10's demand-driven construction (rec_build.odin) -
+  // which is what lets one entry reach another, and lets the Table reach
+  // itself. Every other shape, `let rec` over a function included, keeps the
+  // ordinary path below unchanged.
+  if .Is_Rec in n.flags && interp.ast.nodes[bound_idx].kind == .Table_Construct {
+    if _, rok := eval_rec_table(interp, bound_idx, node_text(interp, name_idx), child_env); !rok {
+      return nil, false
+    }
+    return eval_slot(interp, body_idx, child_env)
+  }
+
   bound_val: Value
   bok: bool
   if interp.ast.nodes[bound_idx].kind == .Hole {
@@ -855,7 +889,7 @@ eval_with_ctx :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value
 
   new_ctx_val, cok := eval_slot(interp, new_ctx_idx, env)
   if !cok do return nil, false
-  new_ctx_val, cok = await_value(interp, new_ctx_val) // ctx.permissions reads need a concrete Table
+  new_ctx_val, cok = concrete_value(interp, new_ctx_val) // ctx.permissions reads need a concrete Table
   if !cok do return nil, false
 
   old_ctx := interp.current_ctx
@@ -879,14 +913,14 @@ eval_chctx :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, b
 
   fn_val, fok := eval_slot(interp, fn_idx, env)
   if !fok do return nil, false
-  fn_val, fok = await_value(interp, fn_val)
+  fn_val, fok = concrete_value(interp, fn_val)
   if !fok do return nil, false
   fn, is_fn := fn_val.(^Function_Value)
   if !is_fn do return fail(interp, "chctx's right side must be a function")
 
   new_ctx_val, cok := call_function(interp, fn, interp.current_ctx)
   if !cok do return nil, false
-  new_ctx_val, cok = await_value(interp, new_ctx_val)
+  new_ctx_val, cok = concrete_value(interp, new_ctx_val)
   if !cok do return nil, false
 
   old_ctx := interp.current_ctx
@@ -980,7 +1014,7 @@ eval_guard_chain :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (re
     case .Op_Is:
       subject_val, sok := eval(interp, left_idx, env)
       if !sok do return false, env, false
-      subject_val, sok = await_value(interp, subject_val)
+      subject_val, sok = concrete_value(interp, subject_val)
       if !sok do return false, env, false
       matched, new_env, mok := match_pattern(interp, right_idx, subject_val, env)
       if !mok do return false, env, false
@@ -1003,7 +1037,7 @@ eval_guard_chain :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (re
   // current #arg per §8's "implicit function application in a guard position").
   val, ok1 := eval_slot(interp, node, env)
   if !ok1 do return false, env, false
-  val, ok1 = await_value(interp, val)
+  val, ok1 = concrete_value(interp, val)
   if !ok1 do return false, env, false
   if fn, is_fn := val.(^Function_Value); is_fn {
     if len(interp.arg_stack) == 0 {
@@ -1012,7 +1046,7 @@ eval_guard_chain :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (re
     }
     applied, aok := call_function(interp, fn, interp.arg_stack[len(interp.arg_stack) - 1])
     if !aok do return false, env, false
-    applied, aok = await_value(interp, applied)
+    applied, aok = concrete_value(interp, applied)
     if !aok do return false, env, false
     val = applied
   }
@@ -1063,7 +1097,7 @@ eval_then_or_else :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (V
     discarded_val, dok := eval_slot(interp, discarded_idx, guard_env)
     interp.discard_depth -= 1
     if !dok do return nil, false
-    _, aok := await_value(interp, discarded_val)
+    _, aok := concrete_value(interp, discarded_val)
     if !aok do return nil, false
   }
 
@@ -1084,11 +1118,14 @@ eval_sha256 :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
   // An operand that is still an async handle gets awaited first, exactly as
   // every other operator does - `sha256 async <expr>` hashes the result, not
   // the handle.
-  val, ok = await_value(interp, val)
+  val, ok = concrete_value(interp, val)
   if !ok do return nil, false
 
-  encoded, herr := value_digest_base64(val)
-  if herr != .None {
+  // The interpreter goes along: a directory File's digest is read off the disk
+  // the first time anything asks (§3), and that read needs this context's `io`
+  // permission (§9). It is also what a Function's shape is read from.
+  encoded, herr := value_digest_base64(val, interp)
+  if herr.kind != .None {
     return fail(interp, fmt.tprintf("sha256: %s", hash_error_message(herr)))
   }
   return encoded, true
@@ -1096,8 +1133,9 @@ eval_sha256 :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
 
 // §15: evaluates an expression once and remembers the answer, or hands back
 // the answer an earlier run already stored. The cache lives on disk, in the
-// directory `ctx.cache` writes to - see cache_store.odin for the layout and
-// hash_function.odin for the key.
+// directory `ctx.cache` writes to - see cache_store.odin for the layout,
+// hash_function.odin for what a closure hashes as, and hash_implicit.odin
+// for the part of the key a closure's digest cannot carry.
 //
 // **The key is computed before the expression runs**, which is the whole point:
 // a hit must not have to evaluate anything. §15 pins what it is - the cached
@@ -1129,10 +1167,10 @@ eval_cached :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
     return fail(interp, "cached: the current context has no .cache (SPEC.md §9 - a hand-built ctx has to carry it over)")
   }
 
-  key, herr := value_digest(new_function(interp, operand, env).(^Function_Value))
-  if herr != .None do return fail(interp, fmt.tprintf("cached: %s", hash_error_message(herr)))
+  key, herr := value_digest(new_function(interp, operand, env), interp)
+  if herr.kind != .None do return fail(interp, fmt.tprintf("cached: %s", hash_error_message(herr)))
   key, herr = mix_implicit_reach(interp, operand, key)
-  if herr != .None do return fail(interp, fmt.tprintf("cached: %s", hash_error_message(herr)))
+  if herr.kind != .None do return fail(interp, fmt.tprintf("cached: %s", hash_error_message(herr)))
   key_name := cache_entry_name_for(key)
 
   if stored, found, msg := cache_lookup(cache, key_name); msg != "" {
@@ -1146,7 +1184,7 @@ eval_cached :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
   val, ok = await_value(interp, val)
   if !ok do return nil, false
 
-  stored, stored_ok, msg := cache_store(cache, key_name, val)
+  stored, stored_ok, msg := cache_store(cache, key_name, val, interp)
   if !stored_ok do return fail(interp, fmt.tprintf("cached: %s", msg))
   return stored, true
 }
@@ -1158,18 +1196,19 @@ eval_cached :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
 //
 // Only the levels the expression can actually reach are mixed in, and only when
 // it reaches any at all: an expression that mentions no implicit name gets the
-// closure digest untouched. See hash_function.odin's implicit_reach_digest for
-// why a static bound on the reach is sound.
+// closure digest untouched. See hash_implicit.odin for why a static bound on
+// the reach is sound.
 @(private = "file")
-mix_implicit_reach :: proc(interp: ^Interpreter, operand: Node_Idx, key: Value_Digest) -> (Value_Digest, Hash_Error) {
+mix_implicit_reach :: proc(interp: ^Interpreter, operand: Node_Idx, key: Value_Digest) -> (Value_Digest, Hash_Fail) {
   max_arg, max_self := 0, 0
-  implicit_reach(interp.ast, interp.src, operand, &max_arg, &max_self)
-  if max_arg == 0 && max_self == 0 do return key, .None
+  implicit_reach(interp, operand, &max_arg, &max_self)
+  if max_arg == 0 && max_self == 0 do return key, HASH_OK
 
   return implicit_reach_digest(
     key,
     top_of(interp.arg_stack[:], max_arg),
     top_of(interp.self_stack[:], max_self),
+    interp,
   )
 }
 
@@ -1207,7 +1246,7 @@ eval_check :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, b
   cond_idx := interp.ast.extra_children[n.children_start]
   cond_val, cok := eval_slot(interp, cond_idx, env)
   if !cok do return nil, false
-  cond_val, cok = await_value(interp, cond_val)
+  cond_val, cok = concrete_value(interp, cond_val)
   if !cok do return nil, false
   cond_bool, is_bool := cond_val.(bool)
   if !is_bool do return fail(interp, "check condition must be a Boolean")
@@ -1218,7 +1257,7 @@ eval_check :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, b
   if !cond_bool {
     if has_msg {
       msg_val, mok := eval_slot(interp, interp.ast.extra_children[n.children_start + 1], env)
-      if mok do msg_val, mok = await_value(interp, msg_val)
+      if mok do msg_val, mok = concrete_value(interp, msg_val)
       if mok {
         if s, is_str := msg_val.(string); is_str do return fail(interp, s)
       }
