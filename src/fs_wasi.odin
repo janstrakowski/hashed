@@ -306,3 +306,79 @@ fs_list_dir :: proc(path: string, allocator := context.allocator) -> ([]Fs_Entry
   }
   return entries[:], .None
 }
+
+// ---- directory-as-a-value operations (§3's directory hash, §15's cached) ---------
+
+// The same fd_readdir loop as fs_list_dir above, against a descriptor the
+// caller already holds rather than one opened from a path - which is what a
+// directory File value actually has. preview1's dirent carries the file type,
+// and it is the *link's* type (readdir never follows), so §3's three-way
+// classification comes straight out of it.
+//
+// `is_executable` is always false here: preview1's filestat has no permission
+// bits at all, so this target cannot report one. See fs.odin's Fs_Entry.
+fs_list_dir_at :: proc(dir: Fs_Fd, allocator := context.allocator) -> ([]Fs_Entry, Fs_Error) {
+  entries := make([dynamic]Fs_Entry, 0, 16, allocator)
+  buf := make([]u8, 4096, context.temp_allocator)
+  cookie := wasi.dircookie_t(0)
+
+  for {
+    used, read_err := wasi.fd_readdir(wasi.fd_t(dir), buf, cookie)
+    if read_err != .SUCCESS do return entries[:], to_fs_error(read_err)
+    if used == 0 do break
+
+    offset := 0
+    for offset + size_of(wasi.dirent_t) <= int(used) {
+      dirent := (^wasi.dirent_t)(raw_data(buf[offset:]))^
+      name_start := offset + size_of(wasi.dirent_t)
+      name_end := name_start + int(dirent.d_namlen)
+      if name_end > int(used) do break // a name split across reads: ask again from d_next
+
+      name := string(buf[name_start:name_end])
+      if name != "." && name != ".." {
+        append(&entries, Fs_Entry{
+          name       = strings.clone(name, allocator),
+          is_dir     = dirent.d_type == .DIRECTORY,
+          is_symlink = dirent.d_type == .SYMBOLIC_LINK,
+        })
+      }
+      cookie = dirent.d_next
+      offset = name_end
+    }
+    if int(used) < len(buf) do break
+  }
+  return entries[:], .None
+}
+
+fs_mkdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  dir, rel, ok := rebase_absolute(parent, name)
+  if !ok || dir == FS_INVALID_FD do return .Access
+  return to_fs_error(wasi.path_create_directory(wasi.fd_t(dir), rel))
+}
+
+fs_rename_at :: proc(parent: Fs_Fd, old_name: string, new_name: string) -> Fs_Error {
+  old_dir, old_rel, old_ok := rebase_absolute(parent, old_name)
+  new_dir, new_rel, new_ok := rebase_absolute(parent, new_name)
+  if !old_ok || !new_ok || old_dir == FS_INVALID_FD || new_dir == FS_INVALID_FD do return .Access
+  return to_fs_error(wasi.path_rename(wasi.fd_t(old_dir), old_rel, wasi.fd_t(new_dir), new_rel))
+}
+
+fs_unlink_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  dir, rel, ok := rebase_absolute(parent, name)
+  if !ok || dir == FS_INVALID_FD do return .Access
+  return to_fs_error(wasi.path_unlink_file(wasi.fd_t(dir), rel))
+}
+
+fs_rmdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  dir, rel, ok := rebase_absolute(parent, name)
+  if !ok || dir == FS_INVALID_FD do return .Access
+  return to_fs_error(wasi.path_remove_directory(wasi.fd_t(dir), rel))
+}
+
+// preview1 has no chmod of any kind, and nothing to set - see Fs_Entry. The
+// caller only ever asks for a bit it just read back as set, and this target
+// never reads one as set, so succeeding without doing anything is exactly
+// right rather than a swallowed failure.
+fs_set_executable_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  return .None
+}

@@ -31,24 +31,42 @@ Value_Digest :: [DIGEST_SIZE]u8
 // Tag bytes. Never renumber these: a digest that changes meaning silently
 // invalidates every cache entry and every recorded hash a user has written
 // down. Appending a new tag for a new type is fine.
-@(private = "file")
 TAG_NOTHING :: 0x00
-@(private = "file")
 TAG_BOOLEAN :: 0x01
-@(private = "file")
 TAG_INTEGER :: 0x02
-@(private = "file")
 TAG_FLOAT :: 0x03
-@(private = "file")
 TAG_UTF8 :: 0x04
-@(private = "file")
 TAG_BYTES :: 0x05
-@(private = "file")
 TAG_TABLE :: 0x07
+// A *directory* File. A regular one stays untagged (below); a directory has
+// no sha256sum to agree with, so it is domain-separated like everything else.
+TAG_DIRECTORY :: 0x08
+// SPEC.md §3's three kinds of directory entry, one tag each - which is what
+// keeps a file named "x" from hashing like a symlink named "x" whose target
+// happens to be that file's content. See hash_directory.odin.
+TAG_DIR_ENTRY_FILE :: 0x09
+TAG_DIR_ENTRY_DIR :: 0x0a
+TAG_DIR_ENTRY_SYMLINK :: 0x0b
+// ctx.cache. It is write-only and content-addressed, with no name, no listing
+// and no identity of its own to tell one from another, so every cache hashes
+// to this tag over an empty payload. Deliberately *not* its directory path:
+// §15's cache key mixes in the whole ctx, and hashing the path there would
+// mean a cache directory that gets moved or copied missed on every entry in
+// it, because the old path was baked into every key.
+TAG_CACHE :: 0x0c
+// A Function, and the pieces its encoding is built from - see
+// hash_function.odin, which is where all four are actually used.
+TAG_FUNCTION :: 0x0d
+TAG_NATIVE :: 0x0e
+TAG_AST_NODE :: 0x0f
+TAG_FREE_NAMES :: 0x10
+// What a cached expression can read out of the *dynamic* stacks `#arg`/`#self`
+// address (§9) - not part of a closure, and mixed in by `cached` on top of the
+// closure digest. See implicit_reach_digest.
+TAG_IMPLICIT_REACH :: 0x11
 
 // Byte-lexicographic order on digests. Written as an explicit loop rather than
 // slice.cmp because a `proc` parameter isn't addressable, so it can't be sliced.
-@(private = "file")
 digest_less :: proc(a, b: Value_Digest) -> bool {
   for i in 0 ..< DIGEST_SIZE {
     if a[i] != b[i] do return a[i] < b[i]
@@ -56,14 +74,12 @@ digest_less :: proc(a, b: Value_Digest) -> bool {
   return false
 }
 
-@(private = "file")
 sha256_of :: proc(data: []u8) -> Value_Digest {
   digest: Value_Digest
   hash.hash_bytes_to_buffer(.SHA256, data, digest[:])
   return digest
 }
 
-@(private = "file")
 sha256_tagged :: proc(tag: u8, payload: []u8) -> Value_Digest {
   buf := make([]u8, 1 + len(payload), context.temp_allocator)
   buf[0] = tag
@@ -72,12 +88,13 @@ sha256_tagged :: proc(tag: u8, payload: []u8) -> Value_Digest {
 }
 
 // Why a value has no digest, so the caller can say which value and why rather
-// than emitting one "not hashable" for every case.
+// than emitting one "not hashable" for every case. Every remaining case is a
+// failure to *compute* a digest that exists - as of the `cached` work there is
+// no longer a kind of value the encoding simply does not cover.
 Hash_Error :: enum {
   None,
-  Directory_File, // §3's directory hash needs an exec bit only Linux can report
-  Function,       // §15 needs it for `cached`, but never specifies the encoding
-  Cache,          // §9's ctx.cache is write-only and has no identity to hash
+  Directory_Read, // §3 hashes a directory over its entries, and reading them failed
+  Function_Ast,   // a closure with no syntax tree to encode - see hash_function.odin
   Async,          // an un-awaited handle - callers await before hashing
 }
 
@@ -85,12 +102,10 @@ hash_error_message :: proc(e: Hash_Error) -> string {
   switch e {
   case .None:
     return ""
-  case .Directory_File:
-    return "a directory File has no hash yet (see LANGUAGE.md on what isn't built yet)"
-  case .Function:
-    return "a Function has no hash yet (see LANGUAGE.md on what isn't built yet)"
-  case .Cache:
-    return "ctx.cache has no hash - it is write-only and has no identity (SPEC.md §9)"
+  case .Directory_Read:
+    return "a directory File could not be read to hash it (SPEC.md §3 hashes a directory over its entries)"
+  case .Function_Ast:
+    return "a Function with no syntax tree cannot be hashed"
   case .Async:
     return "an un-awaited async handle has no hash"
   }
@@ -98,9 +113,12 @@ hash_error_message :: proc(e: Hash_Error) -> string {
 }
 
 // The digest of a value, per the encoding described at the top of this file.
-// Fails (rather than inventing a digest) for the kinds §3/§15 leave open -
-// see Hash_Error.
-value_digest :: proc(v: Value) -> (Value_Digest, Hash_Error) {
+// Fails (rather than inventing a digest) only where the digest exists but
+// could not be computed - see Hash_Error.
+//
+// `seen` is the closure stack hash_function.odin threads through so that a
+// recursive function terminates; every caller outside this file leaves it nil.
+value_digest :: proc(v: Value, seen: ^Seen_Stack = nil) -> (Value_Digest, Hash_Error) {
   switch av in v {
   case Nothing_Value:
     return sha256_tagged(TAG_NOTHING, nil), .None
@@ -138,8 +156,10 @@ value_digest :: proc(v: Value) -> (Value_Digest, Hash_Error) {
 
   case ^File_Value:
     // §3: "a regular file's hash is just hash(content_bytes)" - deliberately
-    // untagged, so it matches what sha256sum reports for the same bytes.
-    if av.kind == .Directory do return {}, .Directory_File
+    // untagged, so it matches what sha256sum reports for the same bytes. A
+    // directory is the other half of §3's rule, and reads its whole tree to
+    // answer - see hash_directory.odin.
+    if av.kind == .Directory do return directory_digest(av.dir_fd)
     return sha256_of(av.content), .None
 
   case ^Table_Value:
@@ -150,9 +170,9 @@ value_digest :: proc(v: Value) -> (Value_Digest, Hash_Error) {
     // cross-type value ordering, which isn't built.
     pairs := make([][2]Value_Digest, len(av.entries), context.temp_allocator)
     for entry, i in av.entries {
-      kd, kerr := value_digest(entry.key)
+      kd, kerr := value_digest(entry.key, seen)
       if kerr != .None do return {}, kerr
-      vd, verr := value_digest(entry.value)
+      vd, verr := value_digest(entry.value, seen)
       if verr != .None do return {}, verr
       pairs[i] = {kd, vd}
     }
@@ -167,10 +187,12 @@ value_digest :: proc(v: Value) -> (Value_Digest, Hash_Error) {
     return sha256_tagged(TAG_TABLE, buf), .None
 
   case ^Function_Value:
-    return {}, .Function
+    // §15's cache key is the hash of an expression *as a function*, so this
+    // is the case `cached` is built on - see hash_function.odin.
+    return function_digest(av, seen)
 
   case ^Cache_Value:
-    return {}, .Cache
+    return sha256_tagged(TAG_CACHE, nil), .None
 
   case ^Async_Handle:
     return {}, .Async

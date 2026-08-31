@@ -49,13 +49,39 @@ FS_INVALID_FD :: Fs_Fd(-1)
 //   fs_symlink_at           create a symlink; fs_readlink_at reads its target
 //   fs_open_dir_path        open a directory by path - ctx.cache only (§9)
 //   fs_make_dirs            mkdir -p by path - ctx.cache only (§9)
-//   fs_list_dir             names in a directory - the editor's file pickers
+//   fs_list_dir             names in a directory, by path - the editor's file pickers
+//
+// The six below were added for §3's directory hash and §15's `cached` (see
+// cache_store.odin), which are the first things here that have to read a whole
+// directory as a value and write a whole directory back out again:
+//
+//   fs_list_dir_at          entries of an open directory, classified no-follow
+//   fs_mkdir_at             create one directory, failing if it exists
+//   fs_rename_at            rename within one directory - the atomic commit
+//   fs_unlink_at            remove one non-directory name
+//   fs_rmdir_at             remove one empty directory
+//   fs_set_executable_at    set the owner-execute bit, where the target has one
 
-// One entry of a directory listing. Deliberately minimal: the editor wants
-// names, and whether to descend.
+// One entry of a directory listing.
+//
+// `is_dir` and `is_symlink` are what SPEC.md §3's directory hash sorts an
+// entry into: a symlink is its own kind there, hashed by its target string
+// rather than followed, so the classification a listing reports has to be
+// no-follow. `fs_list_dir_at` guarantees that; the older path-taking
+// `fs_list_dir` (the editor's file pickers) does not, and leaves both
+// `is_symlink` and `is_executable` false - it never fed anything that cares.
+//
+// `is_executable` is §3's "executable flag only - not full POSIX mode", and
+// is the one field a target can be unable to answer: WASI's filestat carries
+// no permission bits and Windows has no POSIX execute bit, so both report
+// false always. That is a truthful report of what those filesystems say, and
+// it is why §3 now spells out that a tree containing an executable hashes
+// differently there than on Linux.
 Fs_Entry :: struct {
-  name:   string,
-  is_dir: bool,
+  name:          string,
+  is_dir:        bool,
+  is_symlink:    bool,
+  is_executable: bool,
 }
 
 // What went wrong, in terms both targets can express. Deliberately coarse:

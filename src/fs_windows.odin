@@ -632,3 +632,90 @@ name_length :: proc(buf: []u16) -> int {
   for c, i in buf do if c == 0 do return i
   return len(buf)
 }
+
+// ---- directory-as-a-value operations (§3's directory hash, §15's cached) -----
+//
+// All six reach a child the same way every other operation on this target
+// does: look the descriptor's directory path out of the slot table, join the
+// name onto it, and call Win32 with the result. See this file's header for
+// what that costs relative to the *at() family.
+
+// The listing fs_list_dir does, but for a descriptor rather than a path, and
+// answering §3's three-way classification. FindFirstFileW never follows a
+// reparse point, so its attributes describe the entry itself - which is the
+// no-follow guarantee Fs_Entry asks for.
+//
+// `is_executable` is always false: Windows has no POSIX execute bit, and
+// nothing here stands in for it. See fs.odin's Fs_Entry.
+fs_list_dir_at :: proc(dir: Fs_Fd, allocator := context.allocator) -> ([]Fs_Entry, Fs_Error) {
+  path, ok := dir_path_of(dir)
+  if !ok do return nil, .Not_Directory
+
+  data: windows.WIN32_FIND_DATAW
+  h := windows.FindFirstFileW(to_win_path(join_child(path, "*")), &data)
+  if h == windows.INVALID_HANDLE_VALUE do return nil, last_error()
+  defer windows.FindClose(h)
+
+  entries := make([dynamic]Fs_Entry, 0, 16, allocator)
+  for {
+    name, err := windows.utf16_to_utf8(data.cFileName[:name_length(data.cFileName[:])], context.temp_allocator)
+    if err == nil && name != "." && name != ".." {
+      is_link := (data.dwFileAttributes & windows.FILE_ATTRIBUTE_REPARSE_POINT) != 0
+      append(&entries, Fs_Entry {
+        name       = strings.clone(name, allocator),
+        // A link to a directory carries the DIRECTORY attribute too, and §3
+        // wants it counted as a symlink rather than descended into - so the
+        // link check wins.
+        is_dir     = !is_link && (data.dwFileAttributes & windows.FILE_ATTRIBUTE_DIRECTORY) != 0,
+        is_symlink = is_link,
+      })
+    }
+    if !windows.FindNextFileW(h, &data) do break
+  }
+  return entries[:], .None
+}
+
+fs_mkdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  dir, ok := dir_path_of(parent)
+  if !ok do return .Not_Directory
+  if !windows.CreateDirectoryW(to_win_path(join_child(dir, name)), nil) do return last_error()
+  return .None
+}
+
+// The atomic commit a cache entry is published by. MoveFileExW without
+// MOVEFILE_REPLACE_EXISTING fails when the destination is taken, which is
+// what the caller wants: a name already there means another run won the race,
+// and its entry is the one to use.
+fs_rename_at :: proc(parent: Fs_Fd, old_name: string, new_name: string) -> Fs_Error {
+  dir, ok := dir_path_of(parent)
+  if !ok do return .Not_Directory
+  moved := windows.MoveFileExW(
+    to_win_path(join_child(dir, old_name)),
+    to_win_path(join_child(dir, new_name)),
+    0,
+  )
+  if !moved do return last_error()
+  return .None
+}
+
+fs_unlink_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  dir, ok := dir_path_of(parent)
+  if !ok do return .Not_Directory
+  if !windows.DeleteFileW(to_win_path(join_child(dir, name))) do return last_error()
+  return .None
+}
+
+fs_rmdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  dir, ok := dir_path_of(parent)
+  if !ok do return .Not_Directory
+  if !windows.RemoveDirectoryW(to_win_path(join_child(dir, name))) do return last_error()
+  return .None
+}
+
+// Nothing to set - Windows has no POSIX execute bit, and this target never
+// reports one as set either, so the caller only ever reaches here for a bit
+// that was already false. See fs.odin's Fs_Entry and fs_wasi.odin's copy of
+// this note.
+fs_set_executable_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  return .None
+}

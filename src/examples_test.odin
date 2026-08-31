@@ -33,6 +33,7 @@ EXAMPLE_CASES := []Example_Case{
   {"async-basics.hb", `"This is the payload for option A.\nThis is the payload for option B.\n"`},
   {"async-branching.hb", `"medium"`},
   {"async-table.hb", `{a: 2, b: 6, c: "This is the payload for option A.\n"}`},
+  {"cached.hb", "{answer: 42, asking_again_agrees: true, per_argument: {small: 2, large: 11}, file_survives_the_round_trip: true}"},
   {"check-and-invariants.hb", "100"},
   {"comparison-and-logic.hb", "{ordered: true, both: true, either: true, mixed: false}"},
   {"context-permissions.hb", "{ambient: {io: nothing}, io_denied: {}, replaced: {}, still_ambient: {io: nothing}}"},
@@ -186,9 +187,19 @@ read_dir_names :: proc(dir: string) -> []string {
   return names
 }
 
+// Recursive, because a `cached` entry (§15) is a directory: a value that is
+// not a File is stored as `sha256-<key>.hb/value.hb`, and a directory value as
+// the tree itself. os.remove won't take a non-empty directory, so a one-level
+// sweep would leave the scratch cache behind for the next run to trip over.
+//
+// The is_dir check is not an optimisation: os.open succeeds on a regular file
+// too, and reading a directory listing out of that handle is not something
+// every target survives.
 @(private = "file")
 remove_dir_and_entries :: proc(dir: string) {
-  for name in read_dir_names(dir) do os.remove(fmt.tprintf("%s/%s", dir, name))
+  if is_dir, err := fs_stat_is_dir_at(fs_cwd_dir(), dir, true); err == .None && is_dir {
+    for name in read_dir_names(dir) do remove_dir_and_entries(fmt.tprintf("%s/%s", dir, name))
+  }
   os.remove(dir)
 }
 

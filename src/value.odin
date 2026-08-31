@@ -33,6 +33,17 @@ Function_Value :: struct {
   ctx:           Value,     // captured `ctx` (SPEC.md §9) at the point the closure was made - see eval.odin's call_function
   native:        Native_Fn, // non-nil for a builtin (§16) - call_function invokes this instead of evaluating body/env
   native_closure: Value,    // passed as `closure` to `native`, if any
+  // The tree `body` indexes into, and the source text its leaves span. A
+  // closure is only meaningful against the AST it was made from, so it
+  // carries it: hash.odin needs both to encode one (§15's cache key is the
+  // hash of an expression *as a function*), and nothing else has a ^ast_t
+  // to hand at that point. Unused if native != nil.
+  ast:           ^ast_t,
+  src:           string,
+  // A native's identity, for the same encoding: `loadfile` is a free name in
+  // plenty of cached expressions, and a proc pointer is not stable across
+  // runs, so a native hashes as the name it is bound to. Empty for a closure.
+  native_name:   string,
 }
 
 // SPEC.md §3's File: a handle to a filesystem entity, file or directory only

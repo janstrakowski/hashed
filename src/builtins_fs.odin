@@ -67,10 +67,11 @@ resolve_cache_dir :: proc(override: string) -> string {
 }
 
 @(private = "file")
-new_native_function :: proc(fn: Native_Fn, closure: Value = nil) -> Value {
+new_native_function :: proc(name: string, fn: Native_Fn, closure: Value = nil) -> Value {
   f := new(Function_Value)
   f.native = fn
   f.native_closure = closure
+  f.native_name = name // a native hashes as its name, not its address - see Function_Value
   return f
 }
 
@@ -78,16 +79,18 @@ new_native_function :: proc(fn: Native_Fn, closure: Value = nil) -> Value {
 // the filesystem builtins, pre-bound by name (§16).
 make_global_env :: proc() -> ^Env {
   env := env_make_child(nil)
-  env_bind(env, "loadfile", new_native_function(builtin_loadfile))
-  env_bind(env, "createfile", new_native_function(builtin_createfile))
-  env_bind(env, "symlink", new_native_function(builtin_symlink))
-  env_bind(env, "readlink", new_native_function(builtin_readlink))
-  env_bind(env, "chperm", new_native_function(builtin_chperm))
-  env_bind(env, "filetext", new_native_function(builtin_filetext))
+  env_bind(env, "loadfile", new_native_function("loadfile", builtin_loadfile))
+  env_bind(env, "createfile", new_native_function("createfile", builtin_createfile))
+  env_bind(env, "symlink", new_native_function("symlink", builtin_symlink))
+  env_bind(env, "readlink", new_native_function("readlink", builtin_readlink))
+  env_bind(env, "chperm", new_native_function("chperm", builtin_chperm))
+  env_bind(env, "filetext", new_native_function("filetext", builtin_filetext))
   return env
 }
 
-@(private = "file")
+// Also read by eval.odin, where `cached` (§15) gates on it: the cache is a
+// directory on disk, so reading or writing an entry is as much an I/O
+// operation as §16's builtins are.
 ctx_allows_io :: proc(interp: ^Interpreter) -> bool {
   t, is_table := interp.current_ctx.(^Table_Value)
   if !is_table do return false
@@ -516,8 +519,16 @@ cache_entry_name :: proc(content: []u8) -> string {
 
 // Opens (creating if necessary) the cache's backing directory, the first
 // time it's actually needed - not at program start, so a program that never
-// touches the cache never creates it.
-@(private = "file")
+// touches the cache never creates it. §15's `cached` shares the directory and
+// so calls this too (cache_store.odin), with the same laziness.
+//
+// Unsynchronised, and safe to leave that way: two `async` branches reaching
+// here at once both open the directory and one of the two descriptors is
+// dropped on the floor, which costs a descriptor and nothing else - both are
+// valid, and both name the same directory. A mutex would be the wrong shape
+// anyway, since the store below is already written to be safe against *other
+// processes* on the same directory (see cache_store.odin on committing by
+// rename), which is the harder case and covers this one.
 ensure_cache_dir_open :: proc(cache: ^Cache_Value) -> Fs_Error {
   if cache.opened do return .None
   fs_make_dirs(cache.dir_path)
@@ -627,7 +638,11 @@ builtin_chperm :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, bo
   closure := new(Table_Value)
   append(&closure.entries, Table_Entry_Value{key = "name", value = name_str})
   append(&closure.entries, Table_Entry_Value{key = "enabled", value = enabled_bool})
-  return new_native_function(apply_chperm, closure), true
+  // The name is what this function hashes as (§15, Function_Value), so it has
+  // to distinguish the ctx-changer chperm returns from chperm itself; its
+  // captured {name, enabled} closure hashes alongside it, which is what makes
+  // two differently-configured ctx-changers different values.
+  return new_native_function("chperm.apply", apply_chperm, closure), true
 }
 
 // The actual oldctx -> newctx function chperm returns: a copy of `old_ctx`

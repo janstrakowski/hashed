@@ -1,5 +1,6 @@
 package hashedbuild
 
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sys/linux"
@@ -167,4 +168,87 @@ fs_list_dir :: proc(path: string, allocator := context.allocator) -> ([]Fs_Entry
     append(&entries, Fs_Entry{name = strings.clone(info.name, allocator), is_dir = info.type == .Directory})
   }
   return entries[:], .None
+}
+
+// ---- directory-as-a-value operations (§3's directory hash, §15's cached) -----
+
+@(private = "file") S_IFMT  :: u32(0o170000)
+@(private = "file") S_IFDIR :: u32(0o040000)
+@(private = "file") S_IFREG :: u32(0o100000)
+@(private = "file") S_IFLNK :: u32(0o120000)
+
+// Entries of an already-open directory, classified without following links -
+// `fs_list_dir` above answers by path and through core:os, which is the wrong
+// shape for a File value (it holds a descriptor, not a trustworthy path) and
+// the wrong classification (§3 needs a symlink reported as a symlink, not as
+// whatever it points at).
+//
+// Reading the names goes through /proc/self/fd rather than getdents64 because
+// nothing else here needs a raw directory-block parser; the per-entry
+// classification below is the part that has to be no-follow, and fstatat with
+// SYMLINK_NOFOLLOW against the descriptor is what makes it so.
+fs_list_dir_at :: proc(dir: Fs_Fd, allocator := context.allocator) -> ([]Fs_Entry, Fs_Error) {
+  proc_path := fmt.tprintf("/proc/self/fd/%d", i32(dir))
+  infos, err := os.read_all_directory_by_path(proc_path, context.temp_allocator)
+  if err != nil do return nil, .Io
+
+  entries := make([dynamic]Fs_Entry, 0, len(infos), allocator)
+  for info in infos {
+    st: linux.Stat
+    cname := strings.clone_to_cstring(info.name, context.temp_allocator)
+    if errno := linux.fstatat(linux.Fd(dir), cname, &st, {.SYMLINK_NOFOLLOW}); errno != .NONE {
+      return nil, fs_errno_to_error(errno)
+    }
+    // The file type is a 4-bit field, not four independent flags - core's
+    // Mode_Bits spells the individual bits and so has no IFLNK at all (S_IFLNK
+    // is 0o120000, i.e. the IFREG and IFCHR bits together). Masking with
+    // S_IFMT is the only way to ask the question that does not misread a
+    // symlink as a regular file, or a block device as a directory.
+    kind := transmute(u32)st.mode & S_IFMT
+    append(&entries, Fs_Entry {
+      name          = strings.clone(info.name, allocator),
+      is_dir        = kind == S_IFDIR,
+      is_symlink    = kind == S_IFLNK,
+      is_executable = kind == S_IFREG && .IXUSR in st.mode,
+    })
+  }
+  return entries[:], .None
+}
+
+fs_mkdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  cname := strings.clone_to_cstring(name, context.temp_allocator)
+  ret := linux.syscall(linux.SYS_mkdirat, linux.Fd(parent), cast(rawptr)cname, u32(0o755))
+  if ret < 0 do return fs_errno_to_error(linux.Errno(-ret))
+  return .None
+}
+
+fs_rename_at :: proc(parent: Fs_Fd, old_name: string, new_name: string) -> Fs_Error {
+  cold := strings.clone_to_cstring(old_name, context.temp_allocator)
+  cnew := strings.clone_to_cstring(new_name, context.temp_allocator)
+  ret := linux.syscall(
+    linux.SYS_renameat, linux.Fd(parent), cast(rawptr)cold, linux.Fd(parent), cast(rawptr)cnew,
+  )
+  if ret < 0 do return fs_errno_to_error(linux.Errno(-ret))
+  return .None
+}
+
+fs_unlink_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  cname := strings.clone_to_cstring(name, context.temp_allocator)
+  return fs_errno_to_error(linux.unlinkat(linux.Fd(parent), cname, nil))
+}
+
+fs_rmdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  cname := strings.clone_to_cstring(name, context.temp_allocator)
+  return fs_errno_to_error(linux.unlinkat(linux.Fd(parent), cname, {.REMOVEDIR}))
+}
+
+// §3's executable flag, on the one target that has one. Only ever used to put
+// back a bit that was read off a file being copied into the cache, so that a
+// restored directory hashes as the original did - never to grant execute to
+// something that did not already have it.
+fs_set_executable_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  cname := strings.clone_to_cstring(name, context.temp_allocator)
+  ret := linux.syscall(linux.SYS_fchmodat, linux.Fd(parent), cast(rawptr)cname, u32(0o755), 0)
+  if ret < 0 do return fs_errno_to_error(linux.Errno(-ret))
+  return .None
 }
