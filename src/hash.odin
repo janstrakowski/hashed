@@ -79,6 +79,7 @@ Hash_Error :: enum {
   Function,       // §15 needs it for `cached`, but never specifies the encoding
   Cache,          // §9's ctx.cache is write-only and has no identity to hash
   Async,          // an un-awaited handle - callers await before hashing
+  Cyclic,         // §10's cyclic Table - a Merkle fold has no bottom to start from
 }
 
 hash_error_message :: proc(e: Hash_Error) -> string {
@@ -93,6 +94,8 @@ hash_error_message :: proc(e: Hash_Error) -> string {
     return "ctx.cache has no hash - it is write-only and has no identity (SPEC.md §9)"
   case .Async:
     return "an un-awaited async handle has no hash"
+  case .Cyclic:
+    return "a cyclic value has no hash yet (see LANGUAGE.md on what isn't built yet)"
   }
   return ""
 }
@@ -101,7 +104,28 @@ hash_error_message :: proc(e: Hash_Error) -> string {
 // Fails (rather than inventing a digest) for the kinds §3/§15 leave open -
 // see Hash_Error.
 value_digest :: proc(v: Value) -> (Value_Digest, Hash_Error) {
-  switch av in v {
+  path := make([dynamic]rawptr, 0, 8, context.temp_allocator)
+  return value_digest_walk(v, &path)
+}
+
+// The encoding above is a Merkle fold: a composite's digest is built from its
+// children's. A cyclic Table (§10) has no bottom to start that fold from, and
+// no amount of recursion reaches one - so it is refused rather than hung on.
+// Hashing one *is* definable (decompose into strongly connected components,
+// Merkle-fold the acyclic part, and give each component a digest canonical
+// under bisimulation so it does not depend on which node you entered by) but
+// §3 pins the encoding of a digest, so choosing one is a spec decision, not an
+// implementation detail. Until that is made, `sha256` of a cyclic value fails
+// the same way a directory File or a Function does.
+//
+// `path` is the chain of Tables currently open above this one, so the test is
+// for a genuine back-edge - a Table that appears twice in different branches,
+// which is ordinary sharing rather than a cycle, still hashes fine.
+@(private = "file")
+value_digest_walk :: proc(v: Value, path: ^[dynamic]rawptr) -> (Value_Digest, Hash_Error) {
+  resolved, rok := resolve_forward(v)
+  if !rok do return {}, .Cyclic
+  switch av in resolved {
   case Nothing_Value:
     return sha256_tagged(TAG_NOTHING, nil), .None
 
@@ -148,11 +172,16 @@ value_digest :: proc(v: Value) -> (Value_Digest, Hash_Error) {
     // already implements (it matches entries by key, ignoring position).
     // Sorting by key digest gives a deterministic order without needing §6's
     // cross-type value ordering, which isn't built.
+    for open in path^ {
+      if open == rawptr(av) do return {}, .Cyclic
+    }
+    append(path, rawptr(av))
+    defer pop(path)
     pairs := make([][2]Value_Digest, len(av.entries), context.temp_allocator)
     for entry, i in av.entries {
-      kd, kerr := value_digest(entry.key)
+      kd, kerr := value_digest_walk(entry.key, path)
       if kerr != .None do return {}, kerr
-      vd, verr := value_digest(entry.value)
+      vd, verr := value_digest_walk(entry.value, path)
       if verr != .None do return {}, verr
       pairs[i] = {kd, vd}
     }
@@ -174,6 +203,11 @@ value_digest :: proc(v: Value) -> (Value_Digest, Hash_Error) {
 
   case ^Async_Handle:
     return {}, .Async
+
+  case ^Forward_Ref_Value:
+    // Unreachable: resolve_forward above returned either a non-forward value
+    // or .Cyclic. Present so the switch stays exhaustive.
+    return {}, .Cyclic
   }
   return sha256_tagged(TAG_NOTHING, nil), .None
 }
