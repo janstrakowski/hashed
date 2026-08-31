@@ -4,15 +4,15 @@
 //
 // §3 computes it over the directory's entries, each hashed with its name and
 // sorted by name so the answer is the tree's rather than readdir's: a regular
-// file contributes its content hash and whether it is executable, a
-// sub-directory contributes its own directory hash, and a symlink contributes
-// its target *string*, never followed. Nothing about where the directory sits
-// enters into it, which is why two handles on the same tree are one value.
+// file contributes its content hash, a sub-directory contributes its own
+// directory hash, and a symlink contributes its target *string*, never
+// followed. No permission bits enter into it, and nothing about where the
+// directory sits does either - which is why two handles on the same tree are
+// one value, and why a tree hashes the same on every target.
 //
-// The digests themselves are deliberately not written down here: a tree
-// containing an executable hashes differently on Windows and in the browser
-// than on Linux, because neither of those targets has an executable bit to
-// report (see LANGUAGE.md). What is the same everywhere are the properties
+// The digests themselves are still not written down here: this directory's
+// contents change as examples are added, so a literal would be a value that
+// went stale the next time someone wrote one. What holds are the properties
 // below.
 //
 // Reading a directory is I/O, so the first `sha256` of one needs

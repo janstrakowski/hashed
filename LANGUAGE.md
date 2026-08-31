@@ -414,10 +414,9 @@ same value when their bytes match, however they were reached.
 
 A **directory** `File` hashes over its entries (§3), sorted by name so the
 digest is the tree's rather than the order the filesystem listed it in. Each
-entry contributes its name, plus its content hash and executable bit for a
-regular file, its own directory hash for a sub-directory, or its target string
-for a symlink — which is never followed, so a link to a directory is a link,
-not a directory.
+entry contributes its name, plus its content hash for a regular file, its own
+directory hash for a sub-directory, or its target string for a symlink — which
+is never followed, so a link to a directory is a link, not a directory.
 
 ```hashedbuild
 sha256 loadfile "examples"                     // the digest of a whole tree
@@ -433,13 +432,13 @@ Two things about it are worth knowing before you rely on it:
   revoked `io` can't pull a tree's contents through a handle it was handed. It
   happens once: a `File` is an immutable handle, so the digest is fixed from
   then on, and seeing a change means loading the directory again.
-- **The executable bit is Linux-only, and a tree containing one hashes
-  differently elsewhere.** WASI's `filestat` has no permission bits and Windows
-  has no POSIX executable bit, so on those targets every file hashes as
-  non-executable. That is the language's answer rather than a gap — a Windows
-  checkout genuinely has no executable bits, and reporting one would be
-  inventing it, the same position git takes with `core.filemode`. If you need a
-  digest that agrees across all three, keep executables out of the tree.
+- **No permission bits go into it**, so a tree hashes the same wherever it was
+  checked out. Only Linux can report an executable bit, and hashing one would
+  have made the same source tree two different values depending on the machine
+  — git makes that concrete, since `core.fileMode=false` on Windows carries a
+  committed `100755` through the repository without the bit ever existing in
+  the working tree. (`cached` still restores the bit when it copies a tree; that
+  is the store being faithful, not the bit being part of the value.)
 
 An entry that is neither a file, a directory, nor a symlink — a socket, a
 device node — fails rather than being skipped, since a digest that ignored part
@@ -615,9 +614,7 @@ Parsed, specified, and rejected by the evaluator with "not implemented":
 **Hashing is complete**: `sha256` answers for every value, including the three
 that used to be listed here — a directory `File`, a `Function`, and a cyclic
 value — plus `ctx.cache`. See the Hashing section above for what each of them
-encodes, and for the one place the answer is target-specific: a directory
-containing an executable hashes differently on Windows and WASI than on Linux,
-because neither of those has an executable bit to report.
+encodes. A given value has the same digest on every target.
 
 Also absent: `true`/`false` literals, loops of any kind (recursion is the only
 repetition there is — see above), a `Bytes`-returning counterpart to

@@ -204,9 +204,10 @@ fs_list_entries_at :: proc(parent: Fs_Fd, allocator := context.allocator) -> ([]
       append(&entries, Fs_Dir_Entry {
         name          = strings.clone(name, allocator),
         kind          = kind,
-        // §3 hashes "the executable flag only - not full POSIX mode", and the
-        // owner bit is the one that means "this is a program". Group and other
-        // are part of who may run it, which is not part of what it is.
+        // Not for §3, which hashes no permission bit - this is for the cache,
+        // which restores the bit when it copies a tree (cache_store.odin). The
+        // owner bit is the one that means "this is a program"; group and other
+        // are about who may run it.
         is_executable = kind == .Regular && .IXUSR in stat.mode,
       })
     }

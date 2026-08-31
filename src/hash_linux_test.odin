@@ -1,8 +1,8 @@
-// The executable bit is the one part of SPEC.md §3's directory hash that only
-// one target can see, so it is the one part tested on only one target. WASI's
+// SPEC.md §3 hashes no permission bit, and Linux is the only target that can
+// prove it: it is the only one that has an executable bit to set. WASI's
 // filestat carries no permission bits and Windows has no POSIX exec bit
-// (fs.odin), and hashing there treats every file as non-executable - which is
-// the language's answer, not a gap, and is what LANGUAGE.md documents.
+// (fs.odin), so the same assertion elsewhere would hold without establishing
+// anything - which is why this file is `#+build linux` rather than a `when`.
 #+build linux
 package hashedbuild
 
@@ -27,7 +27,7 @@ eval_digest :: proc(t: ^testing.T, path: string) -> string {
 }
 
 @(test)
-test_the_executable_bit_is_part_of_a_directory_hash :: proc(t: ^testing.T) {
+test_the_executable_bit_is_not_part_of_a_directory_hash :: proc(t: ^testing.T) {
   root := strings.concatenate({repo_root(), "/.hash_linux_test_exec"})
   defer delete(root)
   file := strings.concatenate({root, "/build.sh"})
@@ -40,10 +40,10 @@ test_the_executable_bit_is_part_of_a_directory_hash :: proc(t: ^testing.T) {
   testing.expect(t, os.make_directory(root) == nil, "could not create the scratch tree")
   _ = os.write_entire_file(file, transmute([]u8)string("#!/bin/sh\necho hi\n"))
 
-  // Two hashes of the same bytes under the same name, differing only in
-  // whether the file is a program. §3 asks for exactly that distinction, and
-  // it is a real one in a build: a checked-out `configure` that lost its bit
-  // is not the same tree.
+  // Two hashes of the same bytes under the same name, differing only in whether
+  // the file is a program. §3 does not distinguish them: only Linux can see the
+  // difference at all, so hashing it would make one source tree two values
+  // depending on where it was checked out.
   cname := strings.clone_to_cstring(file, context.temp_allocator)
   testing.expect(t, linux.chmod(cname, {.IRUSR, .IWUSR}) == .NONE)
   plain := eval_digest(t, root)
@@ -51,11 +51,23 @@ test_the_executable_bit_is_part_of_a_directory_hash :: proc(t: ^testing.T) {
   testing.expect(t, linux.chmod(cname, {.IRUSR, .IWUSR, .IXUSR}) == .NONE)
   executable := eval_digest(t, root)
 
-  testing.expect(t, plain != executable, "the exec bit is part of what a directory is")
+  // That the bit actually landed is half the test - without it the comparison
+  // would hold for the wrong reason.
+  dir_fd, oerr := fs_open_dir_path(root)
+  testing.expect(t, oerr == .None, "could not open the scratch tree")
+  if oerr == .None {
+    defer fs_close(dir_fd)
+    entries, lerr := fs_list_entries_at(dir_fd, context.temp_allocator)
+    testing.expect(t, lerr == .None)
+    saw := false
+    for entry in entries do if entry.name == "build.sh" && entry.is_executable do saw = true
+    testing.expect(t, saw, "chmod did not set a bit for the digest to ignore")
+  }
 
-  // ...and it is only the owner bit that counts. §3 says "the executable flag
-  // only - not full POSIX mode", so who else may run it is not part of what
-  // the file is.
+  testing.expect_value(t, plain, executable)
+
+  // No other mode bit counts either - the rule is that permissions are not part
+  // of what a tree is, not that one particular bit was singled out.
   testing.expect(t, linux.chmod(cname, {.IRUSR, .IWUSR, .IXUSR, .IRGRP, .IROTH}) == .NONE)
-  testing.expect_value(t, eval_digest(t, root), executable)
+  testing.expect_value(t, eval_digest(t, root), plain)
 }

@@ -69,9 +69,10 @@ Fs_Entry :: struct {
 }
 
 // One entry of a directory in the detail SPEC.md §3's directory hash needs:
-// which of the three shapes it is, and - for a regular file - whether it is
-// executable. Distinct from Fs_Entry above, which answers the editor's much
-// smaller question (a name, and whether to descend into it).
+// which of the three shapes it is - plus, for a regular file, whether it is
+// executable, which §3 does not hash but §15's cache preserves. Distinct from
+// Fs_Entry above, which answers the editor's much smaller question (a name,
+// and whether to descend into it).
 //
 // `kind` is decided **without following symlinks**: §3 hashes a link entry as
 // its target string rather than resolving through it, so a link *to* a
@@ -86,11 +87,13 @@ Fs_Node_Kind :: enum {
 Fs_Dir_Entry :: struct {
   name:          string,
   kind:          Fs_Node_Kind,
-  // .Regular only. **False wherever the target cannot report the bit**, rather
-  // than a third "unknown" state: WASI's filestat carries no permission bits
-  // at all and Windows has no POSIX exec bit, so on those two targets this is
-  // always false. That is the language's answer, not a gap - see hash.odin's
-  // directory section and LANGUAGE.md.
+  // .Regular only, and **not part of any hash**: §3 carries no permission bit
+  // (see hash.odin's directory section), precisely because this is the one
+  // field a target can be unable to answer - WASI's filestat has no permission
+  // bits at all and Windows has no POSIX exec bit, so on those two it is always
+  // false. It exists for cache_store.odin, which puts the bit back when it
+  // copies a tree, so that caching a build output does not strip it. Anything
+  // asking what a directory *is* should ignore this field.
   is_executable: bool,
 }
 

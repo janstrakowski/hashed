@@ -319,7 +319,7 @@ value_digest_walk :: proc(v: Value, w: ^Hash_Walk) -> (Value_Digest, Hash_Fail) 
 // §3 spells the directory hash out:
 //
 //   dir_entry_hash(name, entry) =
-//     hash(name, "file",    content_hash, is_executable)
+//     hash(name, "file",    content_hash)
 //     hash(name, "dir",     child_dir_hash)
 //     hash(name, "symlink", target_path_string)
 //   dir_hash = hash(sorted [dir_entry_hash(name, entry) for each entry])
@@ -332,13 +332,22 @@ value_digest_walk :: proc(v: Value, w: ^Hash_Walk) -> (Value_Digest, Hash_Fail) 
 // in principle collide with a regular file whose content happened to be its
 // entry digests laid end to end.
 //
-// **The executable bit is the file's owner-execute bit where the target can
-// see one, and false everywhere else.** WASI's filestat has no permission bits
-// and Windows has no POSIX exec bit (fs.odin), so a tree containing an
-// executable hashes differently there than on Linux. That is the language's
-// answer rather than a gap: a Windows checkout genuinely has no exec bits, so
-// reporting one would be inventing it - the same position git takes with
-// core.filemode. LANGUAGE.md says so where a user will meet it.
+// **No permission bit is hashed** (§3, resolved 2026-08-31). An earlier form of
+// §3 kept the owner-execute bit here, false on the targets that cannot see one.
+// The trouble is that this makes a tree's identity depend on where it was
+// checked out, and git shows why that is not hypothetical: it records exactly
+// this one bit (100644 vs 100755) and sets core.fileMode=false on Windows, so
+// the bit round-trips through a repository without ever existing in the working
+// tree. The same commit is executable on Linux and not on Windows - this
+// repository's own scripts/ would have hashed two ways.
+//
+// git escapes that by *remembering* the bit rather than re-deriving it, which
+// is not available here: a File is a handle onto a live directory, with no
+// index beside it to consult. Between a digest that disagrees across targets
+// and one that ignores a bit two of the three cannot see, §3 takes the second.
+// Fs_Dir_Entry still reports it and cache_store.odin still restores it when
+// copying a tree, so caching a build output does not silently strip it - that
+// is fidelity in the store, not identity in the language.
 //
 // A symlink is hashed as its target *string*, never resolved (§3), which is
 // also what keeps this recursion finite: nothing here follows a link, so the
@@ -396,11 +405,12 @@ dir_entry_digest :: proc(dir: Fs_Fd, entry: Fs_Dir_Entry) -> (Value_Digest, Hash
     }
     defer delete(content)
 
-    payload: [2 * DIGEST_SIZE + 1]u8
+    // Name and content, and nothing else - see the note on permission bits
+    // above. entry.is_executable is deliberately not read here.
+    payload: [2 * DIGEST_SIZE]u8
     ch := sha256_of(content)
     copy(payload[0:], name[:])
     copy(payload[DIGEST_SIZE:], ch[:])
-    payload[2 * DIGEST_SIZE] = 1 if entry.is_executable else 0
     return sha256_tagged(TAG_DIR_ENTRY_FILE, payload[:]), HASH_OK
 
   case .Directory:
