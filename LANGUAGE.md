@@ -317,6 +317,8 @@ digest of the value it evaluates to, base64-encoded as `Utf8`:
 sha256 "hello"                    // => "Ar9oHTBiuRDqs+ZdbYD2daaU7RcvIDTJNB3UICNP92A="
 sha256 loadfile "pkg.tar.gz"      // exactly what sha256sum reports for that file
 sha256 { .a = 1, .b = 2 }
+sha256 loadfile "src"             // a whole directory, hashed over its entries
+sha256 func (1 + 2)               // a function, hashed as code plus what it captures
 ```
 
 This is not a checksum utility bolted on the side — it is the value identity
@@ -354,7 +356,15 @@ one when `cached` was built, since `cached` needs them:
   value.)
 - A **`Function`** hashes as its code (the shape of the expression, so
   reformatting it or writing a comment inside changes nothing), its captured
-  `ctx`, and the values of the names it uses.
+  `ctx`, and the values of the names it uses:
+
+  ```hashedbuild
+  (sha256 func (1 + 2)) == (sha256 func ( 1 /* two */ + 2 ))          // true
+  (let x 1; sha256 func (x + 1)) == (let x 2; sha256 func (x + 1))    // false
+  ```
+
+  That second line is the one `cached` depends on — without it, an expression
+  would share one cache entry across every value it closes over.
 - **`ctx.cache`** hashes as a constant. It is write-only and has no identity to
   distinguish one from another, and making it a constant is what keeps a cache
   directory valid after it is moved or copied — see below.
