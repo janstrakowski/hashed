@@ -8,7 +8,7 @@
 
 const ERRNO = {
   SUCCESS: 0, ACCESS: 2, BADF: 8, EXIST: 20, INVAL: 28, IO: 29,
-  ISDIR: 31, NOENT: 44, NOTDIR: 54, NOTCAPABLE: 76,
+  ISDIR: 31, NOENT: 44, NOTDIR: 54, NOTEMPTY: 55, NOTCAPABLE: 76,
 };
 
 const FILETYPE = { UNKNOWN: 0, DIRECTORY: 3, REGULAR_FILE: 4, SYMBOLIC_LINK: 7 };
@@ -101,6 +101,36 @@ export class FileSystem {
     if (!parent || !name) return false;
     parent.entries.set(name, { type: "symlink", target });
     return true;
+  }
+
+  // The three below exist for SPEC.md §15's cache, which builds an entry under
+  // a temporary name and renames it into place. Nothing else in the playground
+  // removes or renames anything.
+
+  remove(path, wantDir) {
+    const { parent, name } = this.parentOf(path);
+    if (!parent || !name) return "NOENT";
+    const node = parent.entries.get(name);
+    if (!node) return "NOENT";
+    const isDir = node.type === "dir";
+    if (isDir !== wantDir) return isDir ? "ISDIR" : "NOTDIR";
+    if (isDir && node.entries.size > 0) return "NOTEMPTY";
+    parent.entries.delete(name);
+    return null;
+  }
+
+  // Deliberately refuses an existing destination, which is what makes it the
+  // cache's commit: a name already taken means another writer got there first.
+  rename(from, to) {
+    const src = this.parentOf(from);
+    const dst = this.parentOf(to);
+    if (!src.parent || !src.name || !dst.parent || !dst.name) return "NOENT";
+    const node = src.parent.entries.get(src.name);
+    if (!node) return "NOENT";
+    if (dst.parent.entries.has(dst.name)) return "EXIST";
+    src.parent.entries.delete(src.name);
+    dst.parent.entries.set(dst.name, node);
+    return null;
   }
 
   list() {
@@ -436,6 +466,28 @@ export class WASI {
         return self.fs.symlink(path, target) ? ERRNO.SUCCESS : ERRNO.NOENT;
       },
 
+      path_unlink_file(dirfd, pathPtr, pathLen) {
+        const path = self.resolve(dirfd, self.readString(pathPtr, pathLen));
+        if (path === null) return ERRNO.ACCESS;
+        const err = self.fs.remove(path, false);
+        return err ? (ERRNO[err] ?? ERRNO.IO) : ERRNO.SUCCESS;
+      },
+
+      path_remove_directory(dirfd, pathPtr, pathLen) {
+        const path = self.resolve(dirfd, self.readString(pathPtr, pathLen));
+        if (path === null) return ERRNO.ACCESS;
+        const err = self.fs.remove(path, true);
+        return err ? (ERRNO[err] ?? ERRNO.IO) : ERRNO.SUCCESS;
+      },
+
+      path_rename(dirfd, fromPtr, fromLen, toFd, toPtr, toLen) {
+        const from = self.resolve(dirfd, self.readString(fromPtr, fromLen));
+        const to = self.resolve(toFd, self.readString(toPtr, toLen));
+        if (from === null || to === null) return ERRNO.ACCESS;
+        const err = self.fs.rename(from, to);
+        return err ? (ERRNO[err] ?? ERRNO.IO) : ERRNO.SUCCESS;
+      },
+
       path_readlink(dirfd, pathPtr, pathLen, bufPtr, bufLen, usedPtr) {
         const path = self.resolve(dirfd, self.readString(pathPtr, pathLen));
         if (path === null) return ERRNO.ACCESS;
@@ -591,7 +643,10 @@ export const REMOTE_CALLS = [
   ["path_filestat_get", "iiiii"],
   ["path_open", "iiiiiIIii"],
   ["path_readlink", "iiiiii"],
+  ["path_remove_directory", "iii"],
+  ["path_rename", "iiiiii"],
   ["path_symlink", "iiiii"],
+  ["path_unlink_file", "iii"],
   ["random_get", "ii"],
 ];
 

@@ -672,3 +672,56 @@ name_length :: proc(buf: []u16) -> int {
   for c, i in buf do if c == 0 do return i
   return len(buf)
 }
+
+// ---- directory-as-a-value operations (§3's directory hash, §15's cached) -----
+//
+// All six reach a child the same way every other operation on this target
+// does: look the descriptor's directory path out of the slot table, join the
+// name onto it, and call Win32 with the result. See this file's header for
+// what that costs relative to the *at() family.
+
+
+fs_mkdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  dir, ok := dir_path_of(parent)
+  if !ok do return .Not_Directory
+  if !windows.CreateDirectoryW(to_win_path(join_child(dir, name)), nil) do return last_error()
+  return .None
+}
+
+// The atomic commit a cache entry is published by. MoveFileExW without
+// MOVEFILE_REPLACE_EXISTING fails when the destination is taken, which is
+// what the caller wants: a name already there means another run won the race,
+// and its entry is the one to use.
+fs_rename_at :: proc(parent: Fs_Fd, old_name: string, new_name: string) -> Fs_Error {
+  dir, ok := dir_path_of(parent)
+  if !ok do return .Not_Directory
+  moved := windows.MoveFileExW(
+    to_win_path(join_child(dir, old_name)),
+    to_win_path(join_child(dir, new_name)),
+    0,
+  )
+  if !moved do return last_error()
+  return .None
+}
+
+fs_unlink_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  dir, ok := dir_path_of(parent)
+  if !ok do return .Not_Directory
+  if !windows.DeleteFileW(to_win_path(join_child(dir, name))) do return last_error()
+  return .None
+}
+
+fs_rmdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  dir, ok := dir_path_of(parent)
+  if !ok do return .Not_Directory
+  if !windows.RemoveDirectoryW(to_win_path(join_child(dir, name))) do return last_error()
+  return .None
+}
+
+// Nothing to set - Windows has no POSIX execute bit, and this target never
+// reports one as set either, so the caller only ever reaches here for a bit
+// that was already false. See fs.odin's Fs_Entry and fs_wasi.odin's copy of
+// this note.
+fs_set_executable_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  return .None
+}

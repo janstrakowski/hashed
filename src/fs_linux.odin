@@ -1,5 +1,6 @@
 package hashedbuild
 
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sys/linux"
@@ -203,9 +204,10 @@ fs_list_entries_at :: proc(parent: Fs_Fd, allocator := context.allocator) -> ([]
       append(&entries, Fs_Dir_Entry {
         name          = strings.clone(name, allocator),
         kind          = kind,
-        // §3 hashes "the executable flag only - not full POSIX mode", and the
-        // owner bit is the one that means "this is a program". Group and other
-        // are part of who may run it, which is not part of what it is.
+        // Not for §3, which hashes no permission bit - this is for the cache,
+        // which restores the bit when it copies a tree (cache_store.odin). The
+        // owner bit is the one that means "this is a program"; group and other
+        // are about who may run it.
         is_executable = kind == .Regular && .IXUSR in stat.mode,
       })
     }
@@ -225,4 +227,51 @@ fs_list_dir :: proc(path: string, allocator := context.allocator) -> ([]Fs_Entry
     append(&entries, Fs_Entry{name = strings.clone(info.name, allocator), is_dir = info.type == .Directory})
   }
   return entries[:], .None
+}
+
+// ---- directory-as-a-value operations (§3's directory hash, §15's cached) -----
+
+@(private = "file") S_IFMT  :: u32(0o170000)
+@(private = "file") S_IFDIR :: u32(0o040000)
+@(private = "file") S_IFREG :: u32(0o100000)
+@(private = "file") S_IFLNK :: u32(0o120000)
+
+
+fs_mkdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  cname := strings.clone_to_cstring(name, context.temp_allocator)
+  ret := linux.syscall(linux.SYS_mkdirat, linux.Fd(parent), cast(rawptr)cname, u32(0o755))
+  if ret < 0 do return fs_errno_to_error(linux.Errno(-ret))
+  return .None
+}
+
+fs_rename_at :: proc(parent: Fs_Fd, old_name: string, new_name: string) -> Fs_Error {
+  cold := strings.clone_to_cstring(old_name, context.temp_allocator)
+  cnew := strings.clone_to_cstring(new_name, context.temp_allocator)
+  ret := linux.syscall(
+    linux.SYS_renameat, linux.Fd(parent), cast(rawptr)cold, linux.Fd(parent), cast(rawptr)cnew,
+  )
+  if ret < 0 do return fs_errno_to_error(linux.Errno(-ret))
+  return .None
+}
+
+fs_unlink_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  cname := strings.clone_to_cstring(name, context.temp_allocator)
+  return fs_errno_to_error(linux.unlinkat(linux.Fd(parent), cname, nil))
+}
+
+fs_rmdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  cname := strings.clone_to_cstring(name, context.temp_allocator)
+  return fs_errno_to_error(linux.unlinkat(linux.Fd(parent), cname, {.REMOVEDIR}))
+}
+
+// The executable bit, on the one target that has one. Only ever used to put
+// back a bit that was read off a file being copied into the cache, so that
+// caching a build output does not quietly strip it - never to grant execute to
+// something that did not already have it. Nothing about a value's identity
+// depends on it (§3 hashes no permission bit); this is fidelity, not semantics.
+fs_set_executable_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  cname := strings.clone_to_cstring(name, context.temp_allocator)
+  ret := linux.syscall(linux.SYS_fchmodat, linux.Fd(parent), cast(rawptr)cname, u32(0o755), 0)
+  if ret < 0 do return fs_errno_to_error(linux.Errno(-ret))
+  return .None
 }

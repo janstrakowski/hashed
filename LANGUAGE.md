@@ -382,6 +382,8 @@ digest of the value it evaluates to, base64-encoded as `Utf8`:
 sha256 "hello"                    // => "Ar9oHTBiuRDqs+ZdbYD2daaU7RcvIDTJNB3UICNP92A="
 sha256 loadfile "pkg.tar.gz"      // exactly what sha256sum reports for that file
 sha256 { .a = 1, .b = 2 }
+sha256 loadfile "src"             // a whole directory, hashed over its entries
+sha256 func (1 + 2)               // a function, hashed as code plus what it captures
 ```
 
 This is not a checksum utility bolted on the side — it is the value identity
@@ -412,10 +414,9 @@ same value when their bytes match, however they were reached.
 
 A **directory** `File` hashes over its entries (§3), sorted by name so the
 digest is the tree's rather than the order the filesystem listed it in. Each
-entry contributes its name, plus its content hash and executable bit for a
-regular file, its own directory hash for a sub-directory, or its target string
-for a symlink — which is never followed, so a link to a directory is a link,
-not a directory.
+entry contributes its name, plus its content hash for a regular file, its own
+directory hash for a sub-directory, or its target string for a symlink — which
+is never followed, so a link to a directory is a link, not a directory.
 
 ```hashedbuild
 sha256 loadfile "examples"                     // the digest of a whole tree
@@ -431,13 +432,13 @@ Two things about it are worth knowing before you rely on it:
   revoked `io` can't pull a tree's contents through a handle it was handed. It
   happens once: a `File` is an immutable handle, so the digest is fixed from
   then on, and seeing a change means loading the directory again.
-- **The executable bit is Linux-only, and a tree containing one hashes
-  differently elsewhere.** WASI's `filestat` has no permission bits and Windows
-  has no POSIX executable bit, so on those targets every file hashes as
-  non-executable. That is the language's answer rather than a gap — a Windows
-  checkout genuinely has no executable bits, and reporting one would be
-  inventing it, the same position git takes with `core.filemode`. If you need a
-  digest that agrees across all three, keep executables out of the tree.
+- **No permission bits go into it**, so a tree hashes the same wherever it was
+  checked out. Only Linux can report an executable bit, and hashing one would
+  have made the same source tree two different values depending on the machine
+  — git makes that concrete, since `core.fileMode=false` on Windows carries a
+  committed `100755` through the repository without the bit ever existing in
+  the working tree. (`cached` still restores the bit when it copies a tree; that
+  is the store being faithful, not the bit being part of the value.)
 
 An entry that is neither a file, a directory, nor a symlink — a socket, a
 device node — fails rather than being skipped, since a digest that ignored part
@@ -489,6 +490,70 @@ one value.
 
 → `examples/hashing-cyclic.hb` (§6, §10, §15)
 
+## Caching
+
+`cached` takes one trailing expression, like `sha256`, and evaluates it once:
+every later run reads the answer back instead of computing it.
+
+```hashedbuild
+cached (6 * 7)                          // => 42, and again on every later run
+cached (loadfile "pkg.tar.gz")          // the bytes as they were the first time
+```
+
+**The key is the expression treated as a function**, hashed with the one hash
+system above (§15). Three things go into it, and it is worth knowing which:
+
+- **the code**, structurally — so reformatting an expression or writing a
+  comment inside it does not throw its entry away;
+- **the `ctx` it runs under** (§9), whole;
+- **the values it reads** — the names it uses, and anything it reaches through
+  `#arg`/`#self`. So `let bump func (cached (#arg + 1))` gets one entry per
+  argument, not one entry.
+
+What is deliberately *not* in the key is anything the expression goes and reads
+at run time. That is the point of a cache, and its one sharp edge: cache
+`loadfile "pkg.tar.gz"` and you keep getting the bytes from the first run,
+however the file changes afterwards.
+
+**Where entries live.** In `ctx.cache`'s directory — `--cache-dir <path>`, else
+`$XDG_CACHE_HOME/hashedbuild`, else the per-user default — one entry per key,
+named `sha256-<key>`:
+
+```
+<cache>/sha256-<key>                  a File value, stored as itself
+<cache>/sha256-<key>.hb/              anything else
+<cache>/sha256-<key>.hb/value.hb        the value, as HashedBuild text
+<cache>/sha256-<key>.hb/sha256-<h>      each File inside it, by content hash
+```
+
+A `File` value stays a file and a directory value stays a directory, so what a
+build produced is still something you can open, `diff` or copy out. Anything
+else is written as text you can read; the `File`s it holds cannot go in text,
+so they are stored beside it and referred to by name. A value that reaches
+itself is written with a label on each repeated Table and a back-reference
+after it, which is what lets a cycle have a finite written form:
+
+```
+node "1" { .name = "alice", .friend = node "2" { .name = "bob", .friend = ref "1" } }
+``` Entries are built under a
+temporary name and renamed into place, so an interrupted run leaves a `.tmp`
+rather than a half-written entry, and two runs racing on one key settle it
+without locking anything.
+
+**What it refuses.** `cached` needs `ctx.permissions.io`, since it reads and
+writes files, and it needs a `ctx` that still carries `.cache`. A value holding
+a `Function`, `ctx.cache`, or an un-awaited `async` handle cannot be written
+down and read back as itself, so caching one fails rather than storing
+something that would come back different. All of these are fatal failures like
+any other (§8).
+
+`async` is positional, and the two placements mean different things:
+`async cached <expr>` makes the cache lookup itself asynchronous, while
+`cached async <expr>` runs the expression on a thread with the caching wrapper
+around it synchronous.
+
+→ `examples/cached.hb` (§15)
+
 ## Context and permissions
 
 `ctx` is the ambient context. The filesystem builtins check
@@ -508,7 +573,10 @@ is the entire point.
 
 `ctx.cache` is a write-only, content-addressed store: `createfile { .dir =
 ctx.cache, .content = … }` writes under the content's own hash, deduplicating
-across runs, and returns the `File` it wrote.
+across runs, and returns the `File` it wrote. Its directory is also where
+`cached` keeps its entries (see "Caching"); the two are told apart by their
+names, `sha256_<content>` for a blob written this way and `sha256-<key>` for a
+cache entry.
 
 → `examples/context-permissions.hb`, `examples/option-picker.hb` (§9, §16)
 
@@ -541,14 +609,12 @@ uncatchable, but the work already in flight finishes first.
 ## What isn't built yet
 
 Parsed, specified, and rejected by the evaluator with "not implemented":
-`import` and `cached`.
+`import`.
 
 **Hashing is complete**: `sha256` answers for every value, including the three
 that used to be listed here — a directory `File`, a `Function`, and a cyclic
 value — plus `ctx.cache`. See the Hashing section above for what each of them
-encodes, and for the one place the answer is target-specific: a directory
-containing an executable hashes differently on Windows and WASI than on Linux,
-because neither of those has an executable bit to report.
+encodes. A given value has the same digest on every target.
 
 Also absent: `true`/`false` literals, loops of any kind (recursion is the only
 repetition there is — see above), a `Bytes`-returning counterpart to

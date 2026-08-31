@@ -17,7 +17,8 @@ Options:
   -a, --ast           Print the parsed AST before evaluating
   -e, --eval <expr>   Evaluate <expr> like one REPL submission and exit
       --cache-dir <path>
-                       Override ctx.cache's location (SPEC.md §16)
+                       Override where ctx.cache and cached keep
+                       their entries (SPEC.md §15/§16)
   -h, --help           Print this help and exit
       --version        Print the version and exit`
 

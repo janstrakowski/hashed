@@ -33,6 +33,7 @@ EXAMPLE_CASES := []Example_Case{
   {"async-basics.hb", `"This is the payload for option A.\nThis is the payload for option B.\n"`},
   {"async-branching.hb", `"medium"`},
   {"async-table.hb", `{a: 2, b: 6, c: "This is the payload for option A.\n"}`},
+  {"cached.hb", "{answer: 42, asking_again_agrees: true, per_argument: {small: 2, large: 11}, file_survives_the_round_trip: true, a_cycle_survives_too: true}"},
   {"check-and-invariants.hb", "100"},
   {"comparison-and-logic.hb", "{ordered: true, both: true, either: true, mixed: false}"},
   {"context-permissions.hb", "{ambient: {io: nothing}, io_denied: {}, replaced: {}, still_ambient: {io: nothing}}"},
@@ -43,11 +44,10 @@ EXAMPLE_CASES := []Example_Case{
   {"guard-chain.hb", "5"},
   {"hashing.hb", `{text: "Ar9oHTBiuRDqs+ZdbYD2daaU7RcvIDTJNB3UICNP92A=", file: "ZT6vBQgoXEojRYd890EDlZWhUF/uGfXa+C9BNGBykI0=", key_order_is_irrelevant: true, same_content_same_file: true, integer_is_not_float: false}`},
   // The three hashing examples assert properties rather than digests, on
-  // purpose. A directory containing an executable hashes differently on
-  // Windows and WASI than on Linux (§3, and LANGUAGE.md on why), and a
-  // closure's digest includes its body's own source text - so a literal here
-  // would be a value that is either target-specific or broken by reformatting
-  // the example it came from.
+  // purpose. A directory's digest changes as examples are added to the tree,
+  // and a closure's includes its body's own source text - so a literal here
+  // would be a value that went stale the next time someone added an example or
+  // reformatted the one it came from.
   {"hashing-cyclic.hb", "{a_cycle_hashes: true, equal_cycles_hash_alike: true, shape_still_matters: true, either_end_agrees: true}"},
   {"hashing-directories.hb", "{a_tree_is_not_its_file: true, one_tree_is_one_value: true, reading_twice_agrees: true}"},
   {"hashing-functions.hb", "{same_body_same_hash: true, different_body_differs: true, captures_count: true, neighbours_do_not: true, builtins_hash_by_what_they_are: true, a_builtin_carries_its_argument: true}"},
@@ -196,9 +196,19 @@ read_dir_names :: proc(dir: string) -> []string {
   return names
 }
 
+// Recursive, because a `cached` entry (§15) is a directory: a value that is
+// not a File is stored as `sha256-<key>.hb/value.hb`, and a directory value as
+// the tree itself. os.remove won't take a non-empty directory, so a one-level
+// sweep would leave the scratch cache behind for the next run to trip over.
+//
+// The is_dir check is not an optimisation: os.open succeeds on a regular file
+// too, and reading a directory listing out of that handle is not something
+// every target survives.
 @(private = "file")
 remove_dir_and_entries :: proc(dir: string) {
-  for name in read_dir_names(dir) do os.remove(fmt.tprintf("%s/%s", dir, name))
+  if is_dir, err := fs_stat_is_dir_at(fs_cwd_dir(), dir, true); err == .None && is_dir {
+    for name in read_dir_names(dir) do remove_dir_and_entries(fmt.tprintf("%s/%s", dir, name))
+  }
   os.remove(dir)
 }
 

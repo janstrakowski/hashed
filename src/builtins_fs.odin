@@ -93,9 +93,10 @@ make_global_env :: proc() -> ^Env {
   return env
 }
 
-// Package-visible rather than file-private because hash.odin asks it too: a
+// Package-visible rather than file-private because two other places ask it: a
 // directory File's digest is read off the disk the first time anything needs
-// it, and that read is an I/O operation like any other here (SPEC.md §3/§9).
+// it (hash.odin), and §15's `cached` reads and writes cache entries
+// (eval.odin). Both are I/O operations like any other here (SPEC.md §3/§9).
 ctx_allows_io :: proc(interp: ^Interpreter) -> bool {
   t, is_table := interp.current_ctx.(^Table_Value)
   if !is_table do return false
@@ -524,8 +525,16 @@ cache_entry_name :: proc(content: []u8) -> string {
 
 // Opens (creating if necessary) the cache's backing directory, the first
 // time it's actually needed - not at program start, so a program that never
-// touches the cache never creates it.
-@(private = "file")
+// touches the cache never creates it. §15's `cached` shares the directory and
+// so calls this too (cache_store.odin), with the same laziness.
+//
+// Unsynchronised, and safe to leave that way: two `async` branches reaching
+// here at once both open the directory and one of the two descriptors is
+// dropped on the floor, which costs a descriptor and nothing else - both are
+// valid, and both name the same directory. A mutex would be the wrong shape
+// anyway, since the store below is already written to be safe against *other
+// processes* on the same directory (see cache_store.odin on committing by
+// rename), which is the harder case and covers this one.
 ensure_cache_dir_open :: proc(cache: ^Cache_Value) -> Fs_Error {
   if cache.opened do return .None
   fs_make_dirs(cache.dir_path)

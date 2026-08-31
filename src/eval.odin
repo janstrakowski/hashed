@@ -6,7 +6,7 @@ import "core:strings"
 
 // Tree-walking evaluator for the pure-expression core of SPEC.md. Deliberately
 // scoped out for this pass (each needs real design/OS decisions this project
-// hasn't made yet): `cached`, `import`, `#context`, and the static-vs-runtime
+// hasn't made yet): `import`, `#context`, and the static-vs-runtime
 // distinction for `check`/`static_check` (both just run as runtime checks
 // here).
 //
@@ -430,7 +430,10 @@ eval :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (ret_val: Value
   case .Sha256_Expr:
     return eval_sha256(interp, node, env)
 
-  case .Cached_Expr, .Import_Expr:
+  case .Cached_Expr:
+    return eval_cached(interp, node, env)
+
+  case .Import_Expr:
     return fail(interp, fmt.tprintf("%v is not implemented by this evaluator yet", n.kind))
   }
   return fail(interp, fmt.tprintf("evaluation not implemented for %v", n.kind))
@@ -1126,6 +1129,113 @@ eval_sha256 :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
     return fail(interp, fmt.tprintf("sha256: %s", hash_error_message(herr)))
   }
   return encoded, true
+}
+
+// §15: evaluates an expression once and remembers the answer, or hands back
+// the answer an earlier run already stored. The cache lives on disk, in the
+// directory `ctx.cache` writes to - see cache_store.odin for the layout,
+// hash_function.odin for what a closure hashes as, and hash_implicit.odin
+// for the part of the key a closure's digest cannot carry.
+//
+// **The key is computed before the expression runs**, which is the whole point:
+// a hit must not have to evaluate anything. §15 pins what it is - the cached
+// expression treated as a function, hashed as one - so that is exactly what is
+// built here, a closure over the operand in the current environment and
+// `ctx`. Its digest covers the code, the captured `ctx`, and the values of the
+// names the code uses, so `cached (x + 1)` is a different entry for each `x`.
+//
+// **Gated by `ctx.permissions.io`** (§9), like §16's builtins and for the same
+// reason: this reads and writes files. A denied `io` is a failure rather than a
+// quiet fall-through to evaluating uncached, because the two differ in what
+// gets written to disk, and silently doing the other one is not something a
+// program should have to guess at.
+//
+// **Async is positional**, as §15 says. `cached async <expr>` is this
+// procedure wrapped around an operand that evaluates on another thread: the
+// await below is the "caching wrapper around it synchronous" half. `async
+// cached <expr>` is the other placement, and needs nothing here - it is an
+// Async_Expr whose body happens to be this one.
+@(private = "file")
+eval_cached :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, bool) {
+  n := interp.ast.nodes[node]
+  operand := interp.ast.extra_children[n.children_start]
+
+  if !ctx_allows_io(interp) do return fail(interp, "cached: io permission not granted in the current context")
+
+  cache, has_cache := cache_of_ctx(interp.current_ctx)
+  if !has_cache {
+    return fail(interp, "cached: the current context has no .cache (SPEC.md §9 - a hand-built ctx has to carry it over)")
+  }
+
+  key, herr := value_digest(new_function(interp, operand, env), interp)
+  if herr.kind != .None do return fail(interp, fmt.tprintf("cached: %s", hash_error_message(herr)))
+  key, herr = mix_implicit_reach(interp, operand, key)
+  if herr.kind != .None do return fail(interp, fmt.tprintf("cached: %s", hash_error_message(herr)))
+  key_name := cache_entry_name_for(key)
+
+  if stored, found, msg := cache_lookup(cache, key_name); msg != "" {
+    return fail(interp, fmt.tprintf("cached: %s", msg))
+  } else if found {
+    return stored, true
+  }
+
+  val, ok := eval_slot(interp, operand, env)
+  if !ok do return nil, false
+  val, ok = await_value(interp, val)
+  if !ok do return nil, false
+
+  stored, stored_ok, msg := cache_store(cache, key_name, val, interp)
+  if !stored_ok do return fail(interp, fmt.tprintf("cached: %s", msg))
+  return stored, true
+}
+
+// A closure captures its environment and its `ctx`, but `#arg`/`#self` (§9) are
+// dynamic lookups into the interpreter's own stacks and are captured by
+// neither - so the closure digest cannot see them, and the key has to. Without
+// this, `let f func (cached (#arg + 1)); f 1` and `f 10` would be one entry.
+//
+// Only the levels the expression can actually reach are mixed in, and only when
+// it reaches any at all: an expression that mentions no implicit name gets the
+// closure digest untouched. See hash_implicit.odin for why a static bound on
+// the reach is sound.
+@(private = "file")
+mix_implicit_reach :: proc(interp: ^Interpreter, operand: Node_Idx, key: Value_Digest) -> (Value_Digest, Hash_Fail) {
+  max_arg, max_self := 0, 0
+  implicit_reach(interp, operand, &max_arg, &max_self)
+  if max_arg == 0 && max_self == 0 do return key, HASH_OK
+
+  return implicit_reach_digest(
+    key,
+    top_of(interp.arg_stack[:], max_arg),
+    top_of(interp.self_stack[:], max_self),
+    interp,
+  )
+}
+
+// The top `count` entries, innermost first, padded with `nothing` where the
+// stack is shorter than the reach - so the shape of what gets mixed in depends
+// only on the expression, never on how deep the program happens to be.
+@(private = "file")
+top_of :: proc(stack: []Value, count: int) -> []Value {
+  out := make([]Value, count, context.temp_allocator)
+  for i in 0 ..< count {
+    idx := len(stack) - 1 - i
+    out[i] = idx >= 0 ? stack[idx] : Nothing_Value{}
+  }
+  return out
+}
+
+// `ctx.cache`, if this context has one. §9 lets a program build a context by
+// hand, and one built without carrying `.cache` over simply hasn't got a cache
+// to use - so this is a question, not an assertion.
+@(private = "file")
+cache_of_ctx :: proc(ctx: Value) -> (^Cache_Value, bool) {
+  t, is_table := ctx.(^Table_Value)
+  if !is_table do return nil, false
+  val, found := table_find(t, "cache")
+  if !found do return nil, false
+  cache, is_cache := val.(^Cache_Value)
+  return cache, is_cache
 }
 
 // ---- check / static_check / error (§11) ----------------------------------------

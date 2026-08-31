@@ -59,6 +59,7 @@ prose around each of these.
 | `hashing-directories.hb` | A directory's hash: its entries, and the one digest that reads |
 | `hashing-functions.hb` | A closure's hash: its body's shape and the values it captures |
 | `hashing-cyclic.hb` | Hashing a value that reaches itself, canonically |
+| `cached.hb` | `cached` — evaluate once, read the answer back on every later run |
 | `option-picker.hb` | A real program: read, branch, write into `ctx.cache` |
 | `context-permissions.hb` | `ctx`, `chctx chperm`, `withctx` — capability narrowing |
 | `async-basics.hb` | Two reads in flight at once, awaited implicitly |

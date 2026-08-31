@@ -52,7 +52,7 @@ If a freshly built binary refuses to start with *"An Application Control policy 
 - **`./hb`** (no arguments) - a line-based REPL. Type an expression, then an empty line to evaluate it; `:q` to quit.
 - **`./hb -a path/to/program.hb`** - print the full AST before evaluating. Works with `-e` too.
 - **`./hb -i`** - the live terminal editor (needs a real terminal, not a pipe).
-- **`./hb --cache-dir <path> ...`** - override where `ctx.cache` writes to (defaults to your XDG cache dir; `%LOCALAPPDATA%\hashedbuild` on Windows).
+- **`./hb --cache-dir <path> ...`** - override where `ctx.cache` writes to, and where `cached` keeps its entries (defaults to your XDG cache dir; `%LOCALAPPDATA%\hashedbuild` on Windows). Handy for a throwaway cache: point it somewhere temporary and `cached` starts from nothing.
 - **`./hb --help`**, **`./hb --version`** - usage and version.
 
 ## Try each part of the video

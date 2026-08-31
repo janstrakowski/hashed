@@ -40,6 +40,12 @@ DIR_RIGHTS :: wasi.rights_t{
   .FD_READDIR, .FD_FILESTAT_GET,
   .PATH_OPEN, .PATH_CREATE_FILE, .PATH_CREATE_DIRECTORY, .PATH_FILESTAT_GET,
   .PATH_READLINK, .PATH_SYMLINK, .PATH_UNLINK_FILE, .PATH_REMOVE_DIRECTORY,
+  // Both halves of a rename, for §15's cache: an entry is built under a
+  // temporary name and renamed into place, and preview1 checks the source
+  // descriptor for one right and the destination's for the other. Asking for
+  // only one gets ENOTCAPABLE, which surfaces as a bare "Access" - which is
+  // exactly what the WASI smoke test caught.
+  .PATH_RENAME_SOURCE, .PATH_RENAME_TARGET,
 }
 
 @(private = "file")
@@ -350,4 +356,41 @@ fs_list_dir :: proc(path: string, allocator := context.allocator) -> ([]Fs_Entry
     if int(used) < len(buf) do break
   }
   return entries[:], .None
+}
+
+// ---- directory-as-a-value operations (§3's directory hash, §15's cached) ---------
+
+
+fs_mkdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  dir, rel, ok := rebase_absolute(parent, name)
+  if !ok || dir == FS_INVALID_FD do return .Access
+  return to_fs_error(wasi.path_create_directory(wasi.fd_t(dir), rel))
+}
+
+fs_rename_at :: proc(parent: Fs_Fd, old_name: string, new_name: string) -> Fs_Error {
+  old_dir, old_rel, old_ok := rebase_absolute(parent, old_name)
+  new_dir, new_rel, new_ok := rebase_absolute(parent, new_name)
+  if !old_ok || !new_ok || old_dir == FS_INVALID_FD || new_dir == FS_INVALID_FD do return .Access
+  return to_fs_error(wasi.path_rename(wasi.fd_t(old_dir), old_rel, wasi.fd_t(new_dir), new_rel))
+}
+
+fs_unlink_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  dir, rel, ok := rebase_absolute(parent, name)
+  if !ok || dir == FS_INVALID_FD do return .Access
+  return to_fs_error(wasi.path_unlink_file(wasi.fd_t(dir), rel))
+}
+
+fs_rmdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  dir, rel, ok := rebase_absolute(parent, name)
+  if !ok || dir == FS_INVALID_FD do return .Access
+  return to_fs_error(wasi.path_remove_directory(wasi.fd_t(dir), rel))
+}
+
+// preview1 has no chmod of any kind, and nothing to set - see Fs_Entry. The
+// caller only ever asks for a bit it just read back as set, and this target
+// never reads one as set, so succeeding without doing anything is exactly
+// right rather than a swallowed failure. It cannot affect a digest either
+// way: §3 hashes no permission bit.
+fs_set_executable_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
+  return .None
 }

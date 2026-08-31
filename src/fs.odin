@@ -50,6 +50,16 @@ FS_INVALID_FD :: Fs_Fd(-1)
 //   fs_open_dir_path        open a directory by path - ctx.cache only (§9)
 //   fs_make_dirs            mkdir -p by path - ctx.cache only (§9)
 //   fs_list_dir             names in a directory - the editor's file pickers
+//
+// The five below were added for §15's `cached` (see cache_store.odin), which is
+// the first thing here that has to write a whole directory back out again.
+// Reading one is `fs_list_entries_at`, further down.
+//
+//   fs_mkdir_at             create one directory, failing if it exists
+//   fs_rename_at            rename within one directory - the atomic commit
+//   fs_unlink_at            remove one non-directory name
+//   fs_rmdir_at             remove one empty directory
+//   fs_set_executable_at    set the owner-execute bit, where the target has one
 
 // One entry of a directory listing. Deliberately minimal: the editor wants
 // names, and whether to descend.
@@ -59,9 +69,10 @@ Fs_Entry :: struct {
 }
 
 // One entry of a directory in the detail SPEC.md §3's directory hash needs:
-// which of the three shapes it is, and - for a regular file - whether it is
-// executable. Distinct from Fs_Entry above, which answers the editor's much
-// smaller question (a name, and whether to descend into it).
+// which of the three shapes it is - plus, for a regular file, whether it is
+// executable, which §3 does not hash but §15's cache preserves. Distinct from
+// Fs_Entry above, which answers the editor's much smaller question (a name,
+// and whether to descend into it).
 //
 // `kind` is decided **without following symlinks**: §3 hashes a link entry as
 // its target string rather than resolving through it, so a link *to* a
@@ -76,11 +87,13 @@ Fs_Node_Kind :: enum {
 Fs_Dir_Entry :: struct {
   name:          string,
   kind:          Fs_Node_Kind,
-  // .Regular only. **False wherever the target cannot report the bit**, rather
-  // than a third "unknown" state: WASI's filestat carries no permission bits
-  // at all and Windows has no POSIX exec bit, so on those two targets this is
-  // always false. That is the language's answer, not a gap - see hash.odin's
-  // directory section and LANGUAGE.md.
+  // .Regular only, and **not part of any hash**: §3 carries no permission bit
+  // (see hash.odin's directory section), precisely because this is the one
+  // field a target can be unable to answer - WASI's filestat has no permission
+  // bits at all and Windows has no POSIX exec bit, so on those two it is always
+  // false. It exists for cache_store.odin, which puts the bit back when it
+  // copies a tree, so that caching a build output does not strip it. Anything
+  // asking what a directory *is* should ignore this field.
   is_executable: bool,
 }
 
