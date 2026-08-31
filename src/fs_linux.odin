@@ -155,6 +155,64 @@ fs_make_dirs :: proc(path: string) -> Fs_Error {
   return .None
 }
 
+// ---- the directory hash's listing (SPEC.md §3) -------------------------------
+
+// getdents64 against a descriptor, plus one fstatat per name for the kind and
+// the mode. The d_type getdents already reports is deliberately *not* trusted
+// on its own: it is documented as possibly .UNKNOWN (some filesystems fill it
+// in, some don't), and the exec bit needs the stat regardless - so one call
+// answers both questions rather than two answering one each.
+//
+// The listing is done through a *fresh* descriptor rather than `parent`
+// itself. getdents advances the descriptor's own offset, and `parent` is a
+// long-lived handle a program keeps using as a `.dir` (§16) - reading its
+// entries must not be something the program can observe afterwards. Opening
+// "." relative to it costs one syscall and keeps the caller's handle exactly
+// as it was found.
+fs_list_entries_at :: proc(parent: Fs_Fd, allocator := context.allocator) -> ([]Fs_Dir_Entry, Fs_Error) {
+  listing, open_err := open_at(parent, ".", {.DIRECTORY})
+  if open_err != .None do return nil, open_err
+  defer fs_close(listing)
+
+  entries := make([dynamic]Fs_Dir_Entry, 0, 16, allocator)
+  buf := make([]u8, 4096, context.temp_allocator)
+  for {
+    written, err := linux.getdents(linux.Fd(listing), buf)
+    if err != .NONE do return entries[:], fs_errno_to_error(err)
+    if written == 0 do break
+
+    offset := 0
+    for dirent in linux.dirent_iterate_buf(buf[:written], &offset) {
+      name := linux.dirent_name(dirent)
+      if name == "." || name == ".." do continue
+
+      cname := strings.clone_to_cstring(name, context.temp_allocator)
+      stat: linux.Stat
+      // AT_SYMLINK_NOFOLLOW: a link is hashed as its target string (§3), so
+      // the entry's own type is what matters, never what it points at.
+      if serr := linux.fstatat(linux.Fd(listing), cname, &stat, {.SYMLINK_NOFOLLOW}); serr != .NONE {
+        return entries[:], fs_errno_to_error(serr)
+      }
+
+      kind := Fs_Node_Kind.Other
+      switch {
+      case linux.S_ISREG(stat.mode): kind = .Regular
+      case linux.S_ISDIR(stat.mode): kind = .Directory
+      case linux.S_ISLNK(stat.mode): kind = .Symlink
+      }
+      append(&entries, Fs_Dir_Entry {
+        name          = strings.clone(name, allocator),
+        kind          = kind,
+        // §3 hashes "the executable flag only - not full POSIX mode", and the
+        // owner bit is the one that means "this is a program". Group and other
+        // are part of who may run it, which is not part of what it is.
+        is_executable = kind == .Regular && .IXUSR in stat.mode,
+      })
+    }
+  }
+  return entries[:], .None
+}
+
 // Listing goes through core:os here, which is a perfectly good directory
 // reader on a platform that has a working directory. (WASI does not, which is
 // why fs_wasi.odin implements this against the preopen table instead.)

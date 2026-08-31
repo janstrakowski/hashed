@@ -19,6 +19,20 @@ run :: proc(src: string) -> (val: Value, ok: bool, err: string) {
   return val, ok, interp.error_message
 }
 
+// Like `run`, but the AST and the interpreter are heap-allocated and kept: a
+// Function's digest is the shape of its body, which is a subtree of the
+// program it was written in, so hashing one after the run needs both alive.
+@(private = "file")
+run_keeping_the_program :: proc(src: string) -> (val: Value, interp: ^Interpreter, ok: bool) {
+  ast := new(ast_t)
+  ast^ = parse(source_t{name = "test", n_bytes = u64(len(src)), data = raw_data(src)}, ast_t{})
+  interp = new(Interpreter)
+  interp.ast = ast
+  interp.src = src
+  val, ok = eval(interp, ast.root, env_make_child(nil))
+  return
+}
+
 @(private = "file")
 expect_prints :: proc(t: ^testing.T, src: string, want: string) {
   val, ok, err := run(src)
@@ -246,15 +260,119 @@ test_printing_leaves_acyclic_sharing_alone :: proc(t: ^testing.T) {
 // ---- hashing -----------------------------------------------------------------
 
 @(test)
-test_hashing_a_cyclic_value_is_refused :: proc(t: ^testing.T) {
-  // §3 pins what a digest encodes, so a cyclic one is a spec decision rather
-  // than an implementation detail - until it is made, this must fail cleanly
-  // rather than recurse forever. See hash.odin.
+test_hashing_a_cyclic_value_terminates :: proc(t: ^testing.T) {
+  // The Merkle fold has no bottom to start from here, so this goes through
+  // hash_cyclic.odin instead. What it must not do is recurse forever.
   val, ok, err := run("let rec p { .n = 1, .self = p }; p")
   testing.expect(t, ok, err)
   if !ok do return
   _, herr := value_digest(val)
-  testing.expect_value(t, herr, Hash_Error.Cyclic)
+  testing.expect_value(t, herr.kind, Hash_Error.None)
+}
+
+@(test)
+test_cyclic_digests_agree_with_cyclic_equality :: proc(t: ^testing.T) {
+  // The property the whole of hash_cyclic.odin exists for: values_equal
+  // compares cycles by bisimulation, so the digest has to be canonical under
+  // bisimulation too, or a content-addressed language would have equal values
+  // that hash apart. These are the same three pairs test_cyclic_equality_is_
+  // bisimulation asserts equality for.
+  same := []([2]string) {
+    // Two separately built cycles of the same shape.
+    {"let rec p { .n = 1, .self = p }; p", "let rec q { .n = 1, .self = q }; q"},
+    // A 1-cycle and a 2-cycle that unroll to the same infinite tree.
+    {
+      "let rec p { .n = 1, .self = p }; p",
+      "let rec p { .n = 1, .self = { .n = 1, .self = p } }; p",
+    },
+  }
+  for pair in same {
+    a, aok, aerr := run(pair[0])
+    testing.expect(t, aok, aerr)
+    b, bok, berr := run(pair[1])
+    testing.expect(t, bok, berr)
+    if !aok || !bok do continue
+
+    testing.expect(t, values_equal(a, b), "the two are equal, so this pair is the interesting one")
+    da, ea := value_digest(a)
+    db, eb := value_digest(b)
+    testing.expect_value(t, ea.kind, Hash_Error.None)
+    testing.expect_value(t, eb.kind, Hash_Error.None)
+    testing.expect(t, da == db, "equal cyclic values must hash alike")
+  }
+}
+
+@(test)
+test_the_two_hash_paths_agree_on_acyclic_values :: proc(t: ^testing.T) {
+  // §6 asks for *one* encoding, and there are two implementations of it: the
+  // Merkle fold (hash.odin) and the graph algorithm (hash_cyclic.odin), which
+  // takes over the moment a value contains a cycle anywhere. The parts of that
+  // value which are *not* cyclic must come out the same either way - otherwise
+  // a Table's digest would depend on whether some unrelated corner of the
+  // value it was reached through happened to loop.
+  //
+  // Asked of the two procedures directly, because from inside the language the
+  // fold always wins for an acyclic value and the disagreement would be
+  // invisible until something cyclic wrapped it.
+  sources := []string {
+    `{ .a = 1, .b = { .c = "x", .d = 2.5 } }`,
+    `{ 1, 2, 3 }`,
+    // A closure, whose captures the two paths order independently - the one
+    // place they have actually drifted.
+    `let alpha 1; let zeta 2; let beta 3; { .f = func (#arg + alpha + zeta + beta) }`,
+    `empty`,
+  }
+  for src in sources {
+    // The interpreter has to outlive the evaluation here: a closure's digest
+    // is its body's shape, and the body is a subtree of that program's AST.
+    val, interp, ok := run_keeping_the_program(src)
+    testing.expect(t, ok, interp.error_message)
+    if !ok do continue
+
+    folded, ferr := value_digest(val, interp)
+    graphed, gerr := value_digest_cyclic(val, interp)
+    testing.expect_value(t, ferr.kind, Hash_Error.None)
+    testing.expect_value(t, gerr.kind, Hash_Error.None)
+    testing.expect(t, folded == graphed, "the fold and the graph must encode the same value the same way")
+  }
+}
+
+@(test)
+test_cyclic_digests_separate_unequal_cycles :: proc(t: ^testing.T) {
+  // Canonical must not mean constant: two cycles that unroll differently have
+  // to hash apart, or every cyclic value would share one digest.
+  a, aok, aerr := run("let rec p { .n = 1, .self = p }; p")
+  testing.expect(t, aok, aerr)
+  b, bok, berr := run("let rec p { .n = 2, .self = p }; p")
+  testing.expect(t, bok, berr)
+  if !aok || !bok do return
+  da, _ := value_digest(a)
+  db, _ := value_digest(b)
+  testing.expect(t, da != db, "different cycles must hash differently")
+}
+
+@(test)
+test_a_cycle_hashes_the_same_from_either_end :: proc(t: ^testing.T) {
+  // The entry-point independence the canonical form is for: `.a` and `.b` of a
+  // two-node cycle are not bisimilar (their entries differ), but reaching the
+  // *same* node down two different paths must give one digest either way.
+  val, ok, err := run("let rec p { .a = { .tag = 1, .back = p }, .b = p.a }; p")
+  testing.expect(t, ok, err)
+  if !ok do return
+  table, is_table := val.(^Table_Value)
+  testing.expect(t, is_table)
+  if !is_table do return
+
+  a, has_a := table_find(table, "a")
+  b, has_b := table_find(table, "b")
+  testing.expect(t, has_a && has_b)
+  if !has_a || !has_b do return
+
+  da, ea := value_digest(a)
+  db, eb := value_digest(b)
+  testing.expect_value(t, ea.kind, Hash_Error.None)
+  testing.expect_value(t, eb.kind, Hash_Error.None)
+  testing.expect(t, da == db, "one node reached two ways is one digest")
 }
 
 @(test)
@@ -268,7 +386,7 @@ test_hashing_acyclic_values_is_unaffected :: proc(t: ^testing.T) {
   if !aok || !bok do return
   da, ea := value_digest(a)
   db, eb := value_digest(b)
-  testing.expect_value(t, ea, Hash_Error.None)
-  testing.expect_value(t, eb, Hash_Error.None)
+  testing.expect_value(t, ea.kind, Hash_Error.None)
+  testing.expect_value(t, eb.kind, Hash_Error.None)
   testing.expect(t, da == db, "equal values must hash alike")
 }

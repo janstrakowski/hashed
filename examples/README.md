@@ -56,6 +56,9 @@ prose around each of these.
 | `files-sandboxed.hb` | Directory handles, contained sub-paths, `filetext`, path display |
 | `files-symlink.hb` | `readlink` — and why symlinks aren't values of their own |
 | `hashing.hb` | `sha256`, and the content identity that makes two Files one value |
+| `hashing-directories.hb` | A directory's hash: its entries, and the one digest that reads |
+| `hashing-functions.hb` | A closure's hash: its body's shape and the values it captures |
+| `hashing-cyclic.hb` | Hashing a value that reaches itself, canonically |
 | `option-picker.hb` | A real program: read, branch, write into `ctx.cache` |
 | `context-permissions.hb` | `ctx`, `chctx chperm`, `withctx` — capability narrowing |
 | `async-basics.hb` | Two reads in flight at once, awaited implicitly |

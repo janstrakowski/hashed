@@ -406,13 +406,88 @@ same value when their bytes match, however they were reached.
 (loadfile "a.txt") == (loadfile "copy-of-a.txt")   // true, if the bytes match
 ```
 
-Three kinds of value have no digest yet, and say so rather than inventing one:
-a **directory** `File` (§3 hashes one over its entries including each file's
-executable bit, which only the Linux target can report — see below), a
-`Function`, and
-`ctx.cache`. Hashing one is a fatal failure like any other (§8).
-
 → `examples/hashing.hb` (§3, §6, §15)
+
+### Directories
+
+A **directory** `File` hashes over its entries (§3), sorted by name so the
+digest is the tree's rather than the order the filesystem listed it in. Each
+entry contributes its name, plus its content hash and executable bit for a
+regular file, its own directory hash for a sub-directory, or its target string
+for a symlink — which is never followed, so a link to a directory is a link,
+not a directory.
+
+```hashedbuild
+sha256 loadfile "examples"                     // the digest of a whole tree
+(loadfile "examples") == (loadfile "examples") // true — one tree, two handles
+```
+
+Two things about it are worth knowing before you rely on it:
+
+- **It reads the disk, and that read needs `io`.** Everything else hashes what
+  the value already holds; a directory's children are on the filesystem. The
+  read happens at the first `sha256` or comparison that needs the digest and is
+  checked against `ctx.permissions.io` at that moment, so a context that
+  revoked `io` can't pull a tree's contents through a handle it was handed. It
+  happens once: a `File` is an immutable handle, so the digest is fixed from
+  then on, and seeing a change means loading the directory again.
+- **The executable bit is Linux-only, and a tree containing one hashes
+  differently elsewhere.** WASI's `filestat` has no permission bits and Windows
+  has no POSIX executable bit, so on those targets every file hashes as
+  non-executable. That is the language's answer rather than a gap — a Windows
+  checkout genuinely has no executable bits, and reporting one would be
+  inventing it, the same position git takes with `core.filemode`. If you need a
+  digest that agrees across all three, keep executables out of the tree.
+
+An entry that is neither a file, a directory, nor a symlink — a socket, a
+device node — fails rather than being skipped, since a digest that ignored part
+of a tree would call two different trees the same value.
+
+→ `examples/hashing-directories.hb` (§3, §9)
+
+### Functions
+
+A **closure** hashes as the shape of its body plus the values it captures
+(§15) — so two functions hash alike exactly when they would compute the same
+thing, and what else happened to be in scope where they were written doesn't
+enter into it:
+
+```hashedbuild
+(sha256 (let x 1; let unrelated "zz"; func (#arg + x)))
+  == (sha256 (let x 1; func (#arg + x)))            // true
+(sha256 (let x 1; func (#arg + x)))
+  == (sha256 (let x 2; func (#arg + x)))            // false — a different capture
+```
+
+The digest is of the program, though, not of what the program means: renaming a
+local or respelling a literal gives a different function. A builtin has no body
+to take a shape from, so it hashes as the operation it is — and a partially
+applied one carries what it was applied to, which is why two `chperm` results
+differ exactly when they grant different things.
+
+→ `examples/hashing-functions.hb` (§15, §16)
+
+### Values that reach themselves
+
+A cyclic `let rec` value (see above) hashes too, but not by the same route: an
+ordinary digest folds up from the leaves, and a cycle has none. Such a value is
+instead reduced to a canonical form of the cycle and hashed from that, with two
+properties that are the whole reason for the exercise — the digest doesn't
+depend on which node you started from, and it doesn't depend on how the cycle
+was written:
+
+```hashedbuild
+let rec g { .n = 1, .next = g };
+let rec h { .a = { .n = 1, .next = h.b }, .b = { .n = 1, .next = h.a } };
+(g == h.a) and ((sha256 g) == (sha256 h.a))         // true — both halves
+```
+
+That pairing is the requirement, not a coincidence. `g` and `h.a` are *equal*
+under §6 because unrolling either gives the same infinite tree, so a digest
+that told them apart would give a content-addressed language two addresses for
+one value.
+
+→ `examples/hashing-cyclic.hb` (§6, §10, §15)
 
 ## Context and permissions
 
@@ -468,22 +543,12 @@ uncatchable, but the work already in flight finishes first.
 Parsed, specified, and rejected by the evaluator with "not implemented":
 `import` and `cached`.
 
-Partly built: **hashing**. `sha256` works for every value except a directory
-`File`, a `Function`, and `ctx.cache`. The directory case is the interesting
-one — `SPEC.md` §3 defines a directory's hash over its entries including each
-file's executable bit, and two of the three targets cannot report one: WASI's
-`filestat` has no permission bits at all, and Windows has no POSIX exec bit.
-So there is no way to compute the specified digest everywhere the interpreter
-runs. Building it means first deciding what a directory hashes as somewhere
-that cannot see an exec bit. `Function` is unbuilt because §15 needs it for `cached` but never
-says how a closure is encoded. A **cyclic value** (above) is the third case, and
-unbuilt for a related reason: the digest is a Merkle fold, a composite's hash
-built from its children's, and a cycle has no bottom to start from. `SPEC.md`
-§6 describes what the answer looks like — components hashed canonically, so the
-digest does not depend on where the walk entered the cycle — but §3 pins what a
-digest encodes, so it is a spec decision first. `sha256` of one fails cleanly
-meanwhile. Equality over cyclic values *is* built, and does not depend on any of
-this.
+**Hashing is complete**: `sha256` answers for every value, including the three
+that used to be listed here — a directory `File`, a `Function`, and a cyclic
+value — plus `ctx.cache`. See the Hashing section above for what each of them
+encodes, and for the one place the answer is target-specific: a directory
+containing an executable hashes differently on Windows and WASI than on Linux,
+because neither of those has an executable bit to report.
 
 Also absent: `true`/`false` literals, loops of any kind (recursion is the only
 repetition there is — see above), a `Bytes`-returning counterpart to

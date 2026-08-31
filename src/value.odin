@@ -33,6 +33,10 @@ Function_Value :: struct {
   ctx:           Value,     // captured `ctx` (SPEC.md §9) at the point the closure was made - see eval.odin's call_function
   native:        Native_Fn, // non-nil for a builtin (§16) - call_function invokes this instead of evaluating body/env
   native_closure: Value,    // passed as `closure` to `native`, if any
+  // Builtins only: the operation's name, which is what one hashes as
+  // (hash_function.odin). Empty for a closure, whose identity is its body's
+  // shape and its captures instead.
+  name:          string,
 }
 
 // SPEC.md §3's File: a handle to a filesystem entity, file or directory only
@@ -53,6 +57,20 @@ File_Value :: struct {
   // - a program holds the handle without ever learning where its data lives.
   // Empty only if that resolution failed (see builtins_fs.odin's path_of_fd).
   display_path:       string,
+
+  // Directory only: §3's directory hash, read off the disk the first time
+  // anything asks for it and kept thereafter (hash.odin). A Regular file's
+  // content is already in `content`, so it needs no such field - this is the
+  // one kind whose digest is not a function of what the value already holds.
+  //
+  // Memoised rather than recomputed because §3 calls a File an *immutable*
+  // handle: a value whose digest changed under a program because someone
+  // touched the tree would not be one. The first read is therefore the read,
+  // and a later `sha256` of the same value answers the same thing forever.
+  // (A fresh `loadfile` of the same path is a new value, and sees the tree as
+  // it is then - which is how a build observes a change.)
+  dir_digest:         Value_Digest,
+  dir_digest_known:   bool,
 }
 
 // SPEC.md §9's ctx.cache: a write-only, content-addressed blob store rooted
@@ -280,12 +298,19 @@ values_equal_bisim :: proc(a: Value, b: Value, bs: ^Bisim) -> bool {
     if !ok do return false
     // SPEC.md §3: a File's identity is pure content, independent of path -
     // two Files built from different paths are equal whenever their content
-    // matches. A Regular file compares by its content digest (hash.odin).
-    // A Directory still compares by reference: §3 hashes one over its entries
-    // including each file's executable bit, which only the Linux target can
-    // report - WASI's filestat has no permission bits at all, and Windows has
-    // no POSIX exec bit - so that half isn't built (see LANGUAGE.md).
-    if x.kind == .Directory || y.kind == .Directory do return x == y
+    // matches. A Regular file compares by its content digest, a Directory by
+    // §3's entry-wise directory digest (hash.odin).
+    //
+    // A directory's digest is read off the disk on first demand, and reading
+    // is an I/O operation - so it needs the `io` permission and an
+    // interpreter to ask, neither of which exists down here (this is reached
+    // from table_find, on the hot path of every field access). The evaluator
+    // therefore warms both operands before comparing them (eval.odin's
+    // hash_materialize), and what is left here is a pure question about
+    // memoised digests. The `x == y` shortcut is what makes a directory still
+    // compare equal to itself if that warming was skipped or refused.
+    if x.kind != y.kind do return false
+    if x == y do return true
     return values_hash_equal(x, y)
   case ^Cache_Value:
     y, ok := bv.(^Cache_Value)

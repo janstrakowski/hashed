@@ -66,9 +66,15 @@ resolve_cache_dir :: proc(override: string) -> string {
   return strings.concatenate({os.get_env_alloc("HOME", context.temp_allocator), "/.cache/hashedbuild"})
 }
 
+// `name` is what the builtin hashes as (hash_function.odin): a native has no
+// body to take a shape from, so its identity is the operation it *is*, and
+// the name is how that gets written down. It is the binding's own spelling
+// below, and must stay stable for the same reason a tag byte must - see the
+// note on renumbering in hash.odin.
 @(private = "file")
-new_native_function :: proc(fn: Native_Fn, closure: Value = nil) -> Value {
+new_native_function :: proc(name: string, fn: Native_Fn, closure: Value = nil) -> Value {
   f := new(Function_Value)
+  f.name = name
   f.native = fn
   f.native_closure = closure
   return f
@@ -78,16 +84,18 @@ new_native_function :: proc(fn: Native_Fn, closure: Value = nil) -> Value {
 // the filesystem builtins, pre-bound by name (§16).
 make_global_env :: proc() -> ^Env {
   env := env_make_child(nil)
-  env_bind(env, "loadfile", new_native_function(builtin_loadfile))
-  env_bind(env, "createfile", new_native_function(builtin_createfile))
-  env_bind(env, "symlink", new_native_function(builtin_symlink))
-  env_bind(env, "readlink", new_native_function(builtin_readlink))
-  env_bind(env, "chperm", new_native_function(builtin_chperm))
-  env_bind(env, "filetext", new_native_function(builtin_filetext))
+  env_bind(env, "loadfile", new_native_function("loadfile", builtin_loadfile))
+  env_bind(env, "createfile", new_native_function("createfile", builtin_createfile))
+  env_bind(env, "symlink", new_native_function("symlink", builtin_symlink))
+  env_bind(env, "readlink", new_native_function("readlink", builtin_readlink))
+  env_bind(env, "chperm", new_native_function("chperm", builtin_chperm))
+  env_bind(env, "filetext", new_native_function("filetext", builtin_filetext))
   return env
 }
 
-@(private = "file")
+// Package-visible rather than file-private because hash.odin asks it too: a
+// directory File's digest is read off the disk the first time anything needs
+// it, and that read is an I/O operation like any other here (SPEC.md §3/§9).
 ctx_allows_io :: proc(interp: ^Interpreter) -> bool {
   t, is_table := interp.current_ctx.(^Table_Value)
   if !is_table do return false
@@ -627,7 +635,7 @@ builtin_chperm :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, bo
   closure := new(Table_Value)
   append(&closure.entries, Table_Entry_Value{key = "name", value = name_str})
   append(&closure.entries, Table_Entry_Value{key = "enabled", value = enabled_bool})
-  return new_native_function(apply_chperm, closure), true
+  return new_native_function("chperm.apply", apply_chperm, closure), true
 }
 
 // The actual oldctx -> newctx function chperm returns: a copy of `old_ctx`
