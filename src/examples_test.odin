@@ -33,7 +33,7 @@ EXAMPLE_CASES := []Example_Case{
   {"async-basics.hb", `"This is the payload for option A.\nThis is the payload for option B.\n"`},
   {"async-branching.hb", `"medium"`},
   {"async-table.hb", `{a: 2, b: 6, c: "This is the payload for option A.\n"}`},
-  {"cached.hb", "{answer: 42, asking_again_agrees: true, per_argument: {small: 2, large: 11}, file_survives_the_round_trip: true}"},
+  {"cached.hb", "{answer: 42, asking_again_agrees: true, per_argument: {small: 2, large: 11}, file_survives_the_round_trip: true, a_cycle_survives_too: true}"},
   {"check-and-invariants.hb", "100"},
   {"comparison-and-logic.hb", "{ordered: true, both: true, either: true, mixed: false}"},
   {"context-permissions.hb", "{ambient: {io: nothing}, io_denied: {}, replaced: {}, still_ambient: {io: nothing}}"},

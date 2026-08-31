@@ -20,9 +20,13 @@
 // HashedBuild text in `sha256-<key>.hb/value.hb`, with any `File` it holds
 // stored beside it and referred to by name.
 //
+// A value that reaches itself (§10) is written with a label on each repeated
+// Table and a back-reference after it - `node "1" { ..., .self = ref "1" }` -
+// which is what gives a cycle a finite written form.
+//
 // Evaluates to
 // { answer: 42, asking_again_agrees: true, per_argument: { small: 2, large: 11 },
-//   file_survives_the_round_trip: true }.
+//   file_survives_the_round_trip: true, a_cycle_survives_too: true }.
 
 let answer cached (6 * 7);
 
@@ -38,9 +42,16 @@ let bump func (cached (#arg + 1));
 let file_survives_the_round_trip
   ((sha256 cached (loadfile "optiona.txt")) == (sha256 loadfile "optiona.txt"));
 
+// So does a value that reaches itself. The comparison is the whole test: §6
+// compares cyclic values by bisimulation, so a back-edge that came back as an
+// unfolding of the wrong depth would not be equal to what was stored.
+let rec ring { .name = "ring", .self = ring };
+let a_cycle_survives_too ((sha256 cached ring) == (sha256 ring));
+
 {
   .answer = answer,
   .asking_again_agrees = asking_again_agrees,
   .per_argument = { .small = bump 1, .large = bump 10 },
   .file_survives_the_round_trip = file_survives_the_round_trip,
+  .a_cycle_survives_too = a_cycle_survives_too,
 }
