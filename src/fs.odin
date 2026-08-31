@@ -71,12 +71,13 @@ FS_INVALID_FD :: Fs_Fd(-1)
 // `fs_list_dir` (the editor's file pickers) does not, and leaves both
 // `is_symlink` and `is_executable` false - it never fed anything that cares.
 //
-// `is_executable` is §3's "executable flag only - not full POSIX mode", and
-// is the one field a target can be unable to answer: WASI's filestat carries
-// no permission bits and Windows has no POSIX execute bit, so both report
-// false always. That is a truthful report of what those filesystems say, and
-// it is why §3 now spells out that a tree containing an executable hashes
-// differently there than on Linux.
+// `is_executable` is *not* part of any hash - §3 carries no permission bit at
+// all (resolved 2026-08-31), precisely because it is the one field a target
+// can be unable to answer: WASI's filestat carries no permission bits and
+// Windows has no POSIX execute bit, so both report false always. It exists for
+// cache_store.odin, which puts the bit back when it copies a tree, so that
+// caching a build output does not quietly strip it. A reader that only wants
+// to know what a directory *is* should ignore this field.
 Fs_Entry :: struct {
   name:          string,
   is_dir:        bool,

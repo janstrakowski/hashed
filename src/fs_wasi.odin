@@ -316,7 +316,8 @@ fs_list_dir :: proc(path: string, allocator := context.allocator) -> ([]Fs_Entry
 // classification comes straight out of it.
 //
 // `is_executable` is always false here: preview1's filestat has no permission
-// bits at all, so this target cannot report one. See fs.odin's Fs_Entry.
+// bits at all, so this target cannot report one. Nothing is lost by that -
+// no hash reads it (see fs.odin's Fs_Entry).
 fs_list_dir_at :: proc(dir: Fs_Fd, allocator := context.allocator) -> ([]Fs_Entry, Fs_Error) {
   entries := make([dynamic]Fs_Entry, 0, 16, allocator)
   buf := make([]u8, 4096, context.temp_allocator)
@@ -378,7 +379,8 @@ fs_rmdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
 // preview1 has no chmod of any kind, and nothing to set - see Fs_Entry. The
 // caller only ever asks for a bit it just read back as set, and this target
 // never reads one as set, so succeeding without doing anything is exactly
-// right rather than a swallowed failure.
+// right rather than a swallowed failure. It cannot affect a digest either
+// way: §3 hashes no permission bit.
 fs_set_executable_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
   return .None
 }

@@ -345,12 +345,13 @@ same value when their bytes match, however they were reached.
 one when `cached` was built, since `cached` needs them:
 
 - A **directory** `File` hashes over its entries — each name, each file's
-  content and executable bit, each subdirectory's own hash, and each symlink's
-  target string, unresolved (§3). Sorted by name, so readdir order doesn't
-  matter. One caveat, and it is a real one: **only Linux can report an
-  executable bit.** WASI's `filestat` has no permission bits and Windows has no
-  POSIX execute bit, so both hash every entry as non-executable — a tree
-  containing an executable therefore hashes differently there than on Linux.
+  content, each subdirectory's own hash, and each symlink's target string,
+  unresolved (§3). Sorted by name, so readdir order doesn't matter. **No
+  permission bits**, deliberately: only Linux can report an executable bit, so
+  hashing one would make the same source tree two different values depending on
+  which machine checked it out. (`cached` still preserves the bit when it copies
+  a tree — that is the store being faithful, not the bit being part of the
+  value.)
 - A **`Function`** hashes as its code (the shape of the expression, so
   reformatting it or writing a comment inside changes nothing), its captured
   `ctx`, and the values of the names it uses.
@@ -360,6 +361,12 @@ one when `cached` was built, since `cached` needs them:
 
 Hashing a directory reads the whole tree, so `sha256 <directory>` and `==`
 between two directory `File`s are filesystem walks, not cheap comparisons.
+
+One cross-platform gotcha that is *not* ours: a git checkout on Windows without
+Developer Mode turns a committed symlink into an ordinary file holding the
+target as text. That is a genuine difference in what is on disk, so it hashes
+differently — the same reason `examples/files-symlink.hb` skips itself in such
+a checkout.
 
 → `examples/hashing.hb` (§3, §6, §15)
 
@@ -479,10 +486,8 @@ Parsed, specified, and rejected by the evaluator with "not implemented":
 `import`.
 
 Hashing is complete: every kind of value has a digest, including the three
-(directory `File`, `Function`, `ctx.cache`) that used to fail by name. The one
-thing to know about it is not a gap but a difference between targets — the
-executable bit in a directory's hash, which only Linux can report. See
-"Hashing" above.
+(directory `File`, `Function`, `ctx.cache`) that used to fail by name, and the
+digest a given value has is the same on every target. See "Hashing" above.
 
 Also absent: `true`/`false` literals, loops of any kind (recursion is the only
 repetition there is — see above), a `Bytes`-returning counterpart to

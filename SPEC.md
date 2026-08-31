@@ -42,24 +42,32 @@ A condition (of `then`, `and`, `or`, `is`) can itself be, or contain, an async e
 
 **Hashing / equality / ordering.** A `File`'s identity is **pure content, independent of path.** Where it was read from is how the value was obtained, not part of the value itself — two `File`s built from different paths are equal whenever their content matches. Ordering follows the same generic total-order mechanism as every other value (§6), keyed off this hash.
 
-- A **regular file**'s hash is just `hash(content_bytes)`. Its own permission bits (e.g. executable) are *not* part of a bare `File` value's identity — permissions only become relevant as metadata about how the file sits inside a directory (next point).
+- A **regular file**'s hash is just `hash(content_bytes)`. Its own permission bits are *not* part of its identity — and, as of 2026-08-31, not part of a directory entry's either (next point).
 - A **directory**'s hash is computed over its entries, sorted by name for determinism (independent of filesystem readdir order):
   ```
   dir_entry_hash(name, entry) =
-    hash(name, "file",    content_hash, is_executable)   // executable flag only — not full POSIX mode
-    hash(name, "dir",     child_dir_hash)                 // directories carry no exec bit
-    hash(name, "symlink", target_path_string)             // target is NOT followed/resolved
+    hash(name, "file",    content_hash)       // no permission bits, of any kind
+    hash(name, "dir",     child_dir_hash)
+    hash(name, "symlink", target_path_string) // target is NOT followed/resolved
   dir_hash = hash(sorted [dir_entry_hash(name, entry) for each entry])
   ```
   A symlink entry hashes the link itself (its target path string) rather than resolving through it — consistent with symlink handling being a property of the containing directory, not a standalone `File` value in its own right.
 
-  **The executable bit where it cannot be read (resolved 2026-08-31).** Only Linux reports one: WASI's `filestat` carries no permission bits at all, and Windows has no POSIX execute bit. On both, every entry hashes as **non-executable** — a truthful report of what those filesystems say, rather than a refusal to hash or a bit invented from something else. The consequence is stated here rather than buried: a tree containing an executable file hashes differently on Linux than on WASI or Windows, so a §15 cache directory carried between those platforms misses on any entry whose value is such a directory. Both alternatives were worse — dropping the bit from the hash makes two genuinely different trees one value on the target where the difference is real, and implementing the hash only on Linux would take directory values and `cached` away from the playground and the Windows target outright. This was the open question that kept the directory hash unimplemented; it is settled, and the hash is built.
+  **No permission bits (resolved 2026-08-31).** An earlier draft of this section hashed an executable flag alongside a file entry's content — "executable flag only, not full POSIX mode". It is gone, and no permission bit of any kind is part of a value's identity.
+
+  The reason is that only Linux can report one. WASI's `filestat` carries no permission bits at all, and Windows has no POSIX execute bit; neither can be made to answer, and neither can be given a stand-in (an `.exe` extension is not the same question, and what a POSIX emulation layer guesses from a shebang is a guess). Hashing the bit therefore made **one tree two values depending on where it was checked out** — not hypothetically: git records exactly this one bit (`100644` vs `100755`) and, on Windows, sets `core.fileMode=false` so the bit round-trips through the repository without ever existing in the working tree. The same commit checks out executable on Linux and not on Windows. This repository has four such files, so its own `scripts/` directory would have hashed two ways.
+
+  The alternative would have been to *remember* the bit rather than re-derive it, which is what git does. That is not available here: a `File` is a handle onto a live directory, with no index alongside it to consult. Given a choice between a digest that disagrees across targets and one that ignores a bit two of the three cannot see, this takes the second. Two trees differing only in an executable bit are one value, and the platform a build runs on stops changing what its inputs hash to.
+
+  Implementations may still *preserve* the bit when copying a tree — §15's cache does, so that caching a build output does not silently strip it. That is fidelity in the store, not identity in the language.
+
+  This was the open question that kept the directory hash unimplemented; it is settled, and the hash is built.
 
 **Display (resolved 2026-08-27).** A `File` displays **the path it was reached by**, made absolute and cleaned of `.`/`..` segments — recorded when the value is constructed, not resolved through the filesystem afterwards. Two consequences worth stating: a symlinked route displays as the route taken rather than the target it resolves to, and a file renamed after it was loaded still displays the path it was loaded from. This is what makes the rule implementable off Linux at all — WASI (and the portable `*at()` family) offer no way to turn an open descriptor back into a path.
 
 Printing/displaying a `File` — in the REPL, the live editor's result pane, or anywhere else a value gets shown to a human — shows its actual filesystem path. This holds for **every** `File` value, regardless of how it was obtained (`loadfile`, `createfile`, `symlink`'s containing directory, etc.), not just the ones `createfile` writes into `ctx.cache` (§16) — that case is simply the one where a path is otherwise unreachable, so it's the one worth calling out explicitly there. The only exception is `ctx.cache` itself: a distinct, "magic" pseudo-directory type (§16) that is *not* a `File` and has no path of its own to show. Path stays display-only either way — there is still no builtin that lets HashedBuild source read a `File`'s path back out as a `Utf8` value; this is purely about what a human sees when a value is printed, not a new capability for programs.
 
-> TODO: full POSIX mode bits (owner/group/other rwx) are deliberately excluded as noise — confirm this holds up in practice, or whether some other bit besides "executable" ever needs to round-trip through a build.
+> TODO: no permission bit is part of a value's identity at all as of 2026-08-31 (above), which resolves the old form of this question — "is the executable bit enough, or does some other mode bit need to round-trip" — by removing the one bit that was in. What is left open is whether a build ever genuinely needs a permission to be part of *identity* rather than merely preserved by the store; if one does, it needs an answer for the two targets that cannot see one, which is what sank the executable bit.
 
 **Numeric literals** (proposed 2026-08-26, loosely modeled on C but simplified — no type-width suffixes needed, since there's exactly one `Integer` width and one `Float` width):
 
@@ -334,7 +342,7 @@ A native builtin hashes as the name it is bound to plus whatever it captured —
 <cache>/sha256-<key>.hb/sha256-<h>      each File inside that value
 ```
 
-- **A `File` value is stored as a file, a directory value as a directory.** Not wrapped, not encoded: what a build produced stays something a person can open, `diff`, or copy out, which is most of the point of a content-addressed store. A directory is copied faithfully enough to hash as the original did (§3) — names, contents, the executable bit where the target has one, and symlink targets stored without being followed.
+- **A `File` value is stored as a file, a directory value as a directory.** Not wrapped, not encoded: what a build produced stays something a person can open, `diff`, or copy out, which is most of the point of a content-addressed store. A directory is copied faithfully enough to hash as the original did (§3) — names, contents, and symlink targets stored without being followed — plus the executable bit where the target has one, which §3 does *not* hash but which a store has no reason to throw away.
 - **Anything else is written as text**, in a subset of HashedBuild's own syntax: literals, tables, and two names the language has no literal for (`true`/`false`, and `bytes "…"`). Since text cannot hold a file, each `File` inside the value is written out beside it, named by its own content hash (§3), and referred to from the text as `file "…"` or `dir "…"` — systematically, however deeply nested. Reading it back is a separate reader that accepts literals and nothing else, not `import`: a hand-edited entry is a parse failure rather than code that runs.
 - **`<key>` is the cache key**, base64url without padding, since a lookup has nothing else to go on. The `-` separator distinguishes these from the `sha256_<content>` blobs `createfile { .dir = ctx.cache }` writes into the same directory (§16).
 - **Entries are committed by rename.** Each is built under a temporary name and renamed into place, so an interrupted run leaves a stray temporary rather than a truncated entry that a later run would read as a hit. The rename is also how two runs racing on one key settle it — the loser removes its temporary and reads the winner's entry, which holds the same value, since the key is the same. Nothing is overwritten and nothing is locked.

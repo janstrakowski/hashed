@@ -242,10 +242,11 @@ fs_rmdir_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
   return fs_errno_to_error(linux.unlinkat(linux.Fd(parent), cname, {.REMOVEDIR}))
 }
 
-// §3's executable flag, on the one target that has one. Only ever used to put
-// back a bit that was read off a file being copied into the cache, so that a
-// restored directory hashes as the original did - never to grant execute to
-// something that did not already have it.
+// The executable bit, on the one target that has one. Only ever used to put
+// back a bit that was read off a file being copied into the cache, so that
+// caching a build output does not quietly strip it - never to grant execute to
+// something that did not already have it. Nothing about a value's identity
+// depends on it (§3 hashes no permission bit); this is fidelity, not semantics.
 fs_set_executable_at :: proc(parent: Fs_Fd, name: string) -> Fs_Error {
   cname := strings.clone_to_cstring(name, context.temp_allocator)
   ret := linux.syscall(linux.SYS_fchmodat, linux.Fd(parent), cast(rawptr)cname, u32(0o755), 0)

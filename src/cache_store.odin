@@ -330,12 +330,16 @@ write_file_value :: proc(dir_fd: Fs_Fd, name: string, fv: ^File_Value) -> string
   return copy_tree(fv.dir_fd, dst)
 }
 
-// A recursive copy that preserves exactly what SPEC.md §3's directory hash
-// reads: names, file contents, the executable bit where the target has one,
-// and symlink targets stored without being followed. Nothing else about a
-// directory is part of its value, so nothing else is copied - and a restored
-// directory hashes as the one it was copied from, which is what makes a hit
-// and a miss return the same value.
+// A recursive copy of everything SPEC.md §3's directory hash reads - names,
+// file contents, and symlink targets stored without being followed - so a
+// restored directory hashes as the one it was copied from, which is what makes
+// a hit and a miss return the same value.
+//
+// Plus one thing §3 does *not* read: the executable bit, where the target has
+// one. It is not part of a directory's identity (§3 hashes no permission bit),
+// so copying it changes no digest; it is copied because caching a build output
+// and getting back something you can no longer run would be a poor trade for a
+// build system. Nothing else about a directory is copied.
 @(private = "file")
 copy_tree :: proc(src_fd: Fs_Fd, dst_fd: Fs_Fd) -> string {
   entries, list_err := fs_list_dir_at(src_fd, context.temp_allocator)

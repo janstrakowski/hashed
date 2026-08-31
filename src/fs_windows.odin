@@ -646,7 +646,9 @@ name_length :: proc(buf: []u16) -> int {
 // no-follow guarantee Fs_Entry asks for.
 //
 // `is_executable` is always false: Windows has no POSIX execute bit, and
-// nothing here stands in for it. See fs.odin's Fs_Entry.
+// nothing here stands in for it - not the `.exe`/`.bat` extension, and not
+// what a POSIX emulation layer like MSYS guesses from a shebang. Nothing is
+// lost by that, since no hash reads it (see fs.odin's Fs_Entry).
 fs_list_dir_at :: proc(dir: Fs_Fd, allocator := context.allocator) -> ([]Fs_Entry, Fs_Error) {
   path, ok := dir_path_of(dir)
   if !ok do return nil, .Not_Directory

@@ -2,6 +2,7 @@
 #+build linux, windows
 package hashedbuild
 
+import "core:log"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -209,6 +210,44 @@ test_directory_hash_is_over_its_entries :: proc(t: ^testing.T) {
   })
   defer delete(both)
   testing.expect(t, !eval_bool(t, both))
+}
+
+// §3 hashes no permission bit, so setting one changes nothing about what a
+// directory *is*. This is the assertion behind that decision, and it is
+// Linux-only because Linux is the only target that can set such a bit at all:
+// elsewhere fs_set_executable_at is a documented no-op, and the test would
+// pass without having established anything.
+@(test)
+test_directory_hash_ignores_the_executable_bit :: proc(t: ^testing.T) {
+  when ODIN_OS != .Linux {
+    log.info("skipping: only Linux can set an executable bit for the hash to ignore")
+  } else {
+    tree := make_tree(t, "exec_bit")
+    defer delete(tree)
+    defer remove_tree(tree)
+
+    src := strings.concatenate({`sha256 loadfile "`, tree, `"`})
+    defer delete(src)
+    before := eval_str(t, src)
+
+    dir_fd, open_err := fs_open_dir_path(tree)
+    testing.expect(t, open_err == .None, "could not open the scratch tree")
+    if open_err != .None do return
+    defer fs_close(dir_fd)
+    testing.expect(t, fs_set_executable_at(dir_fd, "a.txt") == .None)
+
+    // That the bit actually landed is half the test: without it the
+    // comparison below would hold for the wrong reason.
+    entries, list_err := fs_list_dir_at(dir_fd, context.temp_allocator)
+    testing.expect(t, list_err == .None)
+    saw_executable := false
+    for entry in entries {
+      if entry.name == "a.txt" && entry.is_executable do saw_executable = true
+    }
+    testing.expect(t, saw_executable, "fs_set_executable_at did not set the bit")
+
+    testing.expect_value(t, eval_str(t, src), before)
+  }
 }
 
 // A file's digest doesn't depend on whether you reached it as a value or as a
