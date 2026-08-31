@@ -610,6 +610,17 @@ eval_binary :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
     if !lok do return nil, false
     r, rok = concrete_value(interp, r)
     if !rok do return nil, false
+    // Comparing a directory File means comparing what is inside it (§3), so
+    // the comparison is a read - and a read is where `io` is checked (§9).
+    // values_equal itself is reached from table_find on the hot path of every
+    // field access and can do no I/O, so the operands are warmed here, while
+    // there is still a context to ask. See hash.odin's hash_materialize.
+    if f := hash_materialize(interp, l); f.kind != .None {
+      return fail(interp, hash_error_message(f))
+    }
+    if f := hash_materialize(interp, r); f.kind != .None {
+      return fail(interp, hash_error_message(f))
+    }
     if op == .Op_EqEq do return values_equal(l, r), true
     return compare_ordered(interp, op, l, r)
 
@@ -1107,8 +1118,11 @@ eval_sha256 :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, 
   val, ok = concrete_value(interp, val)
   if !ok do return nil, false
 
-  encoded, herr := value_digest_base64(val)
-  if herr != .None {
+  // The interpreter goes along: a directory File's digest is read off the disk
+  // the first time anything asks (§3), and that read needs this context's `io`
+  // permission (§9). It is also what a Function's shape is read from.
+  encoded, herr := value_digest_base64(val, interp)
+  if herr.kind != .None {
     return fail(interp, fmt.tprintf("sha256: %s", hash_error_message(herr)))
   }
   return encoded, true
