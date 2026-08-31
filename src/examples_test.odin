@@ -36,6 +36,7 @@ EXAMPLE_CASES := []Example_Case{
   {"check-and-invariants.hb", "100"},
   {"comparison-and-logic.hb", "{ordered: true, both: true, either: true, mixed: false}"},
   {"context-permissions.hb", "{ambient: {io: nothing}, io_denied: {}, replaced: {}, still_ambient: {io: nothing}}"},
+  {"cyclic-data.hb", `{round_trip: "Alice", mutual: true, second_hop: "Carol", reordered: 3, same_shape: true}`},
   {"files-symlink.hb", `"optiona.txt"`},
   {"functions.hb", "121"},
   {"functions-and-holes.hb", "{section: 11, explicit: 49, nested: 507, stored: 42, asserted: 9}"},

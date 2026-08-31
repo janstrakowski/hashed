@@ -211,6 +211,71 @@ that is the message you get rather than a crash.
 
 → `examples/recursion.hb`, `examples/recursion-anonymous.hb` (§9/§10)
 
+## Cyclic data
+
+`let rec` builds data that reaches itself, not just functions that call
+themselves. A `Table` literal bound with `rec` is created and named *before* its
+entries run, so an entry can mention the Table it is part of:
+
+```hashedbuild
+let rec p { .n = 1, .self = p };  p.self.self.self.n     // => 1
+let rec ones {1, ones};           ones[2][2][2][1]       // => 1
+```
+
+Friendship is mutual, so a social graph has to close — and mutual references
+between entries need nothing extra, because entries are evaluated **on demand
+rather than in source order**. Reaching `people.bob` while `.alice` is still
+being built simply evaluates `.bob` there and then:
+
+```hashedbuild
+let rec people {
+  .alice = { .name = "Alice", .friends = { people.bob, people.carol } },
+  .bob   = { .name = "Bob",   .friends = { people.alice } },
+  .carol = { .name = "Carol", .friends = { people.alice, people.bob } },
+};
+people.alice.friends[1].friends[1].name        // => "Alice", back where we started
+```
+
+That demand ordering also settles plain forward references, cycle or no cycle —
+`let rec p { .a = p.b + 1, .b = 2 }; p.a` is `3`. Entries still *print* in the
+order they were written, whatever order they ran in.
+
+**A cycle prints with a label**, so the back-edge is visible and the output is
+finite. The label marks the node the cycle returns to:
+
+```
+#1{n: 1, self: #1}
+#1{name: "Alice", friends: {{name: "Bob", friends: {#1}}}}
+```
+
+**Equality follows the cycle** rather than comparing pointers, so two rings of
+the same shape built by separate bindings are the same value:
+
+```hashedbuild
+let rec ring  { .x = { .tag = "x", .next = ring.y },  .y = { .tag = "y", .next = ring.x } };
+let rec other { .x = { .tag = "x", .next = other.y }, .y = { .tag = "y", .next = other.x } };
+ring.x == other.x        // => true
+```
+
+Two things this deliberately does **not** do. It builds cyclic structures —
+finite graphs with back-edges — and not unbounded ones: `let rec from (let n;
+{n, from (n + 1)})` has nothing to close a loop with and recurses to the depth
+limit, exactly as it did before. And an entry that needs another entry's value
+*while that one is still being computed* has no answer to give, so it fails
+rather than hanging:
+
+```hashedbuild
+let rec p { .a = p.b + 1, .b = p.a + 1 }; p.a
+// error: circular definition: p.a is needed before it has a value
+```
+
+Storing a reference to an entry still under construction is fine — that is what
+makes the back-edge. Looking *through* one is what fails. Only a `Table` literal
+written directly as the bound value gets any of this; `let rec x x + 1; x` still
+reports `undefined name`, as §10 says it should.
+
+→ `examples/cyclic-data.hb` (§6/§10)
+
 ## Branching and pattern matching
 
 Branching is built from ordinary composable operators rather than dedicated
@@ -411,7 +476,14 @@ file's executable bit, and two of the three targets cannot report one: WASI's
 So there is no way to compute the specified digest everywhere the interpreter
 runs. Building it means first deciding what a directory hashes as somewhere
 that cannot see an exec bit. `Function` is unbuilt because §15 needs it for `cached` but never
-says how a closure is encoded.
+says how a closure is encoded. A **cyclic value** (above) is the third case, and
+unbuilt for a related reason: the digest is a Merkle fold, a composite's hash
+built from its children's, and a cycle has no bottom to start from. `SPEC.md`
+§6 describes what the answer looks like — components hashed canonically, so the
+digest does not depend on where the walk entered the cycle — but §3 pins what a
+digest encodes, so it is a spec decision first. `sha256` of one fails cleanly
+meanwhile. Equality over cyclic values *is* built, and does not depend on any of
+this.
 
 Also absent: `true`/`false` literals, loops of any kind (recursion is the only
 repetition there is — see above), a `Bytes`-returning counterpart to
