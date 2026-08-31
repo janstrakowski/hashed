@@ -40,6 +40,12 @@ DIR_RIGHTS :: wasi.rights_t{
   .FD_READDIR, .FD_FILESTAT_GET,
   .PATH_OPEN, .PATH_CREATE_FILE, .PATH_CREATE_DIRECTORY, .PATH_FILESTAT_GET,
   .PATH_READLINK, .PATH_SYMLINK, .PATH_UNLINK_FILE, .PATH_REMOVE_DIRECTORY,
+  // Both halves of a rename, for §15's cache: an entry is built under a
+  // temporary name and renamed into place, and preview1 checks the source
+  // descriptor for one right and the destination's for the other. Asking for
+  // only one gets ENOTCAPABLE, which surfaces as a bare "Access" - which is
+  // exactly what the WASI smoke test caught.
+  .PATH_RENAME_SOURCE, .PATH_RENAME_TARGET,
 }
 
 @(private = "file")
