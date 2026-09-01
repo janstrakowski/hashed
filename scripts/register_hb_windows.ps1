@@ -113,14 +113,22 @@ if ($code) {
   New-Item -Path "$classes\$progId\shell\edit\command" -Force | Out-Null
   Set-ItemProperty -Path "$classes\$progId\shell\edit\command" -Name "(default)" -Value ('"{0}" "%1"' -f $code)
   Set-ItemProperty -Path "$classes\$progId\shell\edit" -Name "(default)" -Value "&Edit in VS Code"
-  # Explorer draws the type's icon from here; VS Code's is better than none.
+}
+
+# The project's own logo, built from logo/hashedbuild.png by
+# scripts/make_icon.py. Falling back to the editor's icon is better than a
+# blank page, but only just.
+$icon = Join-Path $repo "logo\hashedbuild.ico"
+if (-not (Test-Path $icon)) { $icon = $code }
+if ($icon) {
   New-Item -Path "$classes\$progId\DefaultIcon" -Force | Out-Null
-  Set-ItemProperty -Path "$classes\$progId\DefaultIcon" -Name "(default)" -Value ('"{0}",0' -f $code)
+  Set-ItemProperty -Path "$classes\$progId\DefaultIcon" -Name "(default)" -Value ('"{0}",0' -f $icon)
 }
 
 Notify-Explorer
 
 Write-Host "registered .hb -> $progId"
+if ($icon) { Write-Host "  icon          $icon" }
 Write-Host "  double-click  $runCommand"
 if ($code) {
   Write-Host "  right-click > Edit in VS Code"

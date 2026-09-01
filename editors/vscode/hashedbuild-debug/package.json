@@ -5,31 +5,58 @@
   "publisher": "hashedbuild",
   "version": "0.1.0",
   "license": "MIT",
-  "engines": { "vscode": "^1.80.0" },
-  "categories": ["Debuggers", "Programming Languages"],
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Debuggers",
+    "Programming Languages"
+  ],
+  "icon": "icon.png",
   "contributes": {
     "languages": [
       {
         "id": "hashedbuild",
-        "aliases": ["HashedBuild", "hb"],
-        "extensions": [".hb"],
+        "aliases": [
+          "HashedBuild",
+          "hb"
+        ],
+        "extensions": [
+          ".hb"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
-    "breakpoints": [{ "language": "hashedbuild" }],
+    "breakpoints": [
+      {
+        "language": "hashedbuild"
+      }
+    ],
     "debuggers": [
       {
         "type": "hashedbuild",
         "label": "HashedBuild",
-        "languages": ["hashedbuild"],
+        "languages": [
+          "hashedbuild"
+        ],
         "program": "./hb.exe",
-        "args": ["dap"],
-        "windows": { "program": "./hb.exe" },
-        "linux": { "program": "./hb" },
-        "osx": { "program": "./hb" },
+        "args": [
+          "dap"
+        ],
+        "windows": {
+          "program": "./hb.exe"
+        },
+        "linux": {
+          "program": "./hb"
+        },
+        "osx": {
+          "program": "./hb"
+        },
         "configurationAttributes": {
           "launch": {
-            "required": ["program"],
+            "required": [
+              "program"
+            ],
             "properties": {
               "program": {
                 "type": "string",
@@ -38,8 +65,10 @@
               },
               "dirs": {
                 "type": "object",
-                "description": "name -> path. Each becomes ctx.dirs.<name>, and is the whole of what the program may read or write (SPEC.md §9/§16).",
-                "default": { "here": "${fileDirname}" }
+                "description": "name -> path. Each becomes ctx.dirs.<name>, and is the whole of what the program may read or write (SPEC.md \u00a79/\u00a716).",
+                "default": {
+                  "here": "${fileDirname}"
+                }
               },
               "cacheDir": {
                 "type": "string",
@@ -54,7 +83,9 @@
             "request": "launch",
             "name": "Run this file",
             "program": "${file}",
-            "dirs": { "here": "${fileDirname}" }
+            "dirs": {
+              "here": "${fileDirname}"
+            }
           }
         ]
       }

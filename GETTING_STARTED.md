@@ -53,9 +53,12 @@ powershell -ExecutionPolicy Bypass -File scriptsegister_hb_windows.ps1
 powershell -ExecutionPolicy Bypass -File scriptsegister_hb_windows.ps1 -Unregister
 ```
 
-Explorer then calls a `.hb` file a *HashedBuild program*, double-clicking one
-runs it in a console that waits before closing, and right-click > **Edit in VS
-Code** opens it instead.
+Explorer then calls a `.hb` file a *HashedBuild program*, shows it with the
+project'''s logo, double-clicking one runs it in a console that waits before
+closing, and right-click > **Edit in VS Code** opens it instead.
+
+The icon is `logo/hashedbuild.ico`, built from `logo/hashedbuild.png` by
+`python3 scripts/make_icon.py` - rerun that if the logo changes.
 
 A program started by double-click is handed no `--dir`, so it can read and
 write nothing at all (SPEC.md §9/§16) - which is what makes running one on a

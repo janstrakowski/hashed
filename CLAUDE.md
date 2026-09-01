@@ -45,6 +45,13 @@ and npm for the debug-adapter tests only.**
 | --- | --- |
 | Python 3, stdlib only | `scripts/install_vscode_debug.py`, which copies the VS Code extension into place |
 | PowerShell (Windows only, optional) | `scripts/register_hb_windows.ps1`, the `.hb` file association |
+
+`logo/hashedbuild.ico` and the VS Code extension'''s `icon.png` are built from
+`logo/hashedbuild.png` by `scripts/make_icon.py` (stdlib: PNG is zlib plus a
+filter per scanline, ICO is a table plus bitmaps). They are committed rather
+than generated on demand, unlike the playground artifacts that used to live
+here: they change only when the logo does, so nothing tracked goes stale
+behind them, and registering a file type should not need a toolchain.
 | `wasmtime` (pinned) | the portable WASI smoke test |
 | WAMR's `iwasm` (pinned, built from source) | the threaded WASI smoke test - wasmtime dropped wasi-threads in June 2026 |
 | npm, in `dap-tests/` only | `@vscode/debugadapter-testsupport`, the harness the DAP ecosystem actually uses |
