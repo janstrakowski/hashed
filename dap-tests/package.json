@@ -1,0 +1,12 @@
+{
+  "name": "hashedbuild-dap-tests",
+  "private": true,
+  "description": "Tests for `hb dap`, driven by the reference DAP client",
+  "scripts": {
+    "test": "mocha --timeout 20000 adapter.test.js"
+  },
+  "devDependencies": {
+    "@vscode/debugadapter-testsupport": "1.68.0",
+    "mocha": "11.7.4"
+  }
+}

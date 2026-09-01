@@ -62,6 +62,7 @@ If a freshly built binary refuses to start with *"An Application Control policy 
 
   The same flags go into a debug session's launch configuration, for the same reason: a program being debugged reaches exactly what it was given, and nothing else.
 - **`./hb --cache-dir <path> ...`** - override where `ctx.cache` writes to, and where `cached` keeps its entries (defaults to your XDG cache dir; `%LOCALAPPDATA%\hashedbuild` on Windows). Handy for a throwaway cache: point it somewhere temporary and `cached` starts from nothing.
+- **`hb dap`** - a debug adapter on stdin/stdout, for an editor to drive. Not something you run by hand; see [Debugging](#debugging) below.
 - **`./hb --help`**, **`./hb --version`** - usage and version.
 
 ## Try each part
@@ -96,6 +97,125 @@ The video's timing demo used a deliberately slow computation (a large lookup-hea
 Open `examples/async-basics.hb` in an editor - it reads two files with `async`, so both reads fire concurrently rather than one after the other, and each is only actually awaited once something (here, `concat`) needs its real value. `examples/async-table.hb` (concurrent entries in a `Table`) and `examples/async-branching.hb` (an untaken branch's `async` work still has to finish, per SPEC.md §2) are worth a look too.
 
 If you want to reproduce something closer to the video's *measured* 2-second comparison: `let t {0, 0, ..., 0}; t[1] + t[2] + ... + t[N]` (many bracket lookups into a large sequence-shaped table) gets slower roughly with `N²`; wrapping several of those in `async` and timing `hb` with and without it will show the same effect. Tune `N` for your machine.
+
+## Debugging
+
+There is no debugger UI in this repository, on purpose. `hb dap` speaks the
+[Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/) —
+the same protocol VS Code, nvim-dap, emacs `dape` and Zed already implement, and
+that GDB itself now exposes — so breakpoints, a call stack and a variables pane
+come from an editor you already know how to use.
+
+Two things about it are specific to this language, and both follow from what the
+language is:
+
+- **A stop happens *after* an expression, not before it.** HashedBuild has no
+  statements: a program is one expression, and the interesting thing about
+  reaching a sub-expression is what it evaluated to. So "stopped at line 7"
+  means line 7's expression *just produced this value*, and the **Result** scope
+  holds it. The **Locals** scope holds the `let` bindings in scope there.
+- **A session reaches only the directories its launch configuration names**,
+  exactly as a command line does (SPEC.md §9/§16). `dirs` in the configuration
+  is `--dir` on the command line; a session with no `dirs` cannot touch the
+  filesystem at all.
+
+`async` (§2) tasks are real OS threads, so they appear as threads — the program
+is thread 1 — and they stop together.
+
+### nvim-dap
+
+```lua
+local dap = require("dap")
+
+dap.adapters.hashedbuild = {
+  type = "executable",
+  command = "/path/to/hb",
+  args = { "dap" },
+}
+
+dap.configurations.hashedbuild = {
+  {
+    type = "hashedbuild",
+    request = "launch",
+    name = "Run this file",
+    program = "${file}",
+    -- What the program may reach, by name: ctx.dirs.here inside it.
+    dirs = { here = "${fileDirname}" },
+  },
+}
+```
+
+`:lua vim.bo.filetype = "hashedbuild"` on a `.hb` buffer, then `:DapToggleBreakpoint`
+and `:DapContinue`.
+
+### VS Code
+
+VS Code will not talk to a bare adapter, so it needs an extension to declare the
+debugger type — but that extension is one file, with no code in it. Put this in
+`~/.vscode/extensions/hashedbuild-debug/package.json` (`%USERPROFILE%\.vscode\extensions\…`
+on Windows) and restart VS Code:
+
+```json
+{
+  "name": "hashedbuild-debug",
+  "publisher": "local",
+  "version": "0.0.1",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Debuggers"],
+  "contributes": {
+    "debuggers": [
+      {
+        "type": "hashedbuild",
+        "label": "HashedBuild",
+        "program": "/path/to/hb",
+        "args": ["dap"],
+        "languages": ["hashedbuild"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": { "type": "string", "description": "The .hb file to run" },
+              "dirs": { "type": "object", "description": "name -> path; becomes ctx.dirs" },
+              "cacheDir": { "type": "string", "description": "where ctx.cache writes" }
+            }
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+Then a `.vscode/launch.json` in your project:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "hashedbuild",
+      "request": "launch",
+      "name": "Run this file",
+      "program": "${file}",
+      "dirs": { "here": "${fileDirname}" }
+    }
+  ]
+}
+```
+
+### What the adapter supports
+
+`initialize`, `launch`, `setBreakpoints`, `configurationDone`, `threads`,
+`stackTrace`, `scopes`, `variables`, `continue`, `next`, `stepIn`, `stepOut`,
+`evaluate`, `disconnect` and `terminate`. `evaluate` really evaluates, in the
+scope the run stopped in — so a watch expression that calls a filesystem builtin
+touches the filesystem, exactly as it would in the program.
+
+Breakpoints are verified per line: a line no expression starts on comes back
+unverified, so a client can grey it out rather than pretend.
+
+`dap-tests/` drives all of this with the protocol's own reference client — see
+CLAUDE.md for why that one directory has a `package.json`.
 
 ## Where to go next
 

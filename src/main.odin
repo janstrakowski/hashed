@@ -8,8 +8,11 @@ import "core:bufio"
 VERSION :: "0.1.0"
 
 USAGE :: `Usage: hb [options] [file]
+       hb dap
 
 Runs the given HashedBuild source file, or starts a REPL if none is given.
+hb dap speaks the Debug Adapter Protocol on stdin/stdout, for an editor to
+drive - see GETTING_STARTED.md for what to put in a launch configuration.
 
 Options:
   -a, --ast           Print the parsed AST before evaluating
@@ -35,6 +38,7 @@ Cli_Mode :: enum {
   Repl,    // no file and no -e: the read-eval-print loop
   File,    // run a source file
   Eval,    // -e/--eval: evaluate one expression, then exit
+  Dap,     // `hb dap`: a debug adapter on stdin/stdout (dap.odin)
   Help,
   Version,
 }
@@ -54,6 +58,7 @@ Cli_Options :: struct {
 // than opening the editor), which is what exiting on sight used to do.
 parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: bool) {
   has_eval := false
+  want_dap := false
   want_help := false
   want_version := false
 
@@ -93,6 +98,11 @@ parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: b
       if i >= len(args) do return opts, "-e/--eval requires an expression argument", false
       opts.eval_expr = args[i]
       has_eval = true
+    case "dap":
+      // A subcommand, not a flag: it takes over stdin and stdout entirely,
+      // and everything a session needs arrives in the client's `launch`
+      // request rather than on this command line (dap.odin).
+      want_dap = true
     case:
       if strings.has_prefix(args[i], "-") {
         return opts, fmt.tprintf("unknown option %s (see --help)", args[i]), false
@@ -106,6 +116,10 @@ parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: b
     opts.mode = .Help
   case want_version:
     opts.mode = .Version
+  case want_dap:
+    if has_eval do return opts, "hb dap cannot be combined with -e/--eval", false
+    if opts.file_path != "" do return opts, "hb dap takes no file - the client's launch request names one", false
+    opts.mode = .Dap
   case has_eval:
     if opts.file_path != "" do return opts, "-e/--eval cannot be combined with a file argument", false
     opts.mode = .Eval
@@ -131,6 +145,8 @@ main :: proc() {
     fmt.println("hb", VERSION)
   case .Eval:
     eval_once(opts.eval_expr, opts.show_ast, opts)
+  case .Dap:
+    run_dap_server(opts)
   case .File:
     run_file(opts.file_path, opts.show_ast, opts)
   case .Repl:

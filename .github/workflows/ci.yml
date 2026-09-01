@@ -269,3 +269,52 @@ jobs:
       # evaluator's recursion outgrows on the larger examples.
       - name: Examples agree with real threads
         run: scripts/wasi_smoke.sh ./hb ./hb-threads.wasm "$HOME/iwasm/iwasm" --stack-size=4194304 --max-threads=8
+
+  # `hb dap` is a protocol implementation, so it is tested against the
+  # protocol's own reference client (@vscode/debugadapter-testsupport) rather
+  # than against a client written here - which would mostly prove the two
+  # agree with each other. This is the one job that needs npm, and the one
+  # directory that has a package.json.
+  dap:
+    runs-on: ubuntu-latest
+    env:
+      ODIN_VERSION: dev-2026-08
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache Odin
+        id: cache-odin
+        uses: actions/cache@v6
+        with:
+          path: ~/odin
+          key: odin-linux-amd64-${{ env.ODIN_VERSION }}
+
+      - name: Install Odin ${{ env.ODIN_VERSION }}
+        if: steps.cache-odin.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/odin"
+          curl -fsSL "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/odin-linux-amd64-${ODIN_VERSION}.tar.gz" \
+            | tar xz -C "$HOME/odin" --strip-components=1
+
+      - name: Put Odin on PATH
+        run: echo "$HOME/odin" >> "$GITHUB_PATH"
+
+      - name: Ensure clang is present
+        run: |
+          command -v clang >/dev/null || {
+            sudo apt-get update || echo "apt-get update reported errors; continuing anyway"
+            sudo apt-get install -y clang
+          }
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Build the adapter
+        run: odin build src -out:hb
+
+      - name: Debug adapter
+        run: |
+          cd dap-tests
+          npm install
+          npm test

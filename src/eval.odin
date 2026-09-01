@@ -103,6 +103,24 @@ Interpreter :: struct {
   // together before it ends, however it ends.
   async_registry: ^Async_Registry,
 
+  // The user-level calls this task is currently inside, innermost last -
+  // what a debugger reports as stack frames (debugger.odin, dap.odin). Only
+  // user functions appear: a native builtin (§16) evaluates no HashedBuild
+  // body, so it has no frame of its own to show and no environment to
+  // inspect. Empty for every run without a debugger attached, which is what
+  // keeps this free for the REPL, `hb <file>` and the tests.
+  frames: [dynamic]Debug_Frame,
+  // Which task this interpreter is, as DAP names threads: 1 for the program
+  // itself, and one more per `async` task in spawn order
+  // (register_debugger_task). Zero when no debugger is attached, which is
+  // every ordinary run.
+  thread_id: int,
+  // The node `eval` is currently working on, maintained only while a debugger
+  // is attached. call_function needs it to record *where* a call was made
+  // from, and has no other way to know: it is handed a function and an
+  // argument, not the expression that produced them.
+  current_node: Node_Idx,
+
   // Step-by-step trace (off by default - zero-cost for every caller that
   // doesn't set enable_trace, e.g. all the existing tests and the REPL).
   // `trace_depth` is bookkeeping for `eval`'s own instrumentation, not meant
@@ -320,13 +338,19 @@ eval :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (ret_val: Value
   // One `defer` block (not `defer if`, since both conditions below need to be
   // checked independently) so this runs at eval's return, not at the end of
   // some inner block scope.
+  outer_node := interp.current_node
+  if interp.debugger != nil do interp.current_node = node
   defer {
     if tracing {
       interp.trace_depth -= 1
       record_step(interp, node, depth, ret_val, ret_ok)
     }
+    // `env` travels with the stop: it is what a debugger's variables pane
+    // shows, and the only place it exists is right here, in the frame of the
+    // `eval` call that is finishing.
     if interp.debugger != nil {
-      debugger_wait_and_publish(interp, node, &ret_val, &ret_ok)
+      debugger_gate(interp, node, env, &ret_val, &ret_ok)
+      interp.current_node = outer_node
     }
   }
   n := interp.ast.nodes[node]
@@ -951,6 +975,15 @@ call_function :: proc(interp: ^Interpreter, fn: ^Function_Value, arg: Value) -> 
   defer pop(&interp.arg_stack)
   append(&interp.self_stack, Value(fn))
   defer pop(&interp.self_stack)
+  // One frame per user-level call, for the debugger's stack trace and for
+  // `next`/`stepOut`, which are defined by call depth (debugger.odin). Only
+  // paid for when a debugger is attached; nothing else reads `frames`.
+  // (`defer` inside the `if` would run at the end of that block, not of the
+  // call - hence the guarded defer at procedure scope.)
+  if interp.debugger != nil {
+    append(&interp.frames, Debug_Frame{fn = fn, call_node = interp.current_node, arg = arg})
+  }
+  defer if interp.debugger != nil do pop(&interp.frames)
   // Restore the closure's own captured context for the call, then put back
   // whatever was active at the call site - see Interpreter.current_ctx.
   old_ctx := interp.current_ctx

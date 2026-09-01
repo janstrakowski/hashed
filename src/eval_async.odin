@@ -81,6 +81,10 @@ spawn_async :: proc(interp: ^Interpreter, body: Node_Idx, env: ^Env) -> (^Async_
     src           = interp.src,
     current_ctx   = interp.current_ctx,
     async_registry = interp.async_registry,
+    // A spawned task is a thread of its own to a debugger, with its own call
+    // stack starting empty: it begins at the `async` expression, not inside
+    // whatever call spawned it.
+    thread_id     = debugger_next_thread_id_or_zero(interp.debugger),
     debugger      = interp.debugger,
     discard_depth = interp.discard_depth,
   }
@@ -123,13 +127,7 @@ await_value :: proc(interp: ^Interpreter, v: Value) -> (Value, bool) {
 
   sync.mutex_lock(&h.mu)
   if !h.awaited {
-    // Marked (and later unmarked) *while still holding h.mu* - a second
-    // concurrent await_value call on the same handle blocks on this same
-    // mutex rather than double-joining the thread, so the marker's lifetime
-    // exactly matches the one real join underneath it.
-    if interp.debugger != nil do mark_awaiting(interp.debugger, h.body, true)
     task_join(h.task)
-    if interp.debugger != nil do mark_awaiting(interp.debugger, h.body, false)
     h.awaited = true
   }
   sync.mutex_unlock(&h.mu)

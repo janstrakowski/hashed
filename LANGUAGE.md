@@ -785,6 +785,22 @@ checkout path natively.
 `scripts/wasi_smoke.sh` runs the examples on a wasm build and compares them
 against native; CI does it for both flavours on every push.
 
+## Debugging
+
+`hb dap` is a [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/)
+server, so breakpoints, a call stack and a variables pane come from whichever
+editor you already use — VS Code, nvim-dap, emacs `dape` and Zed all speak it.
+[GETTING_STARTED.md](GETTING_STARTED.md#debugging) has the configuration each
+one needs.
+
+One thing about it follows from the language rather than from the protocol: a
+stop happens **after** an expression, not before it. There are no statements
+here, so the interesting thing about reaching a sub-expression is what it
+evaluated to — "stopped at line 7" means line 7 just produced this value, and
+the debugger'''s **Result** scope is holding it. `async` tasks are real threads
+and show up as threads; a session reaches only the directories its launch
+configuration names, exactly as a command line does.
+
 ## Where to go next
 
 - **[GETTING_STARTED.md](GETTING_STARTED.md)** — installing, the REPL, the live

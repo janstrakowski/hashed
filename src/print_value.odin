@@ -171,3 +171,24 @@ write_key :: proc(b: ^strings.Builder, key: Value, st: ^Print_State) {
   }
   write_value(b, key, st)
 }
+
+// SPEC.md §3's name for a value's type, as a debugger's variables pane shows
+// it beside the value itself (dap.odin). Deliberately the spec's spelling -
+// `Utf8`, not "string" - so a pane and the language agree on what a thing is.
+value_type_name :: proc(v: Value) -> string {
+  switch t in v {
+  case Nothing_Value:      return "Nothing"
+  case i64:                return "Integer"
+  case f64:                return "Float"
+  case string:             return "Utf8"
+  case bool:               return "Boolean"
+  case []u8:               return "Bytes"
+  case ^Table_Value:       return "Table"
+  case ^Function_Value:    return "Function"
+  case ^File_Value:        return "File" if t.kind == .Regular else "File (directory)"
+  case ^Cache_Value:       return "ctx.cache"
+  case ^Async_Handle:      return "async"
+  case ^Forward_Ref_Value: return "forward reference"
+  }
+  return "Nothing"
+}
