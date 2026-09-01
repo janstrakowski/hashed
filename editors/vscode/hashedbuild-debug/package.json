@@ -16,6 +16,7 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "breakpoints": [{ "language": "hashedbuild" }],
     "debuggers": [
       {
         "type": "hashedbuild",
