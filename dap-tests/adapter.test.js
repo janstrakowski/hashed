@@ -21,6 +21,47 @@ const FIXTURES = path.join(__dirname, "fixtures");
 // with the platform's own separators.
 const fixture = (name) => path.join(FIXTURES, name);
 
+// The sequence every real client uses, and therefore the one every test here
+// uses: initialize, wait for `initialized`, set breakpoints while the run is
+// parked, then `configurationDone` - which is what lets the program go.
+//
+// Configuring *after* launching, which is what these tests used to do, hid two
+// bugs at once, because no client does that: breakpoints sent before a run
+// existed were dropped, and `setExceptionBreakpoints` was answered with an
+// error a client can abandon the session over.
+async function session(dc, { program, dirs, breakpoints = [], stopOnEntry = false }) {
+  await dc.initializeRequest({
+    adapterID: "hashedbuild",
+    linesStartAt1: true,
+    columnsStartAt1: true,
+  });
+  await dc.waitForEvent("initialized");
+  await dc.launchRequest({ program, dirs, stopOnEntry });
+  if (breakpoints.length) {
+    await dc.setBreakpointsRequest({
+      source: { path: program },
+      breakpoints: breakpoints.map((line) => ({ line })),
+    });
+  }
+  await dc.setExceptionBreakpointsRequest({ filters: [] });
+  await dc.configurationDoneRequest();
+}
+
+// Where a run is stopped, as a client would ask: the top frame and its scopes.
+async function whereIsIt(dc) {
+  const trace = await dc.stackTraceRequest({ threadId: 1 });
+  const frame = trace.body.stackFrames[0];
+  const scopes = await dc.scopesRequest({ frameId: frame.id });
+  return { frame, frames: trace.body.stackFrames, scopes: scopes.body.scopes };
+}
+
+async function scopeVariables(dc, scopes, name) {
+  const scope = scopes.find((s) => s.name === name);
+  if (!scope || !scope.variablesReference) return [];
+  const vars = await dc.variablesRequest({ variablesReference: scope.variablesReference });
+  return vars.body.variables;
+}
+
 describe("hb dap", function () {
   let dc;
 
@@ -35,9 +76,6 @@ describe("hb dap", function () {
     await dc.stop();
   });
 
-  // The handshake every session begins with. `initialize` has to answer with
-  // capabilities and then send `initialized`, in that order, or a client never
-  // sends its breakpoints.
   it("initializes and announces what it supports", async () => {
     const response = await dc.initializeRequest({
       adapterID: "hashedbuild",
@@ -49,124 +87,78 @@ describe("hb dap", function () {
     await dc.waitForEvent("initialized");
   });
 
-  // A launch stops immediately, before evaluating anything a client has not
-  // had a chance to set breakpoints for. DAP calls that reason "entry".
-  it("stops on entry, and says why", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("arith.hb") });
+  // A program with nothing to stop for runs. It does not park on its first
+  // expression waiting to be told to go: that expression is a name lookup or a
+  // literal, and stopping there tells nobody anything.
+  it("runs to the end when nothing asks it to stop", async () => {
+    await session(dc, { program: fixture("arith.hb") });
+    const output = await dc.waitForEvent("output");
+    assert.strictEqual(output.body.output.trim(), "14");
+    const exited = await dc.waitForEvent("exited");
+    assert.strictEqual(exited.body.exitCode, 0);
+    await dc.waitForEvent("terminated");
+  });
+
+  it("stops on entry when the launch config asks for it", async () => {
+    await session(dc, { program: fixture("arith.hb"), stopOnEntry: true });
     const stopped = await dc.waitForEvent("stopped");
     assert.strictEqual(stopped.body.reason, "entry");
     assert.strictEqual(stopped.body.threadId, 1);
     assert.strictEqual(stopped.body.allThreadsStopped, true);
   });
 
-  // The stop is *after* a node, so the event describes a value that now
-  // exists rather than an expression about to run - the one place this
-  // adapter differs from a statement-oriented one, and worth pinning.
-  it("reports the value the stopped expression produced", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("arith.hb") });
+  // A breakpoint reports the *whole line's* value, not the first fragment of
+  // it to finish. Line 7 of arith.hb is `2 + 3 * 4`, and stopping there should
+  // say 14 - stopping on the `2` would be true and useless.
+  it("reports what the whole line came to", async () => {
+    await session(dc, { program: fixture("arith.hb"), breakpoints: [7] });
     const stopped = await dc.waitForEvent("stopped");
-    assert.match(stopped.body.description, /=>/);
+    assert.strictEqual(stopped.body.reason, "breakpoint");
+    assert.match(stopped.body.description, /2 \+ 3 \* 4 => 14/);
+
+    const { frame, scopes } = await whereIsIt(dc);
+    assert.strictEqual(frame.line, 7);
+    assert.ok(scopes.find((s) => s.name === "Result"), "a Result scope holds the value");
   });
 
-  // A breakpoint on a line an expression starts on is verified and fires; one
-  // on a comment is refused rather than silently accepted, so a client can
-  // grey it out.
-  it("sets breakpoints, and only verifies lines that have an expression", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("arith.hb") });
-    await dc.waitForEvent("stopped");
-
-    const response = await dc.setBreakpointsRequest({
-      source: { path: fixture("arith.hb") },
-      breakpoints: [{ line: 7 }, { line: 1 }],
-    });
-    assert.strictEqual(response.body.breakpoints.length, 2);
-    assert.strictEqual(response.body.breakpoints[0].verified, true, "line 7 holds an expression");
-    assert.strictEqual(response.body.breakpoints[1].verified, false, "line 1 is a comment");
-  });
-
-  // The order a real client uses: VS Code sends setBreakpoints as soon as it
-  // gets `initialized`, which is before `launch` - so the adapter has to
-  // remember them and apply them when the run appears, then correct the
-  // gutter with a `breakpoint` event. Every test here used to set them after
-  // launching, which is why this path was broken and untested at once.
-  it("honours breakpoints set before the launch", async () => {
+  // Breakpoints arrive before there is a run to put them on - that is when a
+  // client sends them - so they are held and applied at launch, and the gutter
+  // is corrected afterwards with a `breakpoint` event.
+  it("verifies a breakpoint once the run exists, and refuses a comment", async () => {
     await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
     await dc.waitForEvent("initialized");
 
-    // Sent while there is no run at all.
     const set = await dc.setBreakpointsRequest({
       source: { path: fixture("arith.hb") },
-      breakpoints: [{ line: 7 }],
+      breakpoints: [{ line: 7 }, { line: 1 }],
     });
-    assert.strictEqual(set.body.breakpoints[0].verified, false, "nothing to verify against yet");
-    const id = set.body.breakpoints[0].id;
-    assert.ok(id > 0, "a breakpoint needs an id for the correction to refer to");
-
-    // VS Code sends this in every session; an error here can lose the session.
-    const exc = await dc.setExceptionBreakpointsRequest({ filters: [] });
-    assert.strictEqual(exc.success, true);
+    assert.strictEqual(set.body.breakpoints.length, 2);
+    assert.ok(set.body.breakpoints[0].id > 0, "each needs an id to be corrected by");
 
     await dc.launchRequest({ program: fixture("arith.hb") });
 
-    const corrected = await dc.waitForEvent("breakpoint");
-    assert.strictEqual(corrected.body.breakpoint.id, id);
-    assert.strictEqual(corrected.body.breakpoint.verified, true, "now it can be verified");
-
-    await dc.waitForEvent("stopped"); // entry
-    await dc.continueRequest({ threadId: 1 });
-    const stopped = await dc.waitForEvent("stopped");
-    assert.strictEqual(stopped.body.reason, "breakpoint", "the breakpoint set before launch still fires");
+    const corrections = [await dc.waitForEvent("breakpoint"), await dc.waitForEvent("breakpoint")];
+    const byId = Object.fromEntries(corrections.map((e) => [e.body.breakpoint.id, e.body.breakpoint]));
+    assert.strictEqual(byId[set.body.breakpoints[0].id].verified, true, "line 7 holds an expression");
+    assert.strictEqual(byId[set.body.breakpoints[1].id].verified, false, "line 1 is a comment");
   });
 
-  it("stops at a breakpoint when continued", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("arith.hb") });
-    await dc.waitForEvent("stopped");
-    await dc.setBreakpointsRequest({
-      source: { path: fixture("arith.hb") },
-      breakpoints: [{ line: 7 }],
-    });
-
-    await dc.continueRequest({ threadId: 1 });
-    const stopped = await dc.waitForEvent("stopped");
-    assert.strictEqual(stopped.body.reason, "breakpoint");
-
-    const trace = await dc.stackTraceRequest({ threadId: 1 });
-    assert.strictEqual(trace.body.stackFrames[0].line, 7);
-  });
-
-  // A line holds many expressions here, and every one of them completes on
-  // that line - so an unguarded breakpoint check would stop once per node and
-  // make `continue` look broken. It fires once per visit instead.
-  it("fires a line breakpoint once per visit, not once per expression", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("wide.hb") });
-    await dc.waitForEvent("stopped");
-    await dc.setBreakpointsRequest({
-      source: { path: fixture("wide.hb") },
-      breakpoints: [{ line: 5 }], // eight nodes start here
-    });
-
-    await dc.continueRequest({ threadId: 1 });
+  // A line holds many expressions here, and an enclosing one finishes long
+  // after the line it starts on - so a breakpoint fires once, on the widest
+  // expression contained in the line, and `continue` reaches the end.
+  it("fires a line breakpoint once, not once per expression", async () => {
+    await session(dc, { program: fixture("wide.hb"), breakpoints: [5] });
     const first = await dc.waitForEvent("stopped");
     assert.strictEqual(first.body.reason, "breakpoint");
 
-    // The next continue must reach the end of the program, not the same line
-    // over and over.
     await dc.continueRequest({ threadId: 1 });
     const output = await dc.waitForEvent("output");
     assert.strictEqual(output.body.output.trim(), "24");
     await dc.waitForEvent("terminated");
   });
 
-  // One task, so one thread - and it is named, because a client shows the
-  // name rather than the id.
   it("reports the program as thread 1", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("arith.hb") });
+    await session(dc, { program: fixture("arith.hb"), stopOnEntry: true });
     await dc.waitForEvent("stopped");
 
     const response = await dc.threadsRequest();
@@ -176,74 +168,42 @@ describe("hb dap", function () {
   });
 
   // Inside a call there are two frames: the call, and the program under it.
-  // The outer frame's line is where the call was made from, which is what
-  // makes a stack trace readable.
   it("builds a stack out of the calls in flight", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("call.hb") });
-    await dc.waitForEvent("stopped");
-    await dc.setBreakpointsRequest({
-      source: { path: fixture("call.hb") },
-      breakpoints: [{ line: 6 }], // the body itself, so the call is still in flight
-    });
-
-    await dc.continueRequest({ threadId: 1 });
+    await session(dc, { program: fixture("call.hb"), breakpoints: [6] });
     await dc.waitForEvent("stopped");
 
-    const trace = await dc.stackTraceRequest({ threadId: 1 });
-    const names = trace.body.stackFrames.map((f) => f.name);
+    const { frames } = await whereIsIt(dc);
+    const names = frames.map((f) => f.name);
     assert.ok(names.length >= 2, `expected a call and the program, got ${JSON.stringify(names)}`);
     assert.strictEqual(names[names.length - 1], "<program>");
   });
 
-  // Two scopes, and Locals holds the program's own names - not the builtins,
-  // which are always in scope and never what someone is looking for.
+  // Locals holds the program's own names - not the builtins, which are always
+  // in scope and never what anyone is looking for.
   it("shows the result and the local bindings", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("locals.hb") });
-    await dc.waitForEvent("stopped");
-    await dc.setBreakpointsRequest({
-      source: { path: fixture("locals.hb") },
-      breakpoints: [{ line: 6 }],
-    });
-    await dc.continueRequest({ threadId: 1 });
+    await session(dc, { program: fixture("locals.hb"), breakpoints: [6] });
     await dc.waitForEvent("stopped");
 
-    const trace = await dc.stackTraceRequest({ threadId: 1 });
-    const scopes = await dc.scopesRequest({ frameId: trace.body.stackFrames[0].id });
-    const names = scopes.body.scopes.map((s) => s.name);
-    assert.deepStrictEqual(names, ["Result", "Locals"]);
+    const { scopes } = await whereIsIt(dc);
+    assert.deepStrictEqual(scopes.map((s) => s.name), ["Result", "Locals"]);
 
-    const locals = scopes.body.scopes.find((s) => s.name === "Locals");
-    const vars = await dc.variablesRequest({ variablesReference: locals.variablesReference });
-    const bound = vars.body.variables.map((v) => v.name);
-    assert.ok(bound.includes("width"), "expected width among " + JSON.stringify(bound));
-    assert.ok(!bound.includes("loadfile"), "the builtins are not locals");
+    const locals = await scopeVariables(dc, scopes, "Locals");
+    const names = locals.map((v) => v.name);
+    assert.ok(names.includes("width"), "expected width among " + JSON.stringify(names));
+    assert.ok(!names.includes("loadfile"), "the builtins are not locals");
 
-    const width = vars.body.variables.find((v) => v.name === "width");
+    const width = locals.find((v) => v.name === "width");
     assert.strictEqual(width.value, "4");
     assert.strictEqual(width.type, "Integer");
   });
 
-  // A Table is expandable: the client gets a reference back and can ask for
-  // its entries, which is how a variables pane draws a tree.
   it("expands a Table into its entries", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("table.hb") });
-    await dc.waitForEvent("stopped");
-    await dc.setBreakpointsRequest({
-      source: { path: fixture("table.hb") },
-      breakpoints: [{ line: 6 }],
-    });
-    await dc.continueRequest({ threadId: 1 });
+    await session(dc, { program: fixture("table.hb"), breakpoints: [6] });
     await dc.waitForEvent("stopped");
 
-    const trace = await dc.stackTraceRequest({ threadId: 1 });
-    const scopes = await dc.scopesRequest({ frameId: trace.body.stackFrames[0].id });
-    const locals = scopes.body.scopes.find((s) => s.name === "Locals");
-    const vars = await dc.variablesRequest({ variablesReference: locals.variablesReference });
-
-    const t = vars.body.variables.find((v) => v.name === "point");
+    const { scopes } = await whereIsIt(dc);
+    const locals = await scopeVariables(dc, scopes, "Locals");
+    const t = locals.find((v) => v.name === "point");
     assert.strictEqual(t.type, "Table");
     assert.ok(t.variablesReference > 0, "a Table can be expanded");
 
@@ -252,117 +212,68 @@ describe("hb dap", function () {
     assert.ok(keys.includes("x") && keys.includes("y"), JSON.stringify(keys));
   });
 
-  // The console evaluates in the stopped scope, so it sees the program's own
-  // names - which is the whole point of a watch expression.
   it("evaluates an expression in the stopped scope", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("locals.hb") });
+    await session(dc, { program: fixture("locals.hb"), breakpoints: [6] });
     await dc.waitForEvent("stopped");
-    await dc.setBreakpointsRequest({
-      source: { path: fixture("locals.hb") },
-      breakpoints: [{ line: 6 }],
-    });
-    await dc.continueRequest({ threadId: 1 });
-    await dc.waitForEvent("stopped");
+    const { frame } = await whereIsIt(dc);
 
-    const trace = await dc.stackTraceRequest({ threadId: 1 });
-    const frameId = trace.body.stackFrames[0].id;
-
-    const arith = await dc.evaluateRequest({ expression: "2 + 3", frameId });
+    const arith = await dc.evaluateRequest({ expression: "2 + 3", frameId: frame.id });
     assert.strictEqual(arith.body.result, "5");
 
-    const local = await dc.evaluateRequest({ expression: "width * 2", frameId });
+    const local = await dc.evaluateRequest({ expression: "width * 2", frameId: frame.id });
     assert.strictEqual(local.body.result, "8", "the stopped scope's own names are visible");
   });
 
   // A program reaches only the directories the launch names, exactly as on the
   // command line (SPEC.md §9/§16) - a debug session is not a way around that.
   it("gives the program only the directories the launch config names", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({
-      program: fixture("reads.hb"),
-      dirs: { here: FIXTURES },
-    });
-    await dc.waitForEvent("stopped");
-    await dc.continueRequest({ threadId: 1 });
-
+    await session(dc, { program: fixture("reads.hb"), dirs: { here: FIXTURES } });
     const output = await dc.waitForEvent("output");
     assert.match(output.body.output, /payload/);
     await dc.waitForEvent("terminated");
   });
 
-  // The names in `dirs` outlive the request that carried them, so they have
-  // to be copied out of it. Borrowing them left ctx.dirs keyed on reused
-  // memory - a garbled name in a variables pane, and a lookup that failed
-  // only sometimes, which is the worst way for it to fail.
+  // The names in `dirs` outlive the request that carried them, so they have to
+  // be copied out of it. Borrowing them left ctx.dirs keyed on reused memory -
+  // a garbled name in a variables pane, and a lookup that failed only
+  // sometimes, which is the worst way for it to fail.
   it("keeps the launch config's directory names intact", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("reads.hb"), dirs: { here: FIXTURES } });
+    await session(dc, {
+      program: fixture("reads.hb"),
+      dirs: { here: FIXTURES },
+      stopOnEntry: true,
+    });
     await dc.waitForEvent("stopped");
+    const { frame } = await whereIsIt(dc);
 
-    const trace = await dc.stackTraceRequest({ threadId: 1 });
-    const frameId = trace.body.stackFrames[0].id;
-
-    const named = await dc.evaluateRequest({ expression: "ctx.dirs.here", frameId });
+    const named = await dc.evaluateRequest({ expression: "ctx.dirs.here", frameId: frame.id });
     assert.strictEqual(named.success, true, "ctx.dirs.here must still be reachable by that name");
     assert.match(named.body.result, /^<directory: /);
 
-    const all = await dc.evaluateRequest({ expression: "ctx.dirs", frameId });
+    const all = await dc.evaluateRequest({ expression: "ctx.dirs", frameId: frame.id });
     assert.match(all.body.result, /^\{here: /, "the key is the name the launch config used");
   });
 
-  it("fails the launch when a program names a directory it was not given", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("reads.hb") }); // no dirs at all
-    await dc.waitForEvent("stopped");
-    await dc.continueRequest({ threadId: 1 });
-
+  it("fails where a program names a directory it was not given", async () => {
+    await session(dc, { program: fixture("reads.hb") }); // no dirs at all
     const stopped = await dc.waitForEvent("stopped");
     assert.strictEqual(stopped.body.reason, "exception", "a failure stops where it happened");
-  });
-
-  // Running off the end is a normal ending: the value goes to the console, and
-  // the session terminates with a code.
-  it("terminates with the program's value", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("arith.hb") });
-    await dc.waitForEvent("stopped");
-    await dc.continueRequest({ threadId: 1 });
-
-    const output = await dc.waitForEvent("output");
-    assert.strictEqual(output.body.output.trim(), "14");
-    const exited = await dc.waitForEvent("exited");
-    assert.strictEqual(exited.body.exitCode, 0);
-    await dc.waitForEvent("terminated");
   });
 
   // Every failure in this language is fatal (§8), which is what DAP calls an
   // exception - so the run stops at the node that failed rather than unwinding
   // silently to the end.
   it("stops where a program fails", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("fails.hb") });
-    await dc.waitForEvent("stopped");
-    await dc.continueRequest({ threadId: 1 });
-
+    await session(dc, { program: fixture("fails.hb") });
     const stopped = await dc.waitForEvent("stopped");
     assert.strictEqual(stopped.body.reason, "exception");
     assert.match(stopped.body.text, /boom/);
   });
 
   // `async` (SPEC.md §2) runs on real OS threads, so a session has more than
-  // one thread to show, and they stop together.
+  // one thread to report, and they stop together.
   it("reports each async task as a thread", async () => {
-    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
-    await dc.launchRequest({ program: fixture("async.hb") });
-    await dc.waitForEvent("stopped");
-    // Line 6 is after both `async` expressions have been evaluated, so both
-    // tasks exist by the time this is hit.
-    await dc.setBreakpointsRequest({
-      source: { path: fixture("async.hb") },
-      breakpoints: [{ line: 6 }],
-    });
-    await dc.continueRequest({ threadId: 1 });
+    await session(dc, { program: fixture("async.hb"), breakpoints: [6] });
     await dc.waitForEvent("stopped");
 
     const threads = await dc.threadsRequest();

@@ -73,6 +73,11 @@
               "cacheDir": {
                 "type": "string",
                 "description": "Where ctx.cache and `cached` keep entries. Defaults to the XDG cache dir."
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop at the very first expression the program evaluates. Off by default: that is a name lookup or a literal, which tells you nothing.",
+                "default": false
               }
             }
           }

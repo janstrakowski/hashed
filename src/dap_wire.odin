@@ -87,6 +87,41 @@ dap_out: struct {
   seq: int,
 }
 
+// `hb dap --log <path>`: every message in and out, appended as it happens.
+// A protocol bug is almost always a disagreement about what was sent, and
+// this is the only way to settle one - twice now, what a client actually did
+// was not what the adapter was written to expect.
+@(private = "file")
+dap_log: struct {
+  mu:      sync.Mutex,
+  file:    ^os.File,
+  enabled: bool,
+}
+
+dap_log_open :: proc(path: string) {
+  if path == "" do return
+  file, err := os.open(path, os.File_Flags{.Write, .Create, .Append})
+  if err != nil do return // a log that cannot be written is not worth failing over
+  dap_log.file = file
+  dap_log.enabled = true
+  dap_log_write("--- session start ---")
+}
+
+dap_log_close :: proc() {
+  if !dap_log.enabled do return
+  dap_log_write("--- session end ---")
+  os.close(dap_log.file)
+  dap_log.enabled = false
+}
+
+dap_log_write :: proc(line: string) {
+  if !dap_log.enabled do return
+  sync.mutex_lock(&dap_log.mu)
+  defer sync.mutex_unlock(&dap_log.mu)
+  os.write_string(dap_log.file, line)
+  os.write_string(dap_log.file, "\n")
+}
+
 // A body-writing callback plus its context, because Odin's `proc` values do
 // not capture. Every response and event below is built this way: the envelope
 // is written once, here, and the callback fills in the part that differs.
@@ -170,6 +205,7 @@ dap_next_seq :: proc() -> int {
 dap_write :: proc(payload: string) {
   sync.mutex_lock(&dap_out.mu)
   defer sync.mutex_unlock(&dap_out.mu)
+  dap_log_write(fmt.tprintf("<-- %s", payload))
   header := fmt.tprintf("Content-Length: %d\r\n\r\n", len(payload))
   os.write_string(os.stdout, header)
   os.write_string(os.stdout, payload)

@@ -58,11 +58,22 @@ Dap_Session :: struct {
   bp_lines:   [dynamic]int,
   bp_ids:     [dynamic]int,
   next_bp_id: int,
+
+  // `stopOnEntry` in the launch configuration. Off by default, because the
+  // first node a program finishes is a name lookup or a literal - `loadfile`,
+  // `2` - and stopping there tells nobody anything. The run still *parks*
+  // there either way: that is what gives a client the gap it needs to send
+  // its breakpoints, and `configurationDone` is what lets it go.
+  stop_on_entry: bool,
+  launched:      bool,
 }
 
 // The entry point `hb dap` runs (main.odin). Blocks reading stdin until the
 // client disconnects or stdin closes.
 run_dap_server :: proc(opts: Cli_Options) {
+  dap_log_open(opts.dap_log)
+  defer dap_log_close()
+
   s := Dap_Session{lines_start_at_1 = true, columns_start_at_1 = true}
   s.var_refs = make([dynamic]Value, 0, 16)
   s.bp_lines = make([dynamic]int, 0, 8)
@@ -79,6 +90,7 @@ run_dap_server :: proc(opts: Cli_Options) {
     body, ok := dap_read_message(&reader)
     if !ok do break // stdin closed: the client is gone
     defer delete(body)
+    dap_log_write(fmt.tprintf("--> %s", string(body)))
 
     parsed, perr := json.parse(body, json.DEFAULT_SPECIFICATION, true)
     if perr != nil do continue // unparseable framing is the client's problem, not ours
@@ -141,7 +153,24 @@ dap_handle_request :: proc(s: ^Dap_Session, msg: json.Object) {
     }, nil)
 
   case "configurationDone":
+    // The signal that configuration is over and the program may run. Either
+    // it stays where it is - parked at the first node, which is what
+    // `stopOnEntry` asks for - or it goes, and the next thing anyone hears
+    // about is a breakpoint, a failure, or the end.
     dap_respond_empty(seq, command)
+    if s.run != nil {
+      switch {
+      case s.stop_on_entry:
+        dap_report_state(s)
+      case debugger_stopped_at_breakpoint(s.run):
+        // The run is parked exactly where a breakpoint was just set, and
+        // that node will not be evaluated again - so this *is* the hit.
+        debugger_relabel_stop(s.run, "breakpoint")
+        dap_report_state(s)
+      case:
+        dap_go(s, .Running)
+      }
+    }
 
   case "threads":
     dap_threads(s, seq)
@@ -201,6 +230,7 @@ dap_launch :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
     return
   }
   s.no_debug = jv_bool(args, "noDebug")
+  s.stop_on_entry = jv_bool(args, "stopOnEntry")
 
   // Cloned, not borrowed: these strings belong to the parsed request, which
   // is freed when this request returns - while `ctx.dirs` keeps its keys for
@@ -235,9 +265,13 @@ dap_launch :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
     dap_error(seq, "launch", fmt.tprintf("%s does not parse, so there is nothing to debug", program))
     return
   }
+  s.launched = true
   dap_respond_empty(seq, "launch")
   dap_apply_breakpoints(s)
-  dap_report_state(s)
+  // Nothing is reported yet, and the run stays parked: the client has not
+  // sent its breakpoints at this point (VS Code sends them next, then
+  // `configurationDone`), and reporting a stop it did not ask for would leave
+  // it paused on a name lookup.
 }
 
 // Applies the breakpoints the client set before there was a run to set them

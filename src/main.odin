@@ -17,6 +17,9 @@ drive - see GETTING_STARTED.md for what to put in a launch configuration.
 Options:
   -a, --ast           Print the parsed AST before evaluating
   -e, --eval <expr>   Evaluate <expr> like one REPL submission and exit
+      --log <path>     With hb dap: append every protocol message to
+                       <path>. The only way to see what a client actually
+                       sent, which is rarely what you assumed
       --dir <name>=<path>
                        Open <path> as ctx.dirs.<name>, a directory the
                        program may read and write inside. Repeatable
@@ -52,6 +55,8 @@ Cli_Options :: struct {
   // --dir <name>=<path>, in the order given: ctx.dirs (SPEC.md §9), and the
   // whole of what a program can reach. Empty means it reaches nothing.
   named_dirs: [dynamic]Named_Dir,
+  // --log <path>: where `hb dap` writes its protocol trace, or "" for none.
+  dap_log: string,
 }
 
 // -h/--version win wherever they appear (`hb -i --help` prints help rather
@@ -74,6 +79,10 @@ parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: b
       i += 1
       if i >= len(args) do return opts, "--cache-dir requires a path argument", false
       opts.cache_dir = args[i]
+    case "--log":
+      i += 1
+      if i >= len(args) do return opts, "--log requires a path argument", false
+      opts.dap_log = args[i]
     case "--dir":
       i += 1
       if i >= len(args) do return opts, "--dir requires a <name>=<path> argument", false
