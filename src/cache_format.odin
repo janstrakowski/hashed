@@ -189,6 +189,8 @@ write_value :: proc(b: ^strings.Builder, v: Value, w: ^Write_Ctx) -> string {
     return "a Function cannot be cached - a closure's meaning is its environment"
   case ^Cache_Value:
     return "ctx.cache cannot be cached - it is write-only and has no content"
+  case ^Workdir_Value:
+    return "ctx.dir cannot be cached - it is a handle, not content"
   case ^Async_Handle:
     return "an un-awaited async handle cannot be cached"
 

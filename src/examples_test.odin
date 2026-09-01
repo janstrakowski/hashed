@@ -36,7 +36,7 @@ EXAMPLE_CASES := []Example_Case{
   {"cached.hb", "{answer: 42, asking_again_agrees: true, per_argument: {small: 2, large: 11}, file_survives_the_round_trip: true, a_cycle_survives_too: true}"},
   {"check-and-invariants.hb", "100"},
   {"comparison-and-logic.hb", "{ordered: true, both: true, either: true, mixed: false}"},
-  {"context-permissions.hb", "{ambient: {io: nothing}, io_denied: {}, replaced: {}, still_ambient: {io: nothing}}"},
+  {"context-permissions.hb", "{ambient: {io: nothing, exec: nothing, anypath: nothing}, io_denied: {exec: nothing, anypath: nothing}, replaced: {}, still_ambient: {io: nothing, exec: nothing, anypath: nothing}}"},
   {"cyclic-data.hb", `{round_trip: "Alice", mutual: true, second_hop: "Carol", reordered: 3, same_shape: true}`},
   {"files-symlink.hb", `"optiona.txt"`},
   {"functions.hb", "121"},

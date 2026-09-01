@@ -33,14 +33,44 @@ import "core:unicode/utf8"
 make_root_context :: proc(cache_dir_override: string = "") -> Value {
   perms := new(Table_Value)
   append(&perms.entries, Table_Entry_Value{key = "io", value = Nothing_Value{}})
+  append(&perms.entries, Table_Entry_Value{key = "exec", value = Nothing_Value{}})
+  // `anypath` at the root is what keeps a handle-less `loadfile "x"` resolving
+  // the way it always has (§16). Narrowing to `workdir` - or to neither - is
+  // something a program or a host does on purpose; see ambient_mode below.
+  append(&perms.entries, Table_Entry_Value{key = "anypath", value = Nothing_Value{}})
 
   cache := new(Cache_Value)
   cache.dir_path = resolve_cache_dir(cache_dir_override)
 
+  // Starts at the process's cwd; a host that knows better replaces it (see
+  // ctx_set_workdir - eval_source_file points it at the source file's own
+  // directory, so a script behaves the same wherever it is invoked from).
+  wd := new(Workdir_Value)
+  wd.dir_fd = fs_cwd_dir()
+  if cwd, err := os.get_working_directory(context.allocator); err == nil {
+    wd.dir_path = to_forward_slashes(cwd)
+  }
+
   ctx_table := new(Table_Value)
   append(&ctx_table.entries, Table_Entry_Value{key = "permissions", value = perms})
   append(&ctx_table.entries, Table_Entry_Value{key = "cache", value = cache})
+  append(&ctx_table.entries, Table_Entry_Value{key = "dir", value = wd})
   return ctx_table
+}
+
+// Points a context's `.dir` (§9) at a specific directory, in place. Called by
+// whoever set up the run once it knows what "the current directory" means for
+// it: the source file's own directory for `hb file.hb`, the build file's for
+// hashmake, the process cwd for `-e` and the REPL (already the default).
+ctx_set_workdir :: proc(ctx: Value, dir_fd: Fs_Fd, dir_path: string) {
+  t, is_table := ctx.(^Table_Value)
+  if !is_table do return
+  wd_val, found := table_find(t, "dir")
+  if !found do return
+  wd, is_wd := wd_val.(^Workdir_Value)
+  if !is_wd do return
+  wd.dir_fd = dir_fd
+  wd.dir_path = dir_path
 }
 
 // XDG Base Directory spec: $XDG_CACHE_HOME/hashedbuild, falling back to
@@ -90,6 +120,7 @@ make_global_env :: proc() -> ^Env {
   env_bind(env, "readlink", new_native_function("readlink", builtin_readlink))
   env_bind(env, "chperm", new_native_function("chperm", builtin_chperm))
   env_bind(env, "filetext", new_native_function("filetext", builtin_filetext))
+  bind_build_builtins(env)
   return env
 }
 
@@ -98,14 +129,55 @@ make_global_env :: proc() -> ^Env {
 // it (hash.odin), and §15's `cached` reads and writes cache entries
 // (eval.odin). Both are I/O operations like any other here (SPEC.md §3/§9).
 ctx_allows_io :: proc(interp: ^Interpreter) -> bool {
+  return ctx_has_permission(interp, "io")
+}
+
+// §9's permissions are a Table used as a set: granted iff the key is *present*,
+// whatever its (always-`nothing`) value. Read live off the call site, never
+// captured - that is what lets a wrapping `withctx`/`chctx` restrict a builtin
+// from the outside.
+ctx_has_permission :: proc(interp: ^Interpreter, name: string) -> bool {
   t, is_table := interp.current_ctx.(^Table_Value)
   if !is_table do return false
   perms_val, found := table_find(t, "permissions")
   if !found do return false
   perms, perms_is_table := perms_val.(^Table_Value)
   if !perms_is_table do return false
-  _, io_found := table_find(perms, "io")
-  return io_found
+  _, name_found := table_find(perms, name)
+  return name_found
+}
+
+// What a handle-less path (`loadfile "x"`, `createfile { .path = … }`) is
+// allowed to resolve to. Three states, and which one is in force is decided
+// purely by which permission is present (§9):
+//
+//   anypath  - anywhere, as it always has: relative to the source file's own
+//              directory, or absolute, with no containment beyond `io`.
+//   workdir  - contained to ctx.dir, by the same component-by-component walk
+//              the { .dir, .path } form uses: ".." and an absolute path are
+//              refused, a symlink anywhere along the way is refused, and "."
+//              resolves to ctx.dir itself rather than escaping through it.
+//   denied   - refused outright; only the handle forms work.
+//
+// `anypath` subsumes `workdir`, so holding both is not an error - it just
+// means anypath. A host narrows by dropping anypath, which is what hashmake
+// does so a build description cannot read outside its own project.
+Ambient_Mode :: enum { Denied, Workdir, Anypath }
+
+ambient_mode :: proc(interp: ^Interpreter) -> Ambient_Mode {
+  if ctx_has_permission(interp, "anypath") do return .Anypath
+  if ctx_has_permission(interp, "workdir") do return .Workdir
+  return .Denied
+}
+
+// ctx.dir's handle, for the contained ambient mode and for use as a `.dir`.
+ctx_workdir :: proc(interp: ^Interpreter) -> (^Workdir_Value, bool) {
+  t, is_table := interp.current_ctx.(^Table_Value)
+  if !is_table do return nil, false
+  val, found := table_find(t, "dir")
+  if !found do return nil, false
+  wd, is_wd := val.(^Workdir_Value)
+  return wd, is_wd
 }
 
 // The directory unsandboxed (no .dir given) loadfile/createfile calls
@@ -200,20 +272,51 @@ resolve_target :: proc(interp: ^Interpreter, t: ^Table_Value, path_str: string, 
   dir_val, has_dir := table_find(t, "dir")
   if !has_dir {
     if dir_required do return {}, "requires a .dir directory handle", false
-    return Resolved_Path{fd = unsandboxed_dir_fd(interp), basename = path_str, display_dir = unsandboxed_dir_path(interp)}, "", true
+    return resolve_ambient(interp, path_str)
+  }
+
+  // ctx.dir (§9) is accepted wherever a directory handle is, exactly as
+  // ctx.cache is by createfile - it *is* a directory, just not a File.
+  if wd, is_wd := dir_val.(^Workdir_Value); is_wd {
+    return resolve_beneath_handle(wd.dir_fd, wd.dir_path, path_str)
   }
   dir_file, dir_ok := dir_val.(^File_Value)
   if !dir_ok || dir_file.kind != .Directory {
     return {}, ".dir must be a directory File", false
   }
-  parent_fd, basename, rerr := resolve_parent_beneath(dir_file.dir_fd, path_str)
+  return resolve_beneath_handle(dir_file.dir_fd, dir_file.display_path, path_str)
+}
+
+// A path written with no directory handle, resolved per the ambient mode in
+// force (§9 - see Ambient_Mode). Both spellings of a handle-less path go
+// through here - `loadfile "x"` and `createfile { .path = "x" }` - so the
+// containment cannot hold for one and not the other.
+resolve_ambient :: proc(interp: ^Interpreter, path_str: string) -> (r: Resolved_Path, err_msg: string, ok: bool) {
+  switch ambient_mode(interp) {
+  case .Anypath:
+    return Resolved_Path{fd = unsandboxed_dir_fd(interp), basename = path_str, display_dir = unsandboxed_dir_path(interp)}, "", true
+  case .Workdir:
+    wd, has_wd := ctx_workdir(interp)
+    if !has_wd do return {}, "workdir is granted but this context has no .dir to contain to", false
+    return resolve_beneath_handle(wd.dir_fd, wd.dir_path, path_str)
+  case .Denied:
+    return {}, "resolving a path without a .dir handle needs the workdir or anypath permission", false
+  }
+  return {}, "unknown ambient path mode", false
+}
+
+// The contained resolution both the handle forms and the `workdir` ambient
+// mode share - one walk, so the guarantee cannot drift between them.
+@(private = "file")
+resolve_beneath_handle :: proc(dir_fd: Fs_Fd, display: string, path_str: string) -> (r: Resolved_Path, err_msg: string, ok: bool) {
+  parent_fd, basename, rerr := resolve_parent_beneath(dir_fd, path_str)
   if rerr != .None {
     return {}, fmt.tprintf("path escapes its directory or doesn't exist (%v)", rerr), false
   }
   return Resolved_Path{
     fd = parent_fd, basename = basename,
-    needs_close = parent_fd != dir_file.dir_fd,
-    display_dir = dir_file.display_path,
+    needs_close = parent_fd != dir_fd,
+    display_dir = display,
   }, "", true
 }
 
@@ -429,7 +532,14 @@ builtin_loadfile :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, 
   if !ctx_allows_io(interp) do return fail(interp, "loadfile: io permission not granted in the current context")
 
   if path, is_str := arg.(string); is_str {
-    return open_and_load(interp, unsandboxed_dir_fd(interp), path, false, display_join(unsandboxed_dir_path(interp), path))
+    contained := ambient_mode(interp) == .Workdir
+    r, err_msg, ok := resolve_ambient(interp, path)
+    if !ok do return fail(interp, fmt.tprintf("loadfile: %s", err_msg))
+    defer close_resolved(r)
+    // no_follow only where the walk actually contained the path. Under
+    // `anypath` this form has always followed symlinks, and quietly changing
+    // that would break programs that legitimately load through one.
+    return open_and_load(interp, r.fd, r.basename, contained, display_join(r.display_dir, path))
   }
 
   t, is_table := arg.(^Table_Value)

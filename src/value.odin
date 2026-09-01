@@ -84,6 +84,21 @@ Cache_Value :: struct {
   opened:   bool,
 }
 
+// SPEC.md §9's ctx.dir: a handle to the directory a program was started in -
+// the running source file's own directory, or the process's cwd. Its own type
+// rather than a directory File, for one specific reason: §15 puts the whole
+// `ctx` into every `cached` key, and a directory File hashes over its contents
+// (§3), so a File here would make every cache entry depend on every byte of
+// the project tree - touching any file would invalidate all of them. Like
+// ctx.cache it therefore hashes as a bare tag (hash.odin). Reading *through*
+// it yields ordinary Files that hash by content as usual, so nothing about
+// incremental correctness is given up; what is discarded is only the identity
+// of the directory itself, which is the same thing ctx.cache discards.
+Workdir_Value :: struct {
+  dir_path: string, // absolute - display-only, same as File_Value's
+  dir_fd:   Fs_Fd,
+}
+
 // SPEC.md §10's forward reference: a stand-in for a `let rec` Table entry that
 // is still being evaluated. Demand-driven evaluation reorders away every
 // dependency that has a topological order (see eval.odin's Rec_Build); one of
@@ -116,6 +131,7 @@ Value :: union {
   ^Function_Value,
   ^File_Value,
   ^Cache_Value,
+  ^Workdir_Value,
   ^Async_Handle, // SPEC.md §2 - a fired-but-not-yet-awaited `async` expression; see eval_async.odin
   ^Forward_Ref_Value, // SPEC.md §10 - a `let rec` cycle's back-edge, only ever unresolved mid-construction
 }
@@ -315,6 +331,9 @@ values_equal_bisim :: proc(a: Value, b: Value, bs: ^Bisim) -> bool {
   case ^Cache_Value:
     y, ok := bv.(^Cache_Value)
     return ok && x == y // reference equality - there's only ever one per context anyway
+  case ^Workdir_Value:
+    y, ok := bv.(^Workdir_Value)
+    return ok && x == y // as ctx.cache: one per context, and no content to compare
   case ^Async_Handle:
     // Every real call site awaits an operand before comparing it (see
     // eval_async.odin) - an un-awaited handle reaching here would be a bug

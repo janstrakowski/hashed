@@ -183,6 +183,10 @@ eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) ->
     interp.base_dir_fd = dir_fd
     interp.has_base_dir = true
     interp.base_dir_path = absolute_dir_path(dir_path)
+    // ctx.dir (§9) means "the directory this run is rooted at", which for a
+    // script is its own directory - the same one a handle-less path resolves
+    // against - so the two cannot disagree.
+    ctx_set_workdir(interp.current_ctx, dir_fd, interp.base_dir_path)
   }
   defer if dir_errno == .None do fs_close(dir_fd)
 
