@@ -130,7 +130,7 @@ test_parse_args_rejects_unknown_option :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_args_help_and_version_win_over_other_flags :: proc(t: ^testing.T) {
-  for args in ([][]string{{"-h"}, {"--help"}, {"-i", "--help"}, {"--help", "prog.hb"}}) {
+  for args in ([][]string{{"-h"}, {"--help"}, {"-a", "--help"}, {"--help", "prog.hb"}}) {
     opts, _, ok := parse_args(args)
     testing.expect(t, ok)
     testing.expect_value(t, opts.mode, Cli_Mode.Help)
@@ -142,23 +142,8 @@ test_parse_args_help_and_version_win_over_other_flags :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_parse_args_eval_cannot_combine_with_editor_or_file :: proc(t: ^testing.T) {
-  _, editor_err, editor_ok := parse_args([]string{"-e", "1", "-i"})
-  testing.expect(t, !editor_ok, "-e and -i are mutually exclusive")
-  testing.expect(t, strings.contains(editor_err, "interactive"))
-
+test_parse_args_eval_cannot_combine_with_a_file :: proc(t: ^testing.T) {
   _, file_err, file_ok := parse_args([]string{"-e", "1", "prog.hb"})
   testing.expect(t, !file_ok, "-e and a file argument are mutually exclusive")
   testing.expect(t, strings.contains(file_err, "file"))
-}
-
-@(test)
-test_parse_args_interactive_selects_the_editor :: proc(t: ^testing.T) {
-  opts, _, ok := parse_args([]string{"-i"})
-  testing.expect(t, ok)
-  testing.expect_value(t, opts.mode, Cli_Mode.Editor)
-
-  long, _, ok2 := parse_args([]string{"--interactive"})
-  testing.expect(t, ok2)
-  testing.expect_value(t, long.mode, Cli_Mode.Editor)
 }

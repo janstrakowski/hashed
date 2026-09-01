@@ -60,18 +60,11 @@ jobs:
       - name: Test
         run: odin test src -out:/tmp/hbtest
 
-      # The terminal UI cannot be driven from `odin test`, but it can be driven
-      # from a pty - and these keys have broken twice without anything noticing.
-      - name: Editor keys
-        run: |
-          odin build src -out:hb
-          python3 scripts/editor_keys_test.py ./hb
-
   # The third backend. `odin test` builds natively, so this job is what
-  # actually executes fs_windows.odin, task_native.odin's Windows half and
-  # term_windows.odin - the same suite as the Linux job, on the other native
-  # target. Nothing here is skipped by the runner: the whole point is that the
-  # 138 tests run, not that they compile.
+  # actually executes fs_windows.odin and task_native.odin's Windows half - the
+  # same suite as the Linux job, on the other native target. Nothing here is
+  # skipped by the runner: the whole point is that the tests run, not that they
+  # compile.
   windows:
     runs-on: windows-latest
     env:
@@ -132,20 +125,6 @@ jobs:
 
       - name: Test
         run: odin test src -out:hbtest.exe
-
-      # The same keys the Linux job checks through a pty, checked here through a
-      # real console instead - see the script's header for why not ConPTY. This
-      # is the only thing that exercises term_windows.odin: `odin test` cannot
-      # press keys, and removing ENABLE_VIRTUAL_TERMINAL_INPUT from it fails
-      # five of these eight checks.
-      #
-      # The script allocates its own console, because a workflow step has none
-      # (its stdio is a pipe). If that ever stops working on the runner image it
-      # will say so and exit non-zero rather than passing quietly.
-      - name: Editor keys
-        run: |
-          odin build src -out:hb.exe
-          python scripts/editor_keys_test_windows.py .\hb.exe
 
   # The Odin suite only ever builds natively, so nothing in it can execute
   # fs_wasi.odin. This job builds the WASI target and checks the examples
@@ -290,70 +269,3 @@ jobs:
       # evaluator's recursion outgrows on the larger examples.
       - name: Examples agree with real threads
         run: scripts/wasi_smoke.sh ./hb ./hb-threads.wasm "$HOME/iwasm/iwasm" --stack-size=4194304 --max-threads=8
-
-  # The playground is the interpreter running in a browser, so it can break in
-  # ways neither the Odin suite nor the wasm smoke tests can see: the WASI shim
-  # (docs/wasi.js) is a hand-written host, and the page's persistence only
-  # exists inside a real browser's IndexedDB.
-  playground:
-    runs-on: ubuntu-latest
-    env:
-      ODIN_VERSION: dev-2026-08
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Cache Odin
-        id: cache-odin
-        uses: actions/cache@v6
-        with:
-          path: ~/odin
-          key: odin-linux-amd64-${{ env.ODIN_VERSION }}
-
-      - name: Install Odin ${{ env.ODIN_VERSION }}
-        if: steps.cache-odin.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p "$HOME/odin"
-          curl -fsSL "https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/odin-linux-amd64-${ODIN_VERSION}.tar.gz" \
-            | tar xz -C "$HOME/odin" --strip-components=1
-
-      - name: Put Odin on PATH
-        run: echo "$HOME/odin" >> "$GITHUB_PATH"
-
-      - name: Ensure clang and wasm-ld are present
-        run: |
-          missing=""
-          command -v clang >/dev/null || missing="$missing clang"
-          command -v wasm-ld >/dev/null || missing="$missing lld"
-          if [ -n "$missing" ]; then
-            # The runner image carries third-party apt sources (azure-cli, for
-            # one) that intermittently return 403. `apt-get update` then fails
-            # wholesale and takes the job with it, over a repository nothing
-            # here needs. Let it fail; the install is what decides.
-            sudo apt-get update || echo "apt-get update reported errors; continuing anyway"
-            sudo apt-get install -y $missing
-          fi
-
-      # The shim half of the playground test compares the wasm against the
-      # native build, example by example - the two have to agree.
-      - name: Build native hb
-        run: odin build src -out:hb
-
-      # Both are generated, not committed - the same two commands the Pages
-      # workflow runs. Building them here is what makes the test below test the
-      # artifacts the site will actually serve.
-      - name: Build the interpreter and the filesystem
-        run: |
-          scripts/build_wasi.sh --threads-web -out:docs/hb.wasm
-          python3 scripts/build_playground_files.py
-
-      # One test, two halves: the WASI shim in a page, then the terminal around
-      # it. Throttled, because the unthrottled run on a fast machine is what let
-      # a real input race through in the first place.
-      - name: The playground
-        env:
-          # Enough to expose input races (it caught one), without making every
-          # module instantiation a test of the timeouts.
-          THROTTLE: 2
-        run: |
-          python3 scripts/playground_browser_test.py \
-            "$(command -v google-chrome || command -v chromium-browser || command -v chromium)"

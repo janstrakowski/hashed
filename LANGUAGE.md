@@ -707,9 +707,7 @@ odin build src -out:hb.exe
 ```
 
 Everything in this document works there — the same parser, evaluator, `async`
-on real threads, the filesystem builtins, and `hb.exe -i` for the live editor
-and debugger (the console is put into virtual-terminal mode, so the keys are
-the ones listed above, not a separate Windows set).
+on real threads, the filesystem builtins, and `hb.exe dap` for debugging.
 
 Four things are visibly Windows rather than Linux, and none of them is a
 different language:
@@ -786,61 +784,6 @@ checkout path natively.
 
 `scripts/wasi_smoke.sh` runs the examples on a wasm build and compares them
 against native; CI does it for both flavours on every push.
-
-## In a browser
-
-[**The terminal**](https://janstrakowski.github.io/hashedbuild/playground.html)
-is this CLI, compiled to WebAssembly and running in your own tab, with the
-repository as its filesystem — the same files you would have after cloning:
-
-```
-$ ls                          the repo: src/, examples/, SPEC.md, …
-$ cat examples/guard-chain.hb
-$ hb examples/guard-chain.hb  run it
-$ hb -e '1 + 2 * 3'           evaluate an expression
-$ hb                          the REPL, reading what you type
-```
-
-`hb` there is the interpreter's **real** REPL loop, blocking on stdin: the
-banner, the `hb> ` and `... ` prompts and `:q` come out of the module, not out
-of the page. That works because the interpreter runs in a Web Worker, which can
-block without freezing the tab, reading a `SharedArrayBuffer` the page writes
-into — and that in turn needs cross-origin isolation, which a service worker
-supplies since GitHub Pages cannot set the headers itself. Ctrl+D sends
-end-of-input.
-
-`hb -i` opens the **live editor** in there too: the same two-to-four-pane TUI as
-on a real terminal, re-parsing and re-evaluating on every keystroke, with the
-examples picker (Ctrl+E) listing the repository and the debugger stepping a
-paused run. It draws ANSI into xterm.js, which the page loads only when you ask
-for it. Its keys need a word of explanation, because a browser tab is not a terminal:
-`Alt`+number is the browser's tab switcher, so the page takes those keys back
-before the browser acts on them — and `Ctrl+N` and `Ctrl+Q` cannot be taken
-back at all (they open a window and quit the browser, decided before any page
-sees the key), so there they are **`Ctrl+Alt+N`** to step the debugger and
-**`Ctrl+Alt+Q`** to quit. The editor's own status line says so when it is
-running in a browser.
-
-**`async` runs on real threads there**, which is the same wasi-threads build the
-CLI uses — the browser just implements the proposal itself: `thread-spawn`
-starts another Worker, instantiating the same module against the same
-`WebAssembly.Memory`. That shared memory is also what makes the filesystem work
-across threads: every WASI call's arguments are pointers into it, so a spawned
-thread marshals the call to whichever worker owns the filesystem and blocks on
-the answer, without copying anything.
-
-Anything a program writes stays in your browser's IndexedDB: `createfile` lands
-in the filesystem, `ctx.cache` writes to `/cache/hashedbuild`, and both survive
-a reload. When the repository itself moves on, a returning visitor's copy of it
-is written over to match — anything you made is left alone, and `reset` puts
-everything back. No server, nothing sent anywhere, and clearing site data is the
-uninstall.
-
-The page is `docs/playground.html`; `docs/terminal-worker.js` owns the
-filesystem and spawns threads; `docs/exec-worker.js` is one instance of the
-interpreter (the program, or a thread it spawned); and `docs/wasi.js` is the
-WASI host under all of it, implementing the preview1 calls the interpreter
-imports plus the marshalling that carries them between threads.
 
 ## Where to go next
 

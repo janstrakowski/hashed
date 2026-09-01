@@ -16,25 +16,18 @@ See also [NixOS](https://nixos.org/) and [Guix](https://guix.gnu.org/).
 
 # Progress
 
-![A short tour of what's working today: the parser, the evaluator, real concurrency, the pausable debugger, and the live terminal editor, each demonstrated for real.](docs/media/showcase.gif)
-
-(Looping preview above - for the full-quality, pausable version, [download the mp4](https://raw.githubusercontent.com/janstrakowski/hashedbuild/main/docs/media/showcase.mp4).)
-
-Want to try it without installing anything? **[Open the terminal in your browser](https://janstrakowski.github.io/hashedbuild/playground.html)** - it is this CLI compiled to WebAssembly, with this repository as its filesystem:
+`hb` is a small CLI: run a program, evaluate an expression, a REPL, and a debug adapter.
 
 ```
-$ ls                                the repo: src/, examples/, SPEC.md, ...
-$ hb examples/guard-chain.hb        run a program
-$ hb -e '1 + 2 * 3'                 evaluate an expression
-$ hb                                the REPL
-$ hb -i                             the live editor, panes and all
+$ hb --dir here=examples examples/guard-chain.hb   run a program
+$ hb -e '1 + 2 * 3'                                evaluate an expression
+$ hb                                               the REPL
+$ hb dap                                           the debugger, over DAP
 ```
 
-The REPL is the interpreter's own loop reading what you type, `async` runs on real threads (Web Workers sharing one WebAssembly memory), and files you create persist in your browser between visits. There is no server: nothing you type leaves the tab.
+Debugging is the [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/) - the same protocol VS Code, nvim-dap, emacs `dape` and Zed already speak, and that GDB itself now exposes - so breakpoints, a call stack and a variables pane come from an editor you already use rather than from a UI shipped here. **[GETTING_STARTED.md](GETTING_STARTED.md)** has the few lines of configuration each one needs.
 
-Prefer it locally? **[GETTING_STARTED.md](GETTING_STARTED.md)** walks through setting up, running, and experimenting with everything shown above.
-
-A real parser and tree-walking evaluator exist now (`src/`, with a full test suite), covering the core expression language - functions, pattern matching, guard chains, real concurrency (`async`, running on actual OS threads) - plus a small set of filesystem builtins with capability-scoped permissions and a live, self-hosted terminal editor with a genuinely pausable/resumable debugger. Unlike the aspirational examples further down, the program below actually runs:
+A real parser and tree-walking evaluator exist now (`src/`, with a full test suite), covering the core expression language - functions, pattern matching, guard chains, real concurrency (`async`, running on actual OS threads) - plus a small set of filesystem builtins with capability-scoped permissions and a genuinely pausable/resumable debugger exposed over the Debug Adapter Protocol. Unlike the aspirational examples further down, the program below actually runs:
 
 ```hashedbuild
 // examples/option-picker.hb - reads choice.txt out of ctx.dirs.here, the
@@ -58,7 +51,7 @@ let choice loadfile { .dir = ctx.dirs.here, .path = "choice.txt" } |> filetext;
     error "choice.txt must contain exactly \"option A\" or \"option B\""
 ```
 
-Run it with `./hb --dir here=examples examples/option-picker.hb` - a program reaches exactly the directories the command line names and nothing else, which is why its inputs are visible in how you run it (the example carries that line in its own header, as every example that touches the filesystem does). Or explore it live with `./hb -i` - a two-to-four-pane terminal editor with a built-in examples picker, a live AST view, and a step-by-step evaluation trace. This one example touches a few of the language's actual design points: files are ordinary values reached through directory handles rather than paths (`loadfile`/`createfile`), branching is built from general composable operators rather than bespoke syntax (`then`/`else` chains into an if/else-if/else), and `error` is a genuinely unrecoverable failure - unlike a failed `then`, no enclosing `else` catches it.
+Run it with `./hb --dir here=examples examples/option-picker.hb` - a program reaches exactly the directories the command line names and nothing else, which is why its inputs are visible in how you run it (the example carries that line in its own header, as every example that touches the filesystem does). Or step through it in your editor with `./hb dap` (see [GETTING_STARTED.md](GETTING_STARTED.md)). This one example touches a few of the language's actual design points: files are ordinary values reached through directory handles rather than paths (`loadfile`/`createfile`), branching is built from general composable operators rather than bespoke syntax (`then`/`else` chains into an if/else-if/else), and `error` is a genuinely unrecoverable failure - unlike a failed `then`, no enclosing `else` catches it.
 
 **[LANGUAGE.md](LANGUAGE.md)** is the tour of everything that works today, feature by feature, with a runnable snippet for each and an explicit list of what isn't built yet. **[examples/](examples/)** has a runnable file per feature - all of them executed by the test suite, so they can't drift from the implementation. `SPEC.md` is the full design, including the parts that don't run yet.
 

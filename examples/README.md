@@ -9,9 +9,9 @@ quietly rotting. Adding a `.hb` file here without a corresponding assertion in
 Run one with:
 
 ```sh
-./hb examples/tables-map.hb        # from anywhere - paths resolve to the file
+./hb examples/tables-map.hb        # one that reads nothing needs no flags
 ./hb -a examples/functions.hb      # print the AST first
-./hb -i                            # the live editor; Ctrl+E opens this list
+./hb dap                           # debug one from your editor
 ```
 
 [LANGUAGE.md](../LANGUAGE.md) walks the same ground feature by feature, with

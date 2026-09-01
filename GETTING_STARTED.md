@@ -1,6 +1,6 @@
 # Getting started
 
-Everything shown in the [showcase video](README.md#progress) is real, runnable code. This walks through setting HashedBuild up and trying each of those things yourself.
+Everything in [README.md](README.md) and [LANGUAGE.md](LANGUAGE.md) is real, runnable code. This walks through setting HashedBuild up and trying it yourself.
 
 ## Setup
 
@@ -51,7 +51,6 @@ If a freshly built binary refuses to start with *"An Application Control policy 
 - **`./hb -e '<expression>'`** - evaluate one expression and exit, like a single REPL submission. Handy for trying anything on this page without opening a file: `./hb -e '{ .a = 1 } concat { .b = 2 }'`.
 - **`./hb`** (no arguments) - a line-based REPL. Type an expression, then an empty line to evaluate it; `:q` to quit.
 - **`./hb -a path/to/program.hb`** - print the full AST before evaluating. Works with `-e` too.
-- **`./hb -i`** - the live terminal editor (needs a real terminal, not a pipe).
 - **`./hb --dir <name>=<path> ...`** - open `<path>` and hand it to the program as `ctx.dirs.<name>`. This is the *only* way a program reaches the filesystem: it can read and write inside the directories named here, by name, and cannot name anything else. Repeatable, so `--dir src=./src --dir out=/tmp/out` hands over two. A run with no `--dir` hands over nothing, and such a program cannot touch the filesystem at all. Any path the shell accepts works here - absolute, relative, `..` and all - because it is resolved before the program starts; the sub-paths a *program* writes may say none of that.
 
   Every example that reads or writes carries the command line it needs on a `run:` line in its own header, so running one is a copy-and-paste:
@@ -61,11 +60,11 @@ If a freshly built binary refuses to start with *"An Application Control policy 
   cd examples && ../hb --dir here=. option-picker.hb
   ```
 
-  The same goes for the live editor: `./hb -i --dir here=examples` is what lets an example opened with Ctrl+E actually read its neighbours. Without it the editor shows the failure the program would really have, which is the honest answer - the editor is not a quieter way to grant a program directories it was not given.
+  The same flags go into a debug session's launch configuration, for the same reason: a program being debugged reaches exactly what it was given, and nothing else.
 - **`./hb --cache-dir <path> ...`** - override where `ctx.cache` writes to, and where `cached` keeps its entries (defaults to your XDG cache dir; `%LOCALAPPDATA%\hashedbuild` on Windows). Handy for a throwaway cache: point it somewhere temporary and `cached` starts from nothing.
 - **`./hb --help`**, **`./hb --version`** - usage and version.
 
-## Try each part of the video
+## Try each part
 
 ### 1. The parser - see the AST
 
@@ -98,28 +97,9 @@ Open `examples/async-basics.hb` in an editor - it reads two files with `async`, 
 
 If you want to reproduce something closer to the video's *measured* 2-second comparison: `let t {0, 0, ..., 0}; t[1] + t[2] + ... + t[N]` (many bracket lookups into a large sequence-shaped table) gets slower roughly with `N²`; wrapping several of those in `async` and timing `hb` with and without it will show the same effect. Tune `N` for your machine.
 
-### 4. The debugger - genuinely pausable
-
-```sh
-./hb -i
-```
-
-Then:
-
-- `Ctrl+E` - open the examples picker, search for `async-branching`, `Enter` to load it.
-- `Alt+5` - show the Debugger panel (`Alt+1`-`Alt+4` toggle Source/AST/Result/Steps if you want more room).
-- `Ctrl+N` - advance one real step. Every currently-paused task (the main program, and any `async` task in flight) advances together, in lockstep.
-- `Ctrl+R` - restart the run from scratch.
-
-Watch for `✂` (a node that's been evaluated), `▶` (about to be evaluated next), `⏳` (something is blocked awaiting it), and `∅` (evaluated only because SPEC.md §2 requires an untaken branch's `async` work to finish anyway - its value gets discarded).
-
-### 5. The live, self-hosted editor
-
-Still in `./hb -i`: start typing an expression in the Source pane and watch the AST and Result panes react on every keystroke. `Alt+1` through `Alt+5` show/hide the Source/AST/Result/Steps/Debugger panels; `Alt+,` and `Alt+.` reorder them. `Ctrl+S` saves, `Ctrl+O` loads by path, `Ctrl+E` opens the examples picker, `Ctrl+Q` quits.
-
 ## Where to go next
 
 - **[LANGUAGE.md](LANGUAGE.md)** - every feature that works today, with runnable snippets: values, operators, Tables, functions, pattern matching, failure, files, permissions, concurrency - and an explicit list of what isn't built yet.
 - **[examples/](examples/)** - a runnable file per feature, indexed in [examples/README.md](examples/README.md). The test suite runs all of them.
 - **`SPEC.md`** - the full, evolving language design, including the parts that don't run yet.
-- **[The web terminal](https://janstrakowski.github.io/hashedbuild/playground.html)** - the same CLI in your browser: the REPL, running files, and a filesystem that persists between visits. Nothing to install.
+- **`SPEC.md` §9/§16** - why a program reaches only the directories `--dir` names.

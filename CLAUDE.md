@@ -10,10 +10,10 @@ change to behavior means changing both in the same commit.
 odin build src -out:hb                        # the CLI (the shipped binary, kept current)
 odin test src                                 # full suite
 ./hb -e '<expr>'                              # evaluate one expression
-scripts/build_wasi.sh                             # portable WASI -> hb.wasm
-scripts/build_wasi.sh --threads                   # wasi-threads -> hb-threads.wasm
-scripts/build_wasi.sh --threads-web -out:docs/hb.wasm  # what the browser runs
-scripts/wasi_smoke.sh ./hb ./hb.wasm wasmtime     # both targets agree
+scripts/build_wasi.sh                         # portable WASI -> hb.wasm
+scripts/build_wasi.sh --threads               # wasi-threads -> hb-threads.wasm
+scripts/wasi_smoke.sh ./hb ./hb.wasm wasmtime # both targets agree
+(cd dap-tests && npm install && npm test)     # the debug adapter
 ```
 
 On Windows the same two commands, spelled `-out:hb.exe` and
@@ -27,45 +27,36 @@ this file" (build outside the repo, or just build again), and **`symlink` needs
 Developer Mode** or an elevated shell, without which the symlink round trip and
 `files-symlink.hb` skip themselves with a logged reason rather than failing.
 
-**The playground's two artifacts are generated, never committed.**
-`docs/hb.wasm` is the interpreter and `docs/repo-files.json` is the repository
-as the terminal's filesystem; both are built by `.github/workflows/pages.yml`
-on the way to deploying, and by CI before the playground tests run. To work on
-the page locally, build them the same way:
+**There is no interactive UI in this repository, and that is deliberate.**
+A terminal editor with a debugger panel, and a browser playground hosting it,
+both lived here until 2026-09-01 and were removed together: they were a large,
+hand-rolled surface (a TUI, three terminal backends, a hand-written WASI host
+in JavaScript, a CDP client to drive a browser) whose bugs were their own
+rather than the language's. What replaced them is `hb dap` - a Debug Adapter
+Protocol server, so the UI is somebody else's: VS Code, nvim-dap, `dape` and
+Zed all speak it. `hb` itself is a compiler-shaped CLI again: run a file,
+evaluate an expression, a REPL, and a debug adapter.
 
-```sh
-scripts/build_wasi.sh --threads-web -out:docs/hb.wasm
-python3 scripts/build_playground_files.py
-```
-
-The playground's own test wants both of them built, and a browser:
-
-```sh
-python3 scripts/playground_browser_test.py "$(command -v chromium)"
-```
-
-They used to be committed, which coupled every tracked file to a build
-product: editing any documentation left the manifest stale and turned CI red
-until someone regenerated it. A documentation change should be a documentation
-change.
-
-**Everything outside the Odin toolchain is a pinned binary or the Python
-standard library.** There is no package manager in this repository and nothing
-to install before the tests run:
+**Outside the Odin toolchain: pinned binaries, the Python standard library,
+and npm for the debug-adapter tests only.**
 
 | what | why |
 | --- | --- |
-| Python 3, stdlib only | the editor key tests, the playground manifest, the playground test and its CDP client |
+| Python 3, stdlib only | nothing today; kept for the scripts that remain |
 | `wasmtime` (pinned) | the portable WASI smoke test |
 | WAMR's `iwasm` (pinned, built from source) | the threaded WASI smoke test - wasmtime dropped wasi-threads in June 2026 |
-| a Chrome or Chromium binary | the playground test drives it over the DevTools protocol |
+| npm, in `dap-tests/` only | `@vscode/debugadapter-testsupport`, the harness the DAP ecosystem actually uses |
 
-`scripts/cdp.py` is the reason the last one needs nothing else: it is a small
-CDP client - a WebSocket, request/response, and key events - written because
-what the tests used of puppeteer-core was a handful of protocol calls, and it
-was the only npm dependency the project had. Keep it that way: a new dev
-dependency wants a reason that outweighs `pip install`-free, `npm`-free
-checkouts.
+That last row is a deliberate reversal, so it needs its reason written down.
+This repository used to be `npm`-free on purpose: `scripts/cdp.py` existed
+because what the browser tests used of puppeteer-core was a handful of protocol
+calls, and it was the last npm dependency. The DAP harness is a different
+case. It is not a thin convenience over a protocol we already speak - it is the
+reference client for the protocol `hb dap` has to satisfy, maintained by the
+people who define that protocol, and testing an adapter against a hand-rolled
+client mostly proves the two agree with each other. Everything else stays
+install-free: `npm install` is needed only to run `dap-tests/`, and only that
+directory has a `package.json`.
 
 **Three targets.** Anything touching the filesystem goes through `fs.odin`
 (`fs_linux.odin` / `fs_windows.odin` / `fs_wasi.odin`) and anything spawning a
@@ -73,23 +64,11 @@ thread through `task.odin` (`task_native.odin` for both native targets, since
 `core:thread` is already portable; `task_wasi.odin` where a spawn can fail);
 nothing above them names a syscall or a thread API. Odin picks the file by
 suffix, so a `_linux.odin` file simply isn't compiled for the others - which is
-also why the terminal layer is split that way, and why the test files carry
-`#+build linux, windows`. `odin test` only ever builds natively, so Linux and
+also why the test files carry `#+build linux, windows`. `odin test` only ever
+builds natively, so Linux and
 Windows are covered by the suite itself (a CI job each) while the WASI backends
 are covered by the smoke script above - once per flavour, the threaded one
 under WAMR's iwasm, since wasmtime dropped wasi-threads.
-
-**The editor's keys are covered on both native targets, by different means.**
-`scripts/editor_keys_test.py` drives a pty; `scripts/editor_keys_test_windows.py`
-drives a real console, injecting `KEY_EVENT_RECORD`s with `WriteConsoleInputW`
-and reading the rendered screen back with `ReadConsoleOutputCharacterW`.
-Deliberately not ConPTY: that would turn written bytes into key events and back
-into escape sequences, testing its own round trip rather than conhost's
-VT-input translation - which is the thing `term_windows.odin` bets on and the
-only thing that covers it. The two scripts make the same eight checks, so the
-targets can't drift; they read differently because on Windows there is no byte
-stream to capture, only a screen. Both assert against observable editor state,
-and removing `ENABLE_VIRTUAL_TERMINAL_INPUT` fails five of the eight.
 
 **Windows has no `openat()`,** and that is the one place the three backends
 genuinely differ rather than just spelling the same call differently. Nothing

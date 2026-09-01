@@ -9,26 +9,19 @@
 #                       enabled) - wasmtime removed its support in 2026-06,
 #                       and refuses the module outright over the unknown
 #                       import.
-#   --threads-web       the same, but importing its memory instead of
-#                       exporting one. A browser host has to *create* the
-#                       shared memory itself and hand the same object to every
-#                       instance - that is what makes a spawned thread see the
-#                       heap the spawner allocated from.
 #
-# Usage: scripts/build_wasi.sh [--threads|--threads-web] [-out:path]
+# Usage: scripts/build_wasi.sh [--threads] [-out:path]
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
 
 THREADS=0
-IMPORT_MEMORY=0
 OUT=""
 for arg in "$@"; do
   case "$arg" in
-    --threads)     THREADS=1 ;;
-    --threads-web) THREADS=1; IMPORT_MEMORY=1 ;;
-    -out:*)        OUT="${arg#-out:}" ;;
+    --threads) THREADS=1 ;;
+    -out:*)    OUT="${arg#-out:}" ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -52,16 +45,8 @@ clang --target=wasm32 -matomics -mbulk-memory -c src/thread_start.s -o "$STUB_OB
 # --export=wasi_thread_start: nothing inside the module calls it, so the
 # linker would otherwise drop it, and the host would fail to spawn with
 # "Failed to find thread start function wasi_thread_start".
-MEMORY_FLAGS="--export-memory"
-if [ "$IMPORT_MEMORY" -eq 1 ]; then
-  # The host creates the memory and passes it to every instance, which is the
-  # only way threads in a browser share a heap: each spawned Worker
-  # instantiates the same module against the same WebAssembly.Memory.
-  MEMORY_FLAGS="--import-memory"
-fi
-
 odin build src "${COMMON[@]}" \
   -define:HB_WASI_THREADS=true \
   -target-features:atomics \
-  -extra-linker-flags:"--shared-memory --max-memory=1073741824 $MEMORY_FLAGS --export=wasi_thread_start $STUB_OBJ" \
+  -extra-linker-flags:"--shared-memory --max-memory=1073741824 --export-memory --export=wasi_thread_start $STUB_OBJ" \
   -out:"${OUT:-hb-threads.wasm}"

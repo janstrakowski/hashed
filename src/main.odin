@@ -12,7 +12,6 @@ USAGE :: `Usage: hb [options] [file]
 Runs the given HashedBuild source file, or starts a REPL if none is given.
 
 Options:
-  -i, --interactive   Start the live editor (requires a terminal)
   -a, --ast           Print the parsed AST before evaluating
   -e, --eval <expr>   Evaluate <expr> like one REPL submission and exit
       --dir <name>=<path>
@@ -36,7 +35,6 @@ Cli_Mode :: enum {
   Repl,    // no file and no -e: the read-eval-print loop
   File,    // run a source file
   Eval,    // -e/--eval: evaluate one expression, then exit
-  Editor,  // -i/--interactive: the two-pane live editor
   Help,
   Version,
 }
@@ -55,7 +53,6 @@ Cli_Options :: struct {
 // -h/--version win wherever they appear (`hb -i --help` prints help rather
 // than opening the editor), which is what exiting on sight used to do.
 parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: bool) {
-  interactive := false
   has_eval := false
   want_help := false
   want_version := false
@@ -66,8 +63,6 @@ parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: b
       want_help = true
     case "--version":
       want_version = true
-    case "-i", "--interactive":
-      interactive = true
     case "-a", "--ast":
       opts.show_ast = true
     case "--cache-dir":
@@ -112,11 +107,8 @@ parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: b
   case want_version:
     opts.mode = .Version
   case has_eval:
-    if interactive do return opts, "-e/--eval cannot be combined with -i/--interactive", false
     if opts.file_path != "" do return opts, "-e/--eval cannot be combined with a file argument", false
     opts.mode = .Eval
-  case interactive:
-    opts.mode = .Editor
   case opts.file_path != "":
     opts.mode = .File
   case:
@@ -139,20 +131,6 @@ main :: proc() {
     fmt.println("hb", VERSION)
   case .Eval:
     eval_once(opts.eval_expr, opts.show_ast, opts)
-  case .Editor:
-    // The editor and debugger drive a raw-mode TTY, which only exists on the
-    // native target - a WASI build has no terminal to take over (see
-    // TUI_AVAILABLE in source.odin).
-    when TUI_AVAILABLE {
-      if !term_is_tty() {
-        fmt.eprintln("error: -i/--interactive requires an interactive terminal")
-        os.exit(1)
-      }
-      run_live_editor(opts)
-    } else {
-      fmt.eprintln("error: this build has no interactive editor")
-      os.exit(1)
-    }
   case .File:
     run_file(opts.file_path, opts.show_ast, opts)
   case .Repl:

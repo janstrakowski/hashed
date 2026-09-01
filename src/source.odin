@@ -2,13 +2,6 @@ package hashedbuild
 
 import "core:path/filepath"
 
-// Whether this build includes the terminal UI - the live editor and its
-// debugger (editor.odin, term_*.odin). All three shipping targets have one: a
-// real terminal on Linux, a Windows console put into virtual-terminal mode,
-// and a browser tab running xterm.js on WASI. Other targets (freestanding
-// wasm, say) have no terminal at all, and `-i` says so.
-TUI_AVAILABLE :: ODIN_OS == .Linux || ODIN_OS == .Windows || ODIN_OS == .WASI
-
 source_t :: struct {
   name: string,
   n_bytes: u64,
