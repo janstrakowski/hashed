@@ -14,6 +14,7 @@ scripts/build_wasi.sh                         # portable WASI -> hb.wasm
 scripts/build_wasi.sh --threads               # wasi-threads -> hb-threads.wasm
 scripts/wasi_smoke.sh ./hb ./hb.wasm wasmtime # both targets agree
 (cd dap-tests && npm install && npm test)     # the debug adapter
+python3 scripts/install_vscode_debug.py       # the VS Code extension -> ~/.vscode
 ```
 
 On Windows the same two commands, spelled `-out:hb.exe` and
@@ -42,7 +43,7 @@ and npm for the debug-adapter tests only.**
 
 | what | why |
 | --- | --- |
-| Python 3, stdlib only | nothing today; kept for the scripts that remain |
+| Python 3, stdlib only | `scripts/install_vscode_debug.py`, which copies the VS Code extension into place |
 | `wasmtime` (pinned) | the portable WASI smoke test |
 | WAMR's `iwasm` (pinned, built from source) | the threaded WASI smoke test - wasmtime dropped wasi-threads in June 2026 |
 | npm, in `dap-tests/` only | `@vscode/debugadapter-testsupport`, the harness the DAP ecosystem actually uses |

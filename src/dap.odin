@@ -168,19 +168,24 @@ dap_handle_request :: proc(s: ^Dap_Session, msg: json.Object) {
 // written-down `hb --dir name=path program.hb`.
 @(private = "file")
 dap_launch :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
-  program := jv_str(args, "program")
+  program := strings.clone(jv_str(args, "program"), context.temp_allocator)
   if program == "" {
     dap_error(seq, "launch", "launch needs a `program`: the .hb file to run")
     return
   }
   s.no_debug = jv_bool(args, "noDebug")
 
+  // Cloned, not borrowed: these strings belong to the parsed request, which
+  // is freed when this request returns - while `ctx.dirs` keeps its keys for
+  // the whole session. Borrowing them leaves a Table keyed on reused memory,
+  // which shows up as a garbled name in a variables pane and as a lookup that
+  // mysteriously fails.
   named := make([dynamic]Named_Dir, 0, 4, context.temp_allocator)
   if dirs_obj, has := jv_obj(args, "dirs"); has {
     for name, v in dirs_obj {
       path, is_str := v.(json.String)
       if !is_str do continue
-      append(&named, Named_Dir{name = name, path = string(path)})
+      append(&named, Named_Dir{name = strings.clone(name), path = strings.clone(string(path))})
     }
   }
   dirs, dir_err, dir_ok := open_root_dirs(jv_str(args, "cacheDir"), named[:])

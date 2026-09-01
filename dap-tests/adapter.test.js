@@ -104,6 +104,30 @@ describe("hb dap", function () {
     assert.strictEqual(trace.body.stackFrames[0].line, 7);
   });
 
+  // A line holds many expressions here, and every one of them completes on
+  // that line - so an unguarded breakpoint check would stop once per node and
+  // make `continue` look broken. It fires once per visit instead.
+  it("fires a line breakpoint once per visit, not once per expression", async () => {
+    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
+    await dc.launchRequest({ program: fixture("wide.hb") });
+    await dc.waitForEvent("stopped");
+    await dc.setBreakpointsRequest({
+      source: { path: fixture("wide.hb") },
+      breakpoints: [{ line: 5 }], // eight nodes start here
+    });
+
+    await dc.continueRequest({ threadId: 1 });
+    const first = await dc.waitForEvent("stopped");
+    assert.strictEqual(first.body.reason, "breakpoint");
+
+    // The next continue must reach the end of the program, not the same line
+    // over and over.
+    await dc.continueRequest({ threadId: 1 });
+    const output = await dc.waitForEvent("output");
+    assert.strictEqual(output.body.output.trim(), "24");
+    await dc.waitForEvent("terminated");
+  });
+
   // One task, so one thread - and it is named, because a client shows the
   // name rather than the id.
   it("reports the program as thread 1", async () => {
@@ -231,6 +255,26 @@ describe("hb dap", function () {
     const output = await dc.waitForEvent("output");
     assert.match(output.body.output, /payload/);
     await dc.waitForEvent("terminated");
+  });
+
+  // The names in `dirs` outlive the request that carried them, so they have
+  // to be copied out of it. Borrowing them left ctx.dirs keyed on reused
+  // memory - a garbled name in a variables pane, and a lookup that failed
+  // only sometimes, which is the worst way for it to fail.
+  it("keeps the launch config's directory names intact", async () => {
+    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
+    await dc.launchRequest({ program: fixture("reads.hb"), dirs: { here: FIXTURES } });
+    await dc.waitForEvent("stopped");
+
+    const trace = await dc.stackTraceRequest({ threadId: 1 });
+    const frameId = trace.body.stackFrames[0].id;
+
+    const named = await dc.evaluateRequest({ expression: "ctx.dirs.here", frameId });
+    assert.strictEqual(named.success, true, "ctx.dirs.here must still be reachable by that name");
+    assert.match(named.body.result, /^<directory: /);
+
+    const all = await dc.evaluateRequest({ expression: "ctx.dirs", frameId });
+    assert.match(all.body.result, /^\{here: /, "the key is the name the launch config used");
   });
 
   it("fails the launch when a program names a directory it was not given", async () => {

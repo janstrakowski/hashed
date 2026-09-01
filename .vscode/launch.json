@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "hashedbuild",
+      "request": "launch",
+      "name": "Run the open .hb file",
+      "program": "${file}",
+      "dirs": { "here": "${fileDirname}" }
+    },
+    {
+      "type": "hashedbuild",
+      "request": "launch",
+      "name": "Run examples/option-picker.hb",
+      "program": "${workspaceFolder}/examples/option-picker.hb",
+      "dirs": { "here": "${workspaceFolder}/examples" }
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "name": "hashedbuild-debug",
+  "displayName": "HashedBuild (debug)",
+  "description": "Debug HashedBuild programs through `hb dap`",
+  "publisher": "hashedbuild",
+  "version": "0.1.0",
+  "license": "MIT",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Debuggers", "Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "hashedbuild",
+        "aliases": ["HashedBuild", "hb"],
+        "extensions": [".hb"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "hashedbuild",
+        "label": "HashedBuild",
+        "languages": ["hashedbuild"],
+        "program": "./hb.exe",
+        "args": ["dap"],
+        "windows": { "program": "./hb.exe" },
+        "linux": { "program": "./hb" },
+        "osx": { "program": "./hb" },
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "The .hb file to run",
+                "default": "${file}"
+              },
+              "dirs": {
+                "type": "object",
+                "description": "name -> path. Each becomes ctx.dirs.<name>, and is the whole of what the program may read or write (SPEC.md §9/§16).",
+                "default": { "here": "${fileDirname}" }
+              },
+              "cacheDir": {
+                "type": "string",
+                "description": "Where ctx.cache and `cached` keep entries. Defaults to the XDG cache dir."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "hashedbuild",
+            "request": "launch",
+            "name": "Run this file",
+            "program": "${file}",
+            "dirs": { "here": "${fileDirname}" }
+          }
+        ]
+      }
+    ]
+  }
+}

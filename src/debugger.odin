@@ -106,6 +106,10 @@ Debugger_Run :: struct {
   // outwards, since those are not the program's own names.
   global_env:      ^Env,
 
+  // The line a breakpoint last fired on, so it does not fire again for the
+  // other nodes on that same line - see stop_reason_locked. Zero is no line.
+  breakpoint_armed_at: int,
+
   // Whether anything has stopped yet, so the first stop can report DAP's
   // "entry" rather than "step": a client shows the two differently, and the
   // first one is not the result of a step anybody asked for.
@@ -194,8 +198,21 @@ stop_reason_locked :: proc(dbg: ^Debugger_Run, interp: ^Interpreter, node: Node_
   if !ok do return "exception", true
 
   if len(dbg.breakpoints) > 0 {
-    line := line_of_offset(dbg.lines, dbg.ast.nodes[node].span.start)
-    if line in dbg.breakpoints do return "breakpoint", true
+    line, contained := node_line_if_contained(dbg, node)
+    if contained && line in dbg.breakpoints {
+      // Fire once per visit to the line, not once per node on it. A line
+      // here holds many nodes - `let choice loadfile { .dir = ctx.dirs.here,
+      // ... } |> filetext;` is eight - and every one of them completes on
+      // that line, so an unguarded check stops eight times and `continue`
+      // looks broken. The breakpoint re-arms below, once something on a
+      // different line completes.
+      if line != dbg.breakpoint_armed_at {
+        dbg.breakpoint_armed_at = line
+        return "breakpoint", true
+      }
+    } else {
+      dbg.breakpoint_armed_at = 0 // left the line: the next visit stops again
+    }
   }
 
   switch dbg.mode {
@@ -390,13 +407,34 @@ debugger_set_breakpoints :: proc(dbg: ^Debugger_Run, lines: []int, allocator := 
   return verified
 }
 
-// Whether any node starts on this line - "is there anything here to stop at".
-// A linear scan of the tree, which is fine: it runs once per setBreakpoints
-// request, not per node evaluated.
+// The line a node belongs to, and whether it belongs to just the one.
+//
+// A breakpoint fires only for a node **contained within** its line, and this
+// is why. Stopping happens after a node completes (see this file'''s header),
+// and an enclosing node completes long after the line it starts on: in
+// `let a 2; let b 3;` the `let` spans everything that follows it, so it
+// finishes at the end of the program while still *starting* on line 1.
+// Counting it as an event on that line would fire the breakpoint a second
+// time, on the way out, which reads as "continue did nothing".
+//
+// So: a multi-line node is nobody'''s line event. What is left - the operands,
+// the calls, the literals - is exactly what "this line ran" means here.
+@(private = "file")
+node_line_if_contained :: proc(dbg: ^Debugger_Run, node: Node_Idx) -> (line: int, contained: bool) {
+  span := dbg.ast.nodes[node].span
+  start := line_of_offset(dbg.lines, span.start)
+  end := line_of_offset(dbg.lines, span.end)
+  return start, start == end
+}
+
+// Whether this line holds a whole expression - "is there anything here to
+// stop at", by the same rule the gate uses, so a breakpoint that is reported
+// verified is one that can actually fire. A linear scan of the tree, which is
+// fine: it runs once per setBreakpoints request, not per node evaluated.
 @(private = "file")
 line_has_a_node :: proc(dbg: ^Debugger_Run, line: int) -> bool {
-  for n in dbg.ast.nodes {
-    if line_of_offset(dbg.lines, n.span.start) == line do return true
+  for _, i in dbg.ast.nodes {
+    if l, contained := node_line_if_contained(dbg, Node_Idx(i)); contained && l == line do return true
   }
   return false
 }

@@ -150,58 +150,40 @@ and `:DapContinue`.
 
 ### VS Code
 
-VS Code will not talk to a bare adapter, so it needs an extension to declare the
-debugger type — but that extension is one file, with no code in it. Put this in
-`~/.vscode/extensions/hashedbuild-debug/package.json` (`%USERPROFILE%\.vscode\extensions\…`
-on Windows) and restart VS Code:
+VS Code will not talk to a bare adapter: something has to *contribute* the
+debugger type. That contribution ships here, in `editors/vscode/`, and it is
+one `package.json` with no code in it - nothing to compile, no npm.
+
+The only thing that cannot be committed is where your `hb` binary is, since a
+debugger contribution resolves its adapter path relative to the extension
+folder rather than to your workspace. So one script copies the extension into
+your extension directory and fills that in:
+
+```sh
+odin build src -out:hb.exe                     # or -out:hb on Linux
+python3 scripts/install_vscode_debug.py        # pass a path to use another binary
+```
+
+Restart VS Code, open a `.hb` file and press **F5**. Re-run the script after
+moving the repository or building the binary somewhere else.
+
+This repository's own `.vscode/launch.json` already has two configurations -
+the open file, and `examples/option-picker.hb` with its directory - so F5 works
+in a fresh clone. For your own project:
 
 ```json
 {
-  "name": "hashedbuild-debug",
-  "publisher": "local",
-  "version": "0.0.1",
-  "engines": { "vscode": "^1.80.0" },
-  "categories": ["Debuggers"],
-  "contributes": {
-    "debuggers": [
-      {
-        "type": "hashedbuild",
-        "label": "HashedBuild",
-        "program": "/path/to/hb",
-        "args": ["dap"],
-        "languages": ["hashedbuild"],
-        "configurationAttributes": {
-          "launch": {
-            "required": ["program"],
-            "properties": {
-              "program": { "type": "string", "description": "The .hb file to run" },
-              "dirs": { "type": "object", "description": "name -> path; becomes ctx.dirs" },
-              "cacheDir": { "type": "string", "description": "where ctx.cache writes" }
-            }
-          }
-        }
-      }
-    ]
-  }
+  "type": "hashedbuild",
+  "request": "launch",
+  "name": "Run this file",
+  "program": "${file}",
+  "dirs": { "here": "${fileDirname}" }
 }
 ```
 
-Then a `.vscode/launch.json` in your project:
-
-```json
-{
-  "version": "0.2.0",
-  "configurations": [
-    {
-      "type": "hashedbuild",
-      "request": "launch",
-      "name": "Run this file",
-      "program": "${file}",
-      "dirs": { "here": "${fileDirname}" }
-    }
-  ]
-}
-```
+`dirs` is `--dir` written down: each entry becomes `ctx.dirs.<name>`, and it is
+the whole of what the program may read or write. Omit it and the program cannot
+touch the filesystem at all.
 
 ### What the adapter supports
 
