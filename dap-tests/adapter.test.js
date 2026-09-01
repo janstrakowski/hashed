@@ -87,6 +87,40 @@ describe("hb dap", function () {
     assert.strictEqual(response.body.breakpoints[1].verified, false, "line 1 is a comment");
   });
 
+  // The order a real client uses: VS Code sends setBreakpoints as soon as it
+  // gets `initialized`, which is before `launch` - so the adapter has to
+  // remember them and apply them when the run appears, then correct the
+  // gutter with a `breakpoint` event. Every test here used to set them after
+  // launching, which is why this path was broken and untested at once.
+  it("honours breakpoints set before the launch", async () => {
+    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
+    await dc.waitForEvent("initialized");
+
+    // Sent while there is no run at all.
+    const set = await dc.setBreakpointsRequest({
+      source: { path: fixture("arith.hb") },
+      breakpoints: [{ line: 7 }],
+    });
+    assert.strictEqual(set.body.breakpoints[0].verified, false, "nothing to verify against yet");
+    const id = set.body.breakpoints[0].id;
+    assert.ok(id > 0, "a breakpoint needs an id for the correction to refer to");
+
+    // VS Code sends this in every session; an error here can lose the session.
+    const exc = await dc.setExceptionBreakpointsRequest({ filters: [] });
+    assert.strictEqual(exc.success, true);
+
+    await dc.launchRequest({ program: fixture("arith.hb") });
+
+    const corrected = await dc.waitForEvent("breakpoint");
+    assert.strictEqual(corrected.body.breakpoint.id, id);
+    assert.strictEqual(corrected.body.breakpoint.verified, true, "now it can be verified");
+
+    await dc.waitForEvent("stopped"); // entry
+    await dc.continueRequest({ threadId: 1 });
+    const stopped = await dc.waitForEvent("stopped");
+    assert.strictEqual(stopped.body.reason, "breakpoint", "the breakpoint set before launch still fires");
+  });
+
   it("stops at a breakpoint when continued", async () => {
     await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
     await dc.launchRequest({ program: fixture("arith.hb") });

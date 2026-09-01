@@ -48,6 +48,16 @@ Dap_Session :: struct {
   var_refs: [dynamic]Value,
   no_debug: bool,
   terminated: bool,
+
+  // Breakpoints as the client last set them. Kept here and not only in the
+  // run, because a client may send them **before** `launch` - VS Code does,
+  // as soon as it gets `initialized` - and there is nothing to apply them to
+  // at that point. Applying them at launch instead, and correcting the
+  // client's gutter with a `breakpoint` event, is what makes the ordinary VS
+  // Code sequence work.
+  bp_lines:   [dynamic]int,
+  bp_ids:     [dynamic]int,
+  next_bp_id: int,
 }
 
 // The entry point `hb dap` runs (main.odin). Blocks reading stdin until the
@@ -55,7 +65,11 @@ Dap_Session :: struct {
 run_dap_server :: proc(opts: Cli_Options) {
   s := Dap_Session{lines_start_at_1 = true, columns_start_at_1 = true}
   s.var_refs = make([dynamic]Value, 0, 16)
+  s.bp_lines = make([dynamic]int, 0, 8)
+  s.bp_ids = make([dynamic]int, 0, 8)
   defer delete(s.var_refs)
+  defer delete(s.bp_lines)
+  defer delete(s.bp_ids)
   defer if s.run != nil do stop_debugger_run(s.run)
 
   reader := dap_reader_make()
@@ -112,6 +126,19 @@ dap_handle_request :: proc(s: ^Dap_Session, msg: json.Object) {
 
   case "setBreakpoints":
     dap_set_breakpoints(s, seq, args)
+
+  case "setExceptionBreakpoints":
+    // VS Code sends this in every session. We declare no exception filters
+    // (every failure in this language is fatal and always stops - §8), so the
+    // answer is an empty list of breakpoints rather than an error: a client
+    // that gets an error here can abandon the whole session.
+    dap_respond(seq, command, proc(w: ^Json_Writer, ctx: rawptr) {
+      jw_obj_begin(w)
+      jw_key(w, "breakpoints")
+      jw_arr_begin(w)
+      jw_arr_end(w)
+      jw_obj_end(w)
+    }, nil)
 
   case "configurationDone":
     dap_respond_empty(seq, command)
@@ -209,7 +236,36 @@ dap_launch :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
     return
   }
   dap_respond_empty(seq, "launch")
+  dap_apply_breakpoints(s)
   dap_report_state(s)
+}
+
+// Applies the breakpoints the client set before there was a run to set them
+// on, and tells it which of them actually took - a `breakpoint` event is how
+// DAP corrects a gutter after the fact, and without it VS Code would go on
+// showing every one of them as unverified.
+@(private = "file")
+dap_apply_breakpoints :: proc(s: ^Dap_Session) {
+  if s.run == nil || len(s.bp_lines) == 0 do return
+  verified := debugger_set_breakpoints(s.run, s.bp_lines[:], context.temp_allocator)
+
+  Ctx :: struct { s: ^Dap_Session, id: int, line: int, verified: bool }
+  for line, i in s.bp_lines {
+    c := Ctx{s = s, id = s.bp_ids[i], line = line, verified = verified[i]}
+    dap_event("breakpoint", proc(w: ^Json_Writer, ctx: rawptr) {
+      c := (^Ctx)(ctx)
+      jw_obj_begin(w)
+      jw_kstr(w, "reason", "changed")
+      jw_key(w, "breakpoint")
+      jw_obj_begin(w)
+      jw_kint(w, "id", c.id)
+      jw_kbool(w, "verified", c.verified)
+      jw_kint(w, "line", dap_line_out(c.s, c.line))
+      if !c.verified do jw_kstr(w, "message", "no expression begins and ends on this line")
+      jw_obj_end(w)
+      jw_obj_end(w)
+    }, &c)
+  }
 }
 
 // ---- breakpoints ---------------------------------------------------------------------
@@ -227,13 +283,22 @@ dap_set_breakpoints :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
     }
   }
 
-  // Before `launch`, there is no run to set them on yet. Answering
-  // "unverified" is honest and is what clients expect at that point; a real
-  // client re-sends them once the session is live.
+  // Remembered either way: before `launch` there is nothing to apply them to,
+  // and a client does not send them again (dap_apply_breakpoints does it).
+  clear(&s.bp_lines)
+  clear(&s.bp_ids)
+  for line in lines {
+    s.next_bp_id += 1
+    append(&s.bp_lines, line)
+    append(&s.bp_ids, s.next_bp_id)
+  }
+
   verified: []bool
   if s.run != nil {
     verified = debugger_set_breakpoints(s.run, lines[:], context.temp_allocator)
   } else {
+    // Unverified for now, and corrected by a `breakpoint` event once the run
+    // exists and its source can actually be asked.
     verified = make([]bool, len(lines), context.temp_allocator)
   }
 
@@ -246,9 +311,12 @@ dap_set_breakpoints :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
     jw_arr_begin(w)
     for line, i in c.lines {
       jw_obj_begin(w)
+      jw_kint(w, "id", c.s.bp_ids[i])
       jw_kbool(w, "verified", c.verified[i])
       jw_kint(w, "line", dap_line_out(c.s, line))
-      if !c.verified[i] do jw_kstr(w, "message", "no expression starts on this line")
+      if !c.verified[i] && c.s.run != nil {
+        jw_kstr(w, "message", "no expression begins and ends on this line")
+      }
       jw_obj_end(w)
     }
     jw_arr_end(w)
