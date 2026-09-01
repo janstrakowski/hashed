@@ -756,7 +756,14 @@ table_access :: proc(interp: ^Interpreter, base: Value, key: Value) -> (Value, b
     if rb := rec_build_for(interp, t); rb != nil do return rec_access(interp, rb, key)
   }
   val, found := table_find(t, key)
-  if !found do return fail(interp, "no such key in Table")
+  // Naming the key, and what was there instead, because the commonest way to
+  // meet this message is asking for a handle a run was never given -
+  // `ctx.dirs.here` with no `--dir here=...` behind it (§9/§16) - and "no
+  // such key in Table" alone says neither which key nor that the answer is on
+  // the command line.
+  if !found {
+    return fail(interp, fmt.tprintf("no such key in Table: %s (it holds %s)", format_value(key), table_key_list(t)))
+  }
   return val, true
 }
 

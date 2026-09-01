@@ -44,6 +44,7 @@ and npm for the debug-adapter tests only.**
 | what | why |
 | --- | --- |
 | Python 3, stdlib only | `scripts/install_vscode_debug.py`, which copies the VS Code extension into place |
+| PowerShell (Windows only, optional) | `scripts/register_hb_windows.ps1`, the `.hb` file association |
 | `wasmtime` (pinned) | the portable WASI smoke test |
 | WAMR's `iwasm` (pinned, built from source) | the threaded WASI smoke test - wasmtime dropped wasi-threads in June 2026 |
 | npm, in `dap-tests/` only | `@vscode/debugadapter-testsupport`, the harness the DAP ecosystem actually uses |

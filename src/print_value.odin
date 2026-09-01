@@ -192,3 +192,22 @@ value_type_name :: proc(v: Value) -> string {
   }
   return "Nothing"
 }
+
+// The keys a Table holds, for the message a failed lookup gives back. Capped,
+// since a Table can be large and an error message that is mostly keys stops
+// being one.
+table_key_list :: proc(t: ^Table_Value) -> string {
+  if len(t.entries) == 0 do return "nothing"
+  b := strings.builder_make(context.temp_allocator)
+  for entry, i in t.entries {
+    if i == 4 {
+      strings.write_string(&b, fmt.tprintf(", and %d more", len(t.entries) - 4))
+      break
+    }
+    if i > 0 do strings.write_string(&b, ", ")
+    formatted := format_value(entry.key)
+    defer delete(formatted)
+    strings.write_string(&b, formatted)
+  }
+  return strings.to_string(b)
+}

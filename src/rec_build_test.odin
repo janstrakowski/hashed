@@ -124,9 +124,11 @@ test_rec_non_table_still_fails_as_before :: proc(t: ^testing.T) {
   expect_fails_with(t, "let rec x x + 1; x", "undefined name: x")
 }
 
+// A `let rec` Table answers a missing key the same way an ordinary one does,
+// message included - it is the same failure, reached through rec_access.
 @(test)
 test_rec_missing_key_still_fails :: proc(t: ^testing.T) {
-  expect_fails_with(t, "let rec p { .a = 1 }; p.zz", "no such key in Table")
+  expect_fails_with(t, "let rec p { .a = 1 }; p.zz", `no such key in Table: "zz" (it holds "a")`)
 }
 
 // ---- equality over a graph ---------------------------------------------------

@@ -202,8 +202,26 @@ test_eval_table_missing_key_fails :: proc(t: ^testing.T) {
   src := `{ .a = 1 }["b"]`
   ast := parse_src(src)
   defer ast_destroy(&ast)
-  _, ok, _ := eval_top(&ast, src)
+  _, ok, err := eval_top(&ast, src)
   testing.expect(t, !ok, "accessing a missing key should fail")
+  // The message names the key and what was there instead. The commonest way
+  // to meet it is `ctx.dirs.here` in a run that was given no such handle
+  // (§9/§16), where "no such key in Table" alone says neither which key nor
+  // that the answer is on the command line.
+  testing.expect(t, strings.contains(err, `"b"`), err)
+  testing.expect(t, strings.contains(err, `it holds "a"`), err)
+}
+
+// The same message when the Table is empty, which is exactly the shape of a
+// run that was handed no directories at all.
+@(test)
+test_eval_missing_key_on_an_empty_table_says_it_is_empty :: proc(t: ^testing.T) {
+  src := `empty["here"]`
+  ast := parse_src(src)
+  defer ast_destroy(&ast)
+  _, ok, err := eval_top(&ast, src)
+  testing.expect(t, !ok)
+  testing.expect(t, strings.contains(err, "it holds nothing"), err)
 }
 
 // ---- holes, functions, application, |> -----------------------------------------

@@ -43,6 +43,33 @@ odin build src -out:hb.exe -debug
 
 Everything below reads `./hb`; on Windows that is `.\hb.exe`. Read `-out:hb` as `-out:hb.exe` too. `scripts/` is shell, so the WASI builds want Git Bash (which ships with Git for Windows) rather than PowerShell.
 
+### Teaching Windows about `.hb`
+
+Optional, and per-user - it writes under `HKCU\Software\Classes`, needs no
+administrator, and undoes itself:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scriptsegister_hb_windows.ps1
+powershell -ExecutionPolicy Bypass -File scriptsegister_hb_windows.ps1 -Unregister
+```
+
+Explorer then calls a `.hb` file a *HashedBuild program*, double-clicking one
+runs it in a console that waits before closing, and right-click > **Edit in VS
+Code** opens it instead.
+
+A program started by double-click is handed no `--dir`, so it can read and
+write nothing at all (SPEC.md §9/§16) - which is what makes running one on a
+double-click a safe default rather than a reckless one. A file that needs a
+directory says so:
+
+```
+error: no such key in Table: "here" (it holds nothing)
+```
+
+That is `ctx.dirs.here` in a run that was given no `here`. Run it from a
+terminal with the `--dir` its header's `run:` line names, or debug it from VS
+Code, where the launch configuration carries the same thing.
+
 If a freshly built binary refuses to start with *"An Application Control policy has blocked this file"*, that is [Smart App Control](https://support.microsoft.com/en-us/topic/what-is-smart-app-control-285ea03d-fa88-4495-bf75-c251c8d88d29) rather than anything wrong with the build — it blocks unsigned executables it has no reputation for. Building to a path outside the repository, or simply building again, usually gets past it.
 
 ## The ways to run something

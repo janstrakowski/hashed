@@ -90,7 +90,7 @@ rec_access :: proc(interp: ^Interpreter, rb: ^Rec_Build, key: Value) -> (Value, 
       return rb.fwd[i], true
     }
   }
-  return fail(interp, "no such key in Table")
+  return fail(interp, fmt.tprintf("no such key in Table: %s (it holds %s)", format_value(key), table_key_list(rb.table)))
 }
 
 // Evaluates entry `i` to completion and fills both its slot and its forward
