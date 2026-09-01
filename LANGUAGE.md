@@ -99,6 +99,29 @@ rejected, which `SPEC.md` §3 says it should not be.
 
 → `examples/numeric-literals.hb` (§3)
 
+### Measuring and cutting text
+
+`textlen` and `textslice` count **codepoints, not bytes** — the type is `Utf8`,
+and a byte index could cut a character in half. `.start` is 1-based, matching
+`[i]`, and reaching past the end is a failure rather than a short answer.
+
+```hashedbuild
+textlen "héllo"                                        // => 5, not 6
+textslice { .text = "cJSON.c", .start = 6, .count = 2 } // => ".c"
+```
+
+These are the primitives rather than a set of ready-made predicates, because
+the predicate you want is a few lines of HashedBuild:
+
+```hashedbuild
+let endswith (let a;
+  let t a.text; let s a.suffix;
+  (textlen t) >= (textlen s)
+    and (textslice { .text = t, .start = (textlen t) - (textlen s) + 1, .count = textlen s }) == s);
+```
+
+→ `examples/text-slicing.hb` (§16)
+
 ## Operators
 
 ```hashedbuild
@@ -140,6 +163,32 @@ it exists, use a pattern (below) rather than an access.
 
 → `examples/tables-map.hb`, `examples/tables-sequence.hb`,
 `examples/table-and-concat.hb` (§5)
+
+### Traversing one
+
+There are no loops, and recursion cannot reach a Table's entries by itself, so
+`fold` is how a Table is walked. `.step` is called with `{ .acc, .key, .value }`
+and returns the next accumulator:
+
+```hashedbuild
+fold { .table = {10, 20, 30}, .init = 0, .step = (let s; s.acc + s.value) }   // => 60
+```
+
+**Entries are visited in ascending key order, not the order they were written.**
+That buys two things. A sequence (keys 1..N) folds in index order, which is what
+makes folding a list of filenames mean anything; and two Tables that compare
+equal — §6 ignores entry order — fold to the same answer.
+
+It is deliberately the only traversal primitive: `map`, `filter` and appending
+to a sequence are each a line or two of HashedBuild on top of it, rather than a
+builtin apiece.
+
+```hashedbuild
+let seq_len (let t; fold { .table = t, .init = 0, .step = (let s; s.acc + 1) });
+let append (let a; a.seq concat { [(seq_len a.seq) + 1] = a.item });
+```
+
+→ `examples/folding-a-table.hb` (§16)
 
 ## Functions
 
@@ -370,8 +419,73 @@ Paths in the single-argument form resolve relative to the source file being
 run, not to your shell's working directory — so a script behaves the same
 wherever you invoke it from.
 
+`listdir` gives a directory's entries as a value — names only, sorted byte-wise
+so a build does not depend on readdir order:
+
+```hashedbuild
+listdir (loadfile "examples/listing")     // => {"alpha.txt", "beta.md", "gamma.txt"}
+```
+
 → `examples/files-sandboxed.hb`, `examples/files-symlink.hb`,
-`examples/option-picker.hb` (§3, §16)
+`examples/option-picker.hb`, `examples/listing-a-directory.hb` (§3, §16)
+
+### Where a path is allowed to reach
+
+A path written **without** a directory handle is governed by a permission, and
+which one you hold decides one of three behaviours:
+
+| permission | `loadfile "x"` resolves |
+|---|---|
+| `anypath` | anywhere — relative to the source file's directory, or absolute. Granted at the root, so this is the behaviour programs already had. |
+| `workdir` | contained to `ctx.dir`, the directory the run is rooted at. `..`, an absolute path, and a symlink pointing outward are refused; `.` resolves to `ctx.dir` rather than through it. |
+| neither | refused — only the `{ .dir, .path }` handle forms work. |
+
+`ctx.dir` is that directory as a handle, usable anywhere a `.dir` is. It is not
+a `File`: a `File` of a directory hashes over its contents (§3), and since §15
+puts the whole `ctx` into every cache key, that would put the entire project
+tree into every entry. It hashes as a bare tag instead, exactly as `ctx.cache`
+does — what you read *through* it are ordinary `File`s that still hash by
+content.
+
+```hashedbuild
+loadfile { .dir = ctx.dir, .path = "notes.txt" }
+(loadfile "..") chctx chperm { .name = "anypath", .enabled = 1 == 0 }   // now a failure
+```
+
+→ `examples/workdir-containment.hb` (§9, §16)
+
+### Running a program
+
+`exec` starts a program in a fresh scratch directory holding nothing but the
+inputs it was given, and hands back the outputs it declared **as values**:
+
+```hashedbuild
+exec {
+  .cmd = "clang",
+  .args = { "-c", "greet.c", "-o", "greet.o" },
+  .inputs = { ["greet.c"] = <a File> },
+  .outputs = { "greet.o" },
+}
+// => { status: 0, stdout: "…", stderr: "…", outputs: { greet.o: <file> } }
+```
+
+That shape is the point rather than a convenience. A cache key excludes
+anything an expression reads at run time (see Caching below), so a thinner exec
+that wrote into a directory and let you `loadfile` the result afterwards would
+answer with the first run's bytes forever. Here an input is a `File` and a
+`File` is its content, so inputs are *in* the key — which is what makes
+`cached exec { … }` correct.
+
+**A non-zero exit is not a failure.** It comes back as `.status`, so you can
+`check` it and show `.stderr`. A command that cannot be started, an input that
+cannot be written, or a declared output that is not there are all fatal, as is
+calling it without `ctx.permissions.exec`.
+
+Two honest limits: it contains what is *handed to* a program, not what that
+program then does — a compiler started this way can read whatever you can — and
+WASI cannot start a process at all, where it says so rather than pretending.
+
+→ `examples/running-a-program.hb`, `examples/hashmake/hashmake.hb` (§16)
 
 ## Hashing
 
@@ -616,10 +730,18 @@ that used to be listed here — a directory `File`, a `Function`, and a cyclic
 value — plus `ctx.cache`. See the Hashing section above for what each of them
 encodes. A given value has the same digest on every target.
 
-Also absent: `true`/`false` literals, loops of any kind (recursion is the only
-repetition there is — see above), a `Bytes`-returning counterpart to
-`filetext`, directory listing as a value, and the `#context` implicit name. `SPEC.md` describes several of these as settled
-design; none of them run today.
+**Directory listing and Table traversal have landed**: `listdir` answers what
+is in a directory, and `fold` walks a Table, which is what `map`/`filter`/append
+are written on top of. There are still no *loops* — `fold` and recursion are the
+whole of repetition, and a fold cannot stop early.
+
+Also absent: `true`/`false` literals, a `Bytes`-returning counterpart to
+`filetext`, and the `#context` implicit name. `SPEC.md` describes several of
+these as settled design; none of them run today.
+
+Two limits worth knowing rather than discovering: `exec`'s `.outputs` collects
+regular files only, not directories; and `createfile` is still exclusive, with
+no overwrite mode.
 
 Removed rather than pending: `serialize` and `serialize_file` were specified in
 §15 and are gone as of 2026-08-28 — the canonical byte encoding they would have

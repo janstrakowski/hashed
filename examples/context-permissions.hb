@@ -10,9 +10,15 @@
 // as `.still_ambient` shows. Two things to know: there are no `true`/`false`
 // literals yet, hence `1 == 0` for "false"; and a `loadfile` under a
 // narrowed context doesn't evaluate to an error value - it fails the whole
-// program, since only a false `then` is catchable (§8). Evaluates to
-// { ambient: {io: nothing}, io_denied: {}, replaced: {},
-//   still_ambient: {io: nothing} }.
+// program, since only a false `then` is catchable (§8).
+//
+// The root grants three: `io` to touch the filesystem at all, `exec` to run a
+// program, and `anypath` to resolve a path with no directory handle. Dropping
+// `anypath` for `workdir` is what contains a run to `ctx.dir` - see
+// workdir-containment.hb. Evaluates to
+// { ambient: {io: nothing, exec: nothing, anypath: nothing}, io_denied:
+//   {exec: nothing, anypath: nothing}, replaced: {},
+//   still_ambient: {io: nothing, exec: nothing, anypath: nothing} }.
 {
   .ambient = ctx.permissions,
   .io_denied = ctx.permissions chctx chperm { .name = "io", .enabled = 1 == 0 },

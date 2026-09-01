@@ -282,9 +282,13 @@ def shim_checks(browser):
     if os.path.exists(native_hb):
         # Displayed paths differ by construction (checkout vs preopen), and
         # async needs a thread-spawn this harness does not give it - both
-        # covered above.
+        # covered above. running-a-program.hb drives clang: a browser cannot
+        # start a process at all, so `exec` there reports exactly that and
+        # there is no answer for the two to agree on (same reason it is
+        # skipped in scripts/wasi_smoke.sh).
         skip = {"files-sandboxed.hb", "option-picker.hb",
-                "async-basics.hb", "async-branching.hb", "async-table.hb"}
+                "async-basics.hb", "async-branching.hb", "async-table.hb",
+                "running-a-program.hb"}
         compared = 0
         for name in sorted(n for n in os.listdir(EXAMPLES) if n.endswith(".hb")):
             if name in skip:

@@ -24,7 +24,12 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(REPO, "docs", "repo-files.json")
 SKIP = [re.compile(p) for p in (
-    r"^docs/media/", r"^docs/vendor/", r"^docs/hb\.wasm$", r"^docs/repo-files\.json$")]
+    r"^docs/media/", r"^docs/vendor/", r"^docs/hb\.wasm$", r"^docs/repo-files\.json$",
+    # A submodule is one gitlink entry in `git ls-files`, not its contents, so
+    # reading it as a file would fail - and the playground has no use for a
+    # vendored C library anyway. examples/hashmake's build needs the checkout;
+    # the browser terminal does not, since it cannot run a compiler.
+    r"^examples/hashmake/vendor/")]
 
 
 def tracked_paths():

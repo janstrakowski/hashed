@@ -71,6 +71,7 @@ TAG_CYCLIC_NODE :: 0x11
 // plus what the expression can read out of the dynamic `#arg`/`#self` stacks.
 // It lives here so the tag space stays in one place. See hash_implicit.odin.
 TAG_IMPLICIT_REACH :: 0x12
+TAG_WORKDIR :: 0x13
 
 // Byte-lexicographic order on digests. Written as an explicit loop rather than
 // slice.cmp because a `proc` parameter isn't addressable, so it can't be sliced.
@@ -302,6 +303,17 @@ value_digest_walk :: proc(v: Value, w: ^Hash_Walk) -> (Value_Digest, Hash_Fail) 
     // path §9 spends its last paragraph keeping out of the language. Hashing
     // it to the path would hand that back through a side door.
     return sha256_tagged(TAG_CACHE, nil), HASH_OK
+
+  case ^Workdir_Value:
+    // §9's ctx.dir, and the same reasoning as ctx.cache above with one more
+    // reason on top. Hashing it as the directory's *contents* (which is what
+    // a directory File hashes as, §3) would put the whole project tree into
+    // every `cached` key, so editing any one file would invalidate every
+    // entry - the exact opposite of what a content-addressed build wants.
+    // Hashing it as its *path* would bake the checkout location in. A bare
+    // tag is what is left, and it loses nothing: what a program reads through
+    // this handle are ordinary Files, and those still hash by content.
+    return sha256_tagged(TAG_WORKDIR, nil), HASH_OK
 
   case ^Async_Handle:
     return {}, fail_kind(.Async)

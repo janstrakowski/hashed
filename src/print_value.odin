@@ -107,6 +107,14 @@ write_value :: proc(b: ^strings.Builder, val: Value, st: ^Print_State) {
     }
   case ^Cache_Value:
     fmt.sbprint(b, "<cache>")
+  case ^Workdir_Value:
+    // §3's display rule, as for a File: show where it actually is. Nothing in
+    // the language reads that path back out as a value.
+    if v.dir_path == "" {
+      fmt.sbprint(b, "<dir>")
+    } else {
+      fmt.sbprintf(b, "<dir: %s>", v.dir_path)
+    }
   case ^Async_Handle:
     // Every real call site awaits the top-level result before formatting it
     // (see eval_async.odin/await_value) - reaching here un-awaited would

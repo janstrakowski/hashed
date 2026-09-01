@@ -60,6 +60,15 @@ let choice loadfile "choice.txt" |> filetext;
 
 Run it with `./hb examples/option-picker.hb` (from anywhere - its paths resolve relative to the script itself, not your shell's current directory), or explore it live with `./hb -i` - a two-to-four-pane terminal editor with a built-in examples picker, a live AST view, and a step-by-step evaluation trace. This one example touches a few of the language's actual design points: files are ordinary values (`loadfile`/`createfile`), branching is built from general composable operators rather than bespoke syntax (`then`/`else` chains into an if/else-if/else), and `error` is a genuinely unrecoverable failure - unlike a failed `then`, no enclosing `else` catches it.
 
+And the first thing built *on* the language now runs too. **[hashmake](tools/hashmake/)** is a build tool whose build files are HashedBuild programs: a `hashmake.hb` evaluates to a dependency graph, and each node is a function from its prerequisites to the artifact it builds.
+
+```sh
+odin build tools/hashmake -out:hashmake
+cd examples/hashmake && ../../hashmake
+```
+
+That vendors [cJSON](https://github.com/DaveGamble/cJSON), finds its C sources by *listing the directory* rather than naming them, compiles each with clang, links them, and runs the result. Run it again and it rebuilds nothing - not because hashmake remembers what it did, but because each node wraps its work in `cached`, whose key holds the *content* of the files it read. Edit one source and exactly that object and the link rebuild; undo the edit and it is a cache hit again, which a timestamp-based tool cannot do. See **[examples/hashmake/](examples/hashmake/)**.
+
 **[LANGUAGE.md](LANGUAGE.md)** is the tour of everything that works today, feature by feature, with a runnable snippet for each and an explicit list of what isn't built yet. **[examples/](examples/)** has a runnable file per feature - all of them executed by the test suite, so they can't drift from the implementation. `SPEC.md` is the full design, including the parts that don't run yet.
 
 # Examples

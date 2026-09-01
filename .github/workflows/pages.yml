@@ -32,6 +32,8 @@ jobs:
       ODIN_VERSION: dev-2026-08
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Cache Odin
         id: cache-odin
