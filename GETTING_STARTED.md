@@ -52,6 +52,9 @@ If a freshly built binary refuses to start with *"An Application Control policy 
 - **`./hb`** (no arguments) - a line-based REPL. Type an expression, then an empty line to evaluate it; `:q` to quit.
 - **`./hb -a path/to/program.hb`** - print the full AST before evaluating. Works with `-e` too.
 - **`./hb -i`** - the live terminal editor (needs a real terminal, not a pipe).
+- **`./hb --dir <path> ...`** - open `<path>` as `ctx.dir`, the program's main directory, instead of the default (the source file's own directory; the working directory for `-e` and the REPL). A program reaches the filesystem only through the directories opened for it, so this is how you say which one it gets. Any path the shell accepts works here - absolute, relative, `..` and all - because it is resolved before the program starts; the sub-paths a *program* writes may say none of that.
+- **`./hb --dir <name>=<path> ...`** - open `<path>` as `ctx.dirs.<name>` as well. Repeatable, so `--dir src=./src --dir out=/tmp/out` hands over two more directories under those names.
+- **`./hb --no-default-dir ...`** - hand the program no `ctx.dir` at all. Every filesystem call then has to name a handle of its own (one from `--dir <name>=<path>`, or one opened from it) and any call that doesn't fails.
 - **`./hb --cache-dir <path> ...`** - override where `ctx.cache` writes to, and where `cached` keeps its entries (defaults to your XDG cache dir; `%LOCALAPPDATA%\hashedbuild` on Windows). Handy for a throwaway cache: point it somewhere temporary and `cached` starts from nothing.
 - **`./hb --help`**, **`./hb --version`** - usage and version.
 

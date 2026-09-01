@@ -56,7 +56,7 @@ takes the outer `;` for itself.
 | `Nothing` | `nothing` | the unit value |
 | `Table` | `{ .a = 1 }`, `{10, 20}`, `empty` | the one composite type |
 | `Function` | `func …`, `(*2)`, `asfunc …` | ordinary values |
-| `File` | `loadfile "…"` | a file or directory; displays as its path |
+| `File` | `loadfile "…"` | a file or directory, read through a directory handle; displays as its path |
 
 → `examples/arithmetic.hb`, `examples/strings.hb`,
 `examples/nothing-and-empty.hb` (§3, §4, §6)
@@ -348,27 +348,61 @@ the program runs.
 
 ## Files
 
-Filesystem access is a small set of ordinary functions, not syntax (§16):
+Filesystem access is a small set of ordinary functions, not syntax (§16). Every
+one of them takes a **directory handle plus a sub-path inside it**:
 
 ```hashedbuild
-loadfile "notes.txt"                                  // relative to the source file
-loadfile { .dir = <handle>, .path = "notes.txt" }     // contained to <handle>
-createfile { .path = "out.txt", .content = "hi" }     // exclusive: fails if it exists
+loadfile { .dir = <handle>, .path = "notes.txt" }
+createfile { .dir = <handle>, .path = "out.txt", .content = "hi" }  // exclusive
 symlink { .dir = <handle>, .path = "l", .target = "t" }
 readlink { .dir = <handle>, .path = "l" }
 filetext <file>                                       // a regular file's bytes as Utf8
 ```
 
-A directory `File` doubles as a handle, and the handle form is **contained**: a
-sub-path can't escape it via `..`, an absolute path, or a symlink pointing
-outward. Hand a program one directory handle and it cannot read outside it.
-On Windows the same guarantee covers the forms that platform adds — a
-backslash-separated `..\..\x`, a drive-qualified `C:\x` or `C:x`, an alternate
-data stream (`name:stream`), and a junction as well as a symlink.
+Leave `.dir` out and the call lands in `ctx.dir`, the program's main directory,
+so these two are the same call:
 
-Paths in the single-argument form resolve relative to the source file being
-run, not to your shell's working directory — so a script behaves the same
-wherever you invoke it from.
+```hashedbuild
+loadfile "notes.txt"
+loadfile { .dir = ctx.dir, .path = "notes.txt" }
+```
+
+**The first handle comes from the runtime, not from a path.** `hb <file>` opens
+the source file's own directory as `ctx.dir` — so a script reads its neighbours
+wherever you invoke it from — and `hb -e`/the REPL open the working directory,
+having no file to be relative to. The flags below change that; anything else a
+program reaches, it reaches by opening it from a handle it already has.
+
+```sh
+hb --dir build/out prog.hb        # ctx.dir is build/out instead
+hb --dir src=./src prog.hb        # and ctx.dirs.src as well; repeatable
+hb --no-default-dir prog.hb       # no ctx.dir at all
+```
+
+A directory `File` — from `ctx.dir`, from `ctx.dirs.<name>`, or from a
+`loadfile` that returned one — doubles as a handle for the next call down, so a
+tree is traversed by opening each directory in turn.
+
+**A sub-path is a sequence of ordinary names, and nothing else.** It may not
+start at a root, and it may not contain `.` or `..` **anywhere** — not even
+where they would cancel out:
+
+```hashedbuild
+loadfile { .dir = d, .path = "src/main.hb" }   // fine
+loadfile { .dir = d, .path = "." }             // refused
+loadfile { .dir = d, .path = "src/./main.hb" } // refused, though it would reduce
+loadfile { .dir = d, .path = "../secrets" }    // refused
+loadfile { .dir = d, .path = "/etc/passwd" }   // refused
+```
+
+The last thing a sub-path can't do is leave through a **symlink**: every
+component is opened without following links, so a link inside the directory is
+refused rather than followed, even one that would have resolved back inside.
+Hand a program one directory handle and there is no expressible way for it to
+read or write outside that tree. On Windows the same guarantee covers the forms
+that platform adds — a backslash-separated `..\..\x`, a drive-qualified `C:\x`
+or `C:x`, an alternate data stream (`name:stream`), and a junction as well as a
+symlink.
 
 → `examples/files-sandboxed.hb`, `examples/files-symlink.hb`,
 `examples/option-picker.hb` (§3, §16)
@@ -571,6 +605,17 @@ inside a wider context can't grant it more authority than it was made with;
 builtins are the deliberate exception, since being restrictable from the outside
 is the entire point.
 
+`ctx.dir` and `ctx.dirs` are the directories the runtime opened for the program
+(see "Files"): `ctx.dir` is its **main** directory, the one a call with no
+`.dir` lands in, and `ctx.dirs` holds every **other** one by name. Neither is a
+working directory — the language has no current directory and no path that
+resolves against the process, only handles and names inside them. Narrowing
+works on them exactly as it does on permissions:
+
+```hashedbuild
+<expr> withctx (ctx concat { .dir = nothing })   // only handles already in hand
+```
+
 `ctx.cache` is a write-only, content-addressed store: `createfile { .dir =
 ctx.cache, .content = … }` writes under the content's own hash, deduplicating
 across runs, and returns the `File` it wrote. Its directory is also where
@@ -621,7 +666,15 @@ repetition there is — see above), a `Bytes`-returning counterpart to
 `filetext`, directory listing as a value, and the `#context` implicit name. `SPEC.md` describes several of these as settled
 design; none of them run today.
 
-Removed rather than pending: `serialize` and `serialize_file` were specified in
+Removed rather than pending: the **unsandboxed path** — `loadfile "/etc/passwd"`,
+or a `createfile` with no directory behind it — is gone as of 2026-09-01. Every
+filesystem call is now a directory handle plus a sub-path inside it, and the
+handles a program starts with are the ones the runtime opened for it (see
+"Files"). `loadfile "notes.txt"` still works, meaning "in `ctx.dir`"; what no
+longer exists is a path that resolves against the process rather than against a
+handle.
+
+`serialize` and `serialize_file` were specified in
 §15 and are gone as of 2026-08-28 — the canonical byte encoding they would have
 exposed still exists, but only as the thing `sha256` hashes over. Both names are
 ordinary identifiers again.
@@ -706,11 +759,13 @@ unknown import.
 
 Either way, one thing differs from native, enforced by the target rather than
 chosen: **a program can only reach what the host preopened for it.** WASI has
-no working directory and no absolute paths, so `--dir=.` grants the current
-directory and granting nothing makes every filesystem builtin fail - which is
-`ctx.permissions.io` (§9) enforced by the runtime instead of the interpreter.
-Displayed paths are relative to that preopen, so a file shows as
-`/examples/optiona.txt` there and as its checkout path natively.
+no working directory and no absolute paths — which is the same capability model
+§16 describes, arrived at independently, and the reason the two fit together
+with nothing in between. `wasmtime --dir=.` (the *runtime's* flag, not `hb`'s)
+preopens the current directory for the module, and preopening nothing makes
+every filesystem builtin fail, `ctx.dir` included. Displayed paths are relative
+to that preopen, so a file shows as `examples/optiona.txt` there and as its
+checkout path natively.
 
 `scripts/wasi_smoke.sh` runs the examples on a wasm build and compares them
 against native; CI does it for both flavours on every push.

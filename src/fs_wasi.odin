@@ -122,9 +122,11 @@ resolve_preopen :: proc(path: string) -> (fd: Fs_Fd, rel: string, ok: bool) {
   return
 }
 
-// Without a cwd, "wherever relative paths land" is the first thing the host
-// preopened. A program given nothing gets an invalid descriptor, and every
-// unsandboxed call through it fails - which is the correct answer, not a bug.
+// preview1 has no working directory, so "the directory the runtime starts
+// from" is the first thing the host preopened. A run given nothing preopened
+// gets an invalid descriptor, `ctx.dir` fails to open, and every filesystem
+// call that names no handle of its own fails - which is the correct answer,
+// not a bug: the host granted nothing.
 fs_cwd_dir :: proc() -> Fs_Fd {
   load_preopens()
   if len(preopens) == 0 do return FS_INVALID_FD

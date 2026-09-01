@@ -15,6 +15,12 @@
 // went stale the next time someone wrote one. What holds are the properties
 // below.
 //
+// `tree/` is a fixture committed next to this example - a.txt and sub/b.txt -
+// so the two handles below read something that does not change underneath
+// them. `ctx.dir` is the directory the runtime handed the program (§9/§16),
+// this example's own; a call that names no `.dir` resolves against it, so the
+// two loads below are the same call written two ways.
+//
 // Reading a directory is I/O, so the first `sha256` of one needs
 // `ctx.permissions.io` like `loadfile` does - and it is only the first, since
 // a `File` is an immutable handle (§3) and the digest is fixed once read.
@@ -24,19 +30,20 @@
 //
 // Evaluates to { a_tree_is_not_its_file: true, one_tree_is_one_value: true,
 //                reading_twice_agrees: true }.
-let here loadfile ".";
+let a loadfile { .dir = ctx.dir, .path = "tree" };
+let b loadfile "tree";
 {
   // A directory holding a file is not that file. Both digests are built from
   // the same bytes on disk, and §3's tagging is what keeps them apart.
-  .a_tree_is_not_its_file = ((sha256 here) == (sha256 loadfile "optiona.txt")) == (1 > 2),
+  .a_tree_is_not_its_file = ((sha256 a) == (sha256 loadfile "tree/a.txt")) == (1 > 2),
 
   // Two separate handles, one tree. §3 makes a File's identity its content,
-  // so these are the same value even though they are different handles - and
+  // so these are the same value even though they were opened separately - and
   // comparing them is what reads the second one.
-  .one_tree_is_one_value = here == (loadfile "."),
+  .one_tree_is_one_value = a == b,
 
   // Two independent walks of the same directory agree. That is §3's "sorted
   // by name for determinism" doing its job: the digest is the tree's, not the
   // order the filesystem happened to hand the entries back in.
-  .reading_twice_agrees = (sha256 here) == (sha256 loadfile "."),
+  .reading_twice_agrees = (sha256 a) == (sha256 b),
 }

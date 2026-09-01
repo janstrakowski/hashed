@@ -64,6 +64,70 @@ test_parse_args_flags_needing_an_argument_reject_a_missing_one :: proc(t: ^testi
   _, cache_err, cache_ok := parse_args([]string{"--cache-dir"})
   testing.expect(t, !cache_ok, "--cache-dir with nothing after it must be an error")
   testing.expect(t, strings.contains(cache_err, "--cache-dir"))
+
+  _, dir_err, dir_ok := parse_args([]string{"--dir"})
+  testing.expect(t, !dir_ok, "--dir with nothing after it must be an error")
+  testing.expect(t, strings.contains(dir_err, "--dir"))
+}
+
+// One flag, two jobs (SPEC.md §9): a bare path is ctx.dir, a <name>=<path> is
+// an entry in ctx.dirs. The "=" is what tells them apart, and it is the first
+// one, so a path may contain another.
+@(test)
+test_parse_args_dir_is_the_main_directory_or_a_named_one :: proc(t: ^testing.T) {
+  main_only, _, ok := parse_args([]string{"--dir", "build/out", "prog.hb"})
+  testing.expect(t, ok)
+  testing.expect_value(t, main_only.main_dir, "build/out")
+  testing.expect_value(t, len(main_only.named_dirs), 0)
+  testing.expect(t, !main_only.no_main_dir)
+
+  named, _, ok2 := parse_args([]string{"--dir", "src=./src", "--dir", "out=/tmp/o=1", "prog.hb"})
+  testing.expect(t, ok2)
+  testing.expect_value(t, named.main_dir, "") // untouched: neither of these is the main one
+  testing.expect_value(t, len(named.named_dirs), 2)
+  if len(named.named_dirs) == 2 {
+    testing.expect_value(t, named.named_dirs[0].name, "src")
+    testing.expect_value(t, named.named_dirs[0].path, "./src")
+    testing.expect_value(t, named.named_dirs[1].name, "out")
+    testing.expect_value(t, named.named_dirs[1].path, "/tmp/o=1") // split at the *first* "="
+  }
+}
+
+@(test)
+test_parse_args_rejects_a_malformed_or_repeated_dir :: proc(t: ^testing.T) {
+  _, empty_name_err, empty_name_ok := parse_args([]string{"--dir", "=/tmp"})
+  testing.expect(t, !empty_name_ok, "a named --dir needs a name")
+  testing.expect(t, strings.contains(empty_name_err, "empty name"))
+
+  _, empty_path_err, empty_path_ok := parse_args([]string{"--dir", "src="})
+  testing.expect(t, !empty_path_ok, "a named --dir needs a path")
+  testing.expect(t, strings.contains(empty_path_err, "empty path"))
+
+  // Two handles under one name would leave which one wins to table_find.
+  _, dup_err, dup_ok := parse_args([]string{"--dir", "src=./a", "--dir", "src=./b"})
+  testing.expect(t, !dup_ok, "one name, two directories, is a contradiction")
+  testing.expect(t, strings.contains(dup_err, "twice"))
+}
+
+// --no-default-dir says the program gets no ctx.dir; --dir <path> says which
+// one it gets. Together they say nothing coherent, so neither is silently
+// preferred (SPEC.md §9).
+@(test)
+test_parse_args_no_default_dir :: proc(t: ^testing.T) {
+  opts, _, ok := parse_args([]string{"--no-default-dir", "prog.hb"})
+  testing.expect(t, ok)
+  testing.expect(t, opts.no_main_dir)
+
+  // A *named* directory is not the main one, so it combines fine: this is how
+  // a program is given handles and no default at all.
+  with_named, _, ok2 := parse_args([]string{"--no-default-dir", "--dir", "src=./src", "prog.hb"})
+  testing.expect(t, ok2)
+  testing.expect(t, with_named.no_main_dir)
+  testing.expect_value(t, len(with_named.named_dirs), 1)
+
+  _, err, conflict_ok := parse_args([]string{"--no-default-dir", "--dir", "./x", "prog.hb"})
+  testing.expect(t, !conflict_ok, "--dir <path> and --no-default-dir contradict each other")
+  testing.expect(t, strings.contains(err, "--no-default-dir"))
 }
 
 @(test)

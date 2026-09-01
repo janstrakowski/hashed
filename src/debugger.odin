@@ -186,7 +186,7 @@ debugger_thread_proc :: proc(data: rawptr) {
 // ownership of) - nothing evaluates until `debugger_step` is called. Returns
 // nil if the source doesn't parse; the caller should show a placeholder and
 // try again once it does.
-start_debugger_run :: proc(src_owned: string, current_path: string, cache_dir: string) -> ^Debugger_Run {
+start_debugger_run :: proc(src_owned: string, dirs: Root_Dirs) -> ^Debugger_Run {
   dbg := new(Debugger_Run)
   dbg.src = src_owned
   dbg.ast = parse(source_t{name = "debug", n_bytes = u64(len(dbg.src)), data = raw_data(dbg.src)}, ast_t{})
@@ -200,10 +200,9 @@ start_debugger_run :: proc(src_owned: string, current_path: string, cache_dir: s
   dbg.interp = Interpreter{
     ast         = &dbg.ast,
     src         = dbg.src,
-    current_ctx = make_root_context(cache_dir),
+    current_ctx = make_root_context(dirs),
     debugger    = dbg,
   }
-  setup_interp_base_dir(&dbg.interp, current_path)
 
   // The run evaluates on its own thread so the panel can render while it sits
   // paused mid-expression. A target without threads (the portable WASI build -

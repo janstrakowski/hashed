@@ -87,20 +87,10 @@ Interpreter :: struct {
   // `ctx`/`withctx` don't need to care.
   current_ctx: Value,
 
-  // Base directory for the *unsandboxed* forms of loadfile/createfile (§16 -
-  // no .dir given): relative paths there resolve against this directory
-  // instead of the process's actual cwd, so a program's own relative paths
-  // stay correct regardless of where `hb` was invoked from. Zero value
-  // (has_base_dir == false) means "just use the process's cwd" (AT_FDCWD) -
-  // what the REPL wants, since there's no source file to be relative to.
-  base_dir_fd:  Fs_Fd,
-  has_base_dir: bool,
-  // The same directory as a path, kept alongside the handle because a File
-  // displays the path it was reached by (SPEC.md §3) and an fd can't be
-  // turned back into one portably - Linux could ask /proc/self/fd, WASI has
-  // no equivalent at all. Empty means "use the process's cwd", matching
-  // has_base_dir == false.
-  base_dir_path: string,
+  // There is deliberately no base directory here. A call that names no
+  // handle resolves against `ctx.dir` (§9/§16), which travels in
+  // `current_ctx` above like every other capability - so `withctx` can take
+  // it away, and a spawned task inherits exactly what its parent had.
 
   // The `let rec` Table literals currently being built, innermost last
   // (rec_build.odin). Empty for every program that doesn't write a cyclic

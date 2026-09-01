@@ -15,9 +15,10 @@ package hashedbuild
 // entirely descriptor-relative (`path_open` against a base fd, no absolute
 // paths, no cwd), which is the same capability model §16's `.dir` handles
 // already describe. Every operation below therefore takes a directory
-// handle plus a name within it, never a bare path - except the two the cache
-// needs (§9), which are the one place a path arrives from outside the
-// program.
+// handle plus a name within it, never a bare path - except the three the
+// runtime itself needs (fs_open_dir_path, fs_make_dirs, fs_cwd_dir), which
+// are where `ctx.dir`, `ctx.dirs` and the cache come from (§9): the only
+// paths in the system that arrive from outside a program.
 //
 // Windows is the one target that has no descriptor-relative open at all, so
 // fs_windows.odin keeps a numbered table of handles and reaches a child by
@@ -36,7 +37,7 @@ FS_INVALID_FD :: Fs_Fd(-1)
 
 // Operations, all implemented per target:
 //
-//   fs_cwd_dir              the directory unsandboxed calls resolve against
+//   fs_cwd_dir              the process's working directory, as a descriptor
 //   fs_stat_is_dir_at       is this name a directory? - asked before opening,
 //                           because WASI refuses a file-shaped open on a
 //                           directory (its rights model distinguishes them)

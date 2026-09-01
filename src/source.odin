@@ -15,20 +15,21 @@ source_t :: struct {
   data: [^]u8,
 }
 
-// The directory a program's relative paths resolve against: the source file's
-// own directory, so a script behaves the same wherever it is run from - the
-// same reasoning as run_file in main.odin. An unsaved editor buffer just
-// falls back to the process's cwd (has_base_dir stays false). Lives here, not
-// beside the editor, because the debugger sets a run up the same way and
-// neither is target-specific.
-setup_interp_base_dir :: proc(interp: ^Interpreter, current_path: string) {
-  if current_path == "" do return
+// The directory a program gets as `ctx.dir` (§9): the source file's own, so a
+// script behaves the same wherever it is run from. "" - an unsaved editor
+// buffer, or the REPL, with no file to be relative to - means the process's
+// working directory instead. `filepath.dir` answers "" for a bare filename
+// with no directory component, which no target will open, so that case is
+// normalised here rather than at each call site.
+//
+// Lives here, not beside the editor, because main, the editor and the
+// debugger all set a run up the same way and none of it is target-specific.
+// What the caller does with the answer is open it (open_root_dirs) - unless
+// `--dir <path>` named a different directory, or `--no-default-dir` said the
+// program is to have no main directory at all.
+main_dir_for_source :: proc(current_path: string) -> string {
+  if current_path == "" do return "."
   dir_path := filepath.dir(current_path)
   if dir_path == "" do dir_path = "."
-  dir_fd, errno := fs_open_dir_path(dir_path)
-  if errno == .None {
-    interp.base_dir_fd = dir_fd
-    interp.has_base_dir = true
-    interp.base_dir_path = absolute_dir_path(dir_path)
-  }
+  return dir_path
 }

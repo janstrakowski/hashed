@@ -28,11 +28,11 @@ import "core:sys/windows"
 //   * The walk across intermediate components is by path rather than by a
 //     chain of descriptors, so unlike the *at() family it is not immune to
 //     another process renaming a directory mid-walk. Every component is still
-//     opened no-follow and checked, and "..", rooted and drive-qualified
-//     sub-paths never reach the walk at all (resolve_parent_beneath rejects
-//     them, backslash separators included). So no path a *program* can write
-//     escapes its directory; only a concurrent rename by another process
-//     could, which is outside what §16 describes.
+//     opened no-follow and checked, and "..", ".", rooted and drive-qualified
+//     sub-paths never reach the walk at all (validate_sub_path rejects them
+//     before it starts, backslash separators and `name:stream` included). So
+//     no path a *program* can write escapes its directory; only a concurrent
+//     rename by another process could, which is outside what §16 describes.
 //
 // Descriptors are numbered rather than passed around raw because Fs_Fd is an
 // i32 and a Windows HANDLE is a pointer. The table below is that numbering.
@@ -53,8 +53,8 @@ Fs_Slot :: struct {
 }
 
 // Guarded because `async` runs on real OS threads (task.odin) and a spawned
-// interpreter inherits base_dir_fd (eval_async.odin), so two threads can be
-// opening and closing descriptors at the same time.
+// interpreter inherits its parent's context, `ctx.dir` and all (eval_async.odin),
+// so two threads can be opening and closing descriptors at the same time.
 @(private = "file")
 fs_table: struct {
   mutex:     sync.Mutex,
@@ -152,8 +152,10 @@ dir_path_of :: proc(fd: Fs_Fd) -> (string, bool) {
 @(private = "file")
 to_win_path :: proc(path: string) -> windows.wstring {
   // Since \\?\ switches off normalisation, the path has to arrive already
-  // normalised. A display path has been through clean_path; a path a program
-  // wrote has not, and an unsandboxed call hands one of those straight down.
+  // normalised. A display path has been through clean_path; a path the
+  // *command line* gave (`--dir`, `--cache-dir`) has not, and those are the
+  // only unnormalised ones left - no path a program writes reaches here, since
+  // §16 gives it nothing but sub-paths of a handle.
   p := path
   if is_absolute_path(p) do p = clean_path(p, context.temp_allocator)
 
@@ -200,9 +202,10 @@ to_slash :: proc(s: string, allocator := context.temp_allocator) -> string {
 @(private = "file")
 join_child :: proc(dir: string, name: string) -> string {
   // An absolute name replaces the directory outright, exactly as openat()
-  // ignores its dirfd when handed an absolute path. resolve_parent_beneath
-  // never produces one - it rejects them - but an *unsandboxed* call passes
-  // the program's own path straight through, and §16 lets that be absolute.
+  // ignores its dirfd when handed an absolute path. No name a *program* writes
+  // is ever absolute - §16 rejects those before the walk - but fs_open_dir_path
+  // resolves the command line's own paths against slot 0, and `--dir C:/work`
+  // is an ordinary thing to write there.
   if is_absolute_path(name) do return name
   if dir == "" do return name
   if strings.has_suffix(dir, "/") do return strings.concatenate({dir, name}, context.temp_allocator)

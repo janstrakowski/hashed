@@ -9,9 +9,9 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 
-// Every examples/*.hb runs the way `hb <file>` runs it (eval_source_file,
-// main.odin) and is asserted against the value its own header comment
-// documents. This is the only end-to-end coverage in the suite - parser,
+// Every examples/*.hb runs the way `hb <file>` runs it (run_example below,
+// which opens the same ctx.dir main.odin would) and is asserted against the
+// value its own header comment documents. This is the only end-to-end coverage in the suite - parser,
 // evaluator, async, and the filesystem builtins all at once - and it keeps
 // the examples from rotting silently as the language moves underneath them.
 // test_every_example_is_covered_by_a_test (bottom) makes forgetting to add a
@@ -20,6 +20,17 @@ import "core:testing"
 // Paths are built from repo_root() (builtins_fs_test.odin), which resolves at
 // compile time from the source location - `odin test` promises no particular
 // working directory, and CI checks out somewhere else entirely.
+
+// `hb <file>` opens the source file's own directory as ctx.dir (§9/§16), so
+// an example reads its neighbours by name wherever it is run from. Doing the
+// same here is what makes these tests run the examples the way a reader does.
+@(private = "file")
+run_example :: proc(path: string, cache: string) -> (formatted: string, err_msg: string, ok: bool) {
+  dirs, dir_err, dir_ok := open_root_dirs(cache, main_dir_for_source(path), nil)
+  if !dir_ok do return "", dir_err, false
+  defer close_root_dirs(dirs)
+  return eval_source_file(path, false, dirs)
+}
 
 @(private = "file")
 Example_Case :: struct {
@@ -113,7 +124,7 @@ test_examples_evaluate_to_their_documented_values :: proc(t: ^testing.T) {
       continue
     }
     path := fmt.tprintf("%s/examples/%s", repo_root(), c.file)
-    formatted, err_msg, ok := eval_source_file(path, false, cache)
+    formatted, err_msg, ok := run_example(path, cache)
     if !testing.expect(t, ok, fmt.tprintf("%s failed to evaluate: %s", c.file, err_msg)) do continue
     defer delete(formatted)
     testing.expect_value(t, formatted, c.expected)
@@ -128,7 +139,7 @@ test_example_option_picker_writes_into_the_cache :: proc(t: ^testing.T) {
   defer remove_dir_and_entries(cache)
 
   path := fmt.tprintf("%s/examples/option-picker.hb", repo_root())
-  formatted, err_msg, ok := eval_source_file(path, false, cache)
+  formatted, err_msg, ok := run_example(path, cache)
   testing.expect(t, ok, err_msg)
   if !ok do return
   defer delete(formatted)
@@ -151,7 +162,7 @@ test_example_option_picker_writes_into_the_cache :: proc(t: ^testing.T) {
 @(test)
 test_example_files_sandboxed_displays_real_paths :: proc(t: ^testing.T) {
   path := fmt.tprintf("%s/examples/files-sandboxed.hb", repo_root())
-  formatted, err_msg, ok := eval_source_file(path, false, "")
+  formatted, err_msg, ok := run_example(path, "")
   testing.expect(t, ok, err_msg)
   if !ok do return
   defer delete(formatted)

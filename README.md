@@ -37,8 +37,9 @@ Prefer it locally? **[GETTING_STARTED.md](GETTING_STARTED.md)** walks through se
 A real parser and tree-walking evaluator exist now (`src/`, with a full test suite), covering the core expression language - functions, pattern matching, guard chains, real concurrency (`async`, running on actual OS threads) - plus a small set of filesystem builtins with capability-scoped permissions and a live, self-hosted terminal editor with a genuinely pausable/resumable debugger. Unlike the aspirational examples further down, the program below actually runs:
 
 ```hashedbuild
-// examples/option-picker.hb - reads choice.txt (relative to this file, not
-// to wherever `hb` was invoked from), then branches on its exact content.
+// examples/option-picker.hb - reads choice.txt out of ctx.dir, the directory
+// `hb` opened for this program (its own, not wherever you invoked `hb` from),
+// then branches on its exact content.
 // "option A" writes an entry starting with "Option A:" followed by
 // optiona.txt's content; "option B" does the analogous thing with
 // optionb.txt; anything else is an unrecoverable runtime error. The result
@@ -58,7 +59,7 @@ let choice loadfile "choice.txt" |> filetext;
     error "choice.txt must contain exactly \"option A\" or \"option B\""
 ```
 
-Run it with `./hb examples/option-picker.hb` (from anywhere - its paths resolve relative to the script itself, not your shell's current directory), or explore it live with `./hb -i` - a two-to-four-pane terminal editor with a built-in examples picker, a live AST view, and a step-by-step evaluation trace. This one example touches a few of the language's actual design points: files are ordinary values (`loadfile`/`createfile`), branching is built from general composable operators rather than bespoke syntax (`then`/`else` chains into an if/else-if/else), and `error` is a genuinely unrecoverable failure - unlike a failed `then`, no enclosing `else` catches it.
+Run it with `./hb examples/option-picker.hb` (from anywhere - `hb` hands a program its own directory as `ctx.dir`, and a program can only name things inside the directories it was handed), or explore it live with `./hb -i` - a two-to-four-pane terminal editor with a built-in examples picker, a live AST view, and a step-by-step evaluation trace. This one example touches a few of the language's actual design points: files are ordinary values reached through directory handles rather than paths (`loadfile`/`createfile`), branching is built from general composable operators rather than bespoke syntax (`then`/`else` chains into an if/else-if/else), and `error` is a genuinely unrecoverable failure - unlike a failed `then`, no enclosing `else` catches it.
 
 **[LANGUAGE.md](LANGUAGE.md)** is the tour of everything that works today, feature by feature, with a runnable snippet for each and an explicit list of what isn't built yet. **[examples/](examples/)** has a runnable file per feature - all of them executed by the test suite, so they can't drift from the implementation. `SPEC.md` is the full design, including the parts that don't run yet.
 

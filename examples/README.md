@@ -53,7 +53,7 @@ prose around each of these.
 
 | Example | Shows |
 |---|---|
-| `files-sandboxed.hb` | Directory handles, contained sub-paths, `filetext`, path display |
+| `files-sandboxed.hb` | `ctx.dir`, directory handles, contained sub-paths, `filetext`, path display |
 | `files-symlink.hb` | `readlink` — and why symlinks aren't values of their own |
 | `hashing.hb` | `sha256`, and the content identity that makes two Files one value |
 | `hashing-directories.hb` | A directory's hash: its entries, and the one digest that reads |
@@ -69,7 +69,9 @@ prose around each of these.
 ## Supporting files
 
 `choice.txt`, `optiona.txt`, `optionb.txt` are inputs for `option-picker.hb` and
-the async examples; `link-to-optiona` is a symlink `files-symlink.hb` reads.
+the async examples; `link-to-optiona` is a symlink `files-symlink.hb` reads;
+`tree/` (holding `a.txt` and `sub/b.txt`) is the small, unchanging directory
+`hashing-directories.hb` opens twice.
 
 `async-branching.hb` writes `branch-*.marker` files next to itself as evidence of
 which branches ran. `createfile` is exclusive, so delete them before re-running

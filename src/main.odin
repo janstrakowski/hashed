@@ -2,7 +2,6 @@ package hashedbuild
 
 import "core:fmt"
 import "core:os"
-import "core:path/filepath"
 import "core:strings"
 import "core:bufio"
 
@@ -16,11 +15,22 @@ Options:
   -i, --interactive   Start the live editor (requires a terminal)
   -a, --ast           Print the parsed AST before evaluating
   -e, --eval <expr>   Evaluate <expr> like one REPL submission and exit
+      --dir <path>     Open <path> as ctx.dir, the program's main
+                       directory (default: the source file's own
+                       directory, or the working directory with no file)
+      --dir <name>=<path>
+                       Also open <path> as ctx.dirs.<name>. Repeatable
+      --no-default-dir Give the program no ctx.dir at all, so every
+                       filesystem call must name a handle of its own
       --cache-dir <path>
                        Override where ctx.cache and cached keep
                        their entries (SPEC.md §15/§16)
   -h, --help           Print this help and exit
-      --version        Print the version and exit`
+      --version        Print the version and exit
+
+A program reaches the filesystem only through the directories opened for it
+here (SPEC.md §9/§16): it can read and write inside them, by name, and cannot
+name anything else - no absolute path, no "..", no symlink pointing out.`
 
 // What the CLI was asked to do, parsed out of argv as a plain value: no
 // printing and no os.exit in here, so main stays a thin dispatch over the
@@ -40,6 +50,15 @@ Cli_Options :: struct {
   file_path: string,
   cache_dir: string, // "" means resolve the XDG default (SPEC.md §9/§16) instead
   eval_expr: string,
+  // --dir <path>: what to open as ctx.dir. "" means derive it - the source
+  // file's own directory, or the working directory when there is no file
+  // (main_dir_for_source, source.odin).
+  main_dir:  string,
+  // --no-default-dir: hand the program no ctx.dir at all. Contradicts an
+  // explicit --dir <path>, and parse_args says so rather than picking one.
+  no_main_dir: bool,
+  // --dir <name>=<path>, in the order given: ctx.dirs (SPEC.md §9).
+  named_dirs: [dynamic]Named_Dir,
 }
 
 // -h/--version win wherever they appear (`hb -i --help` prints help rather
@@ -64,6 +83,30 @@ parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: b
       i += 1
       if i >= len(args) do return opts, "--cache-dir requires a path argument", false
       opts.cache_dir = args[i]
+    case "--no-default-dir":
+      opts.no_main_dir = true
+    case "--dir":
+      i += 1
+      if i >= len(args) do return opts, "--dir requires a <path> or <name>=<path> argument", false
+      // One flag, two jobs, told apart by the "=": a bare path is the main
+      // directory, a named one is an extra handle. Split at the *first* "="
+      // so a path may contain one; a name may not, which is why the name is
+      // the part before it.
+      eq := strings.index_byte(args[i], '=')
+      if eq < 0 {
+        opts.main_dir = args[i]
+        continue
+      }
+      name := args[i][:eq]
+      path := args[i][eq + 1:]
+      if name == "" do return opts, fmt.tprintf("--dir %s has an empty name (use --dir <path> for ctx.dir)", args[i]), false
+      if path == "" do return opts, fmt.tprintf("--dir %s has an empty path", args[i]), false
+      for existing in opts.named_dirs {
+        if existing.name == name {
+          return opts, fmt.tprintf("--dir %s= given twice", name), false
+        }
+      }
+      append(&opts.named_dirs, Named_Dir{name = name, path = path})
     case "-e", "--eval":
       i += 1
       if i >= len(args) do return opts, "-e/--eval requires an expression argument", false
@@ -75,6 +118,10 @@ parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: b
       }
       if opts.file_path == "" do opts.file_path = args[i] // extra positionals are ignored
     }
+  }
+
+  if opts.no_main_dir && opts.main_dir != "" {
+    return opts, "--dir <path> cannot be combined with --no-default-dir", false
   }
 
   switch {
@@ -109,7 +156,7 @@ main :: proc() {
   case .Version:
     fmt.println("hb", VERSION)
   case .Eval:
-    eval_once(opts.eval_expr, opts.show_ast, opts.cache_dir)
+    eval_once(opts.eval_expr, opts.show_ast, opts)
   case .Editor:
     // The editor and debugger drive a raw-mode TTY, which only exists on the
     // native target - a WASI build has no terminal to take over (see
@@ -119,23 +166,45 @@ main :: proc() {
         fmt.eprintln("error: -i/--interactive requires an interactive terminal")
         os.exit(1)
       }
-      run_live_editor(opts.cache_dir)
+      run_live_editor(opts)
     } else {
       fmt.eprintln("error: this build has no interactive editor")
       os.exit(1)
     }
   case .File:
-    run_file(opts.file_path, opts.show_ast, opts.cache_dir)
+    run_file(opts.file_path, opts.show_ast, opts)
   case .Repl:
-    run_eval_repl(opts.show_ast, opts.cache_dir)
+    run_eval_repl(opts.show_ast, opts)
   }
+}
+
+// The directories a run hands its program (SPEC.md §9), opened once for the
+// whole process: `--dir <path>` if it was given, otherwise the source file's
+// own directory - or the working directory when there is no file, which is
+// what the REPL and `-e` get. `--no-default-dir` means no `ctx.dir` at all,
+// and then every filesystem call in the program has to name a handle of its
+// own or fail.
+open_run_dirs :: proc(opts: Cli_Options, source_path: string) -> (Root_Dirs, string, bool) {
+  main_dir := ""
+  if !opts.no_main_dir {
+    main_dir = opts.main_dir
+    if main_dir == "" do main_dir = main_dir_for_source(source_path)
+  }
+  return open_root_dirs(opts.cache_dir, main_dir, opts.named_dirs[:])
 }
 
 // Runs a HashedBuild source file as a real program, printing the result -
 // `hb <file>`. Every failure here is fatal to the process; eval_source_file
 // below is the same work without the printing or the exiting.
-run_file :: proc(path_str: string, show_ast: bool, cache_dir: string) {
-  formatted, err_msg, ok := eval_source_file(path_str, show_ast, cache_dir)
+run_file :: proc(path_str: string, show_ast: bool, opts: Cli_Options) {
+  dirs, dir_err, dir_ok := open_run_dirs(opts, path_str)
+  if !dir_ok {
+    fmt.eprintfln("error: %s", dir_err)
+    os.exit(1)
+  }
+  defer close_root_dirs(dirs)
+
+  formatted, err_msg, ok := eval_source_file(path_str, show_ast, dirs)
   if !ok {
     // An empty message means the parse errors were already printed as part
     // of the AST, which is the only way to make sense of them.
@@ -152,7 +221,7 @@ run_file :: proc(path_str: string, show_ast: bool, cache_dir: string) {
 // grants `io` by default (§9) - the same environment the REPL and the live
 // editor evaluate under. Split out of run_file so the examples can be run
 // end to end as tests (examples_test.odin).
-eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) -> (formatted: string, err_msg: string, ok: bool) {
+eval_source_file :: proc(path_str: string, show_ast: bool, dirs: Root_Dirs) -> (formatted: string, err_msg: string, ok: bool) {
   source, errno := load_source_file(path_str)
   if errno != .None {
     return "", fmt.tprintf("could not read %s (%v)", path_str, errno), false
@@ -171,21 +240,7 @@ eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) ->
     return "", "", false
   }
 
-  interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(cache_dir)}
-  // Unsandboxed loadfile/createfile calls (no .dir given) resolve relative
-  // paths against the source file's own directory, not the process's cwd -
-  // filepath.dir returns "" (not ".") for a bare filename with no directory
-  // component, which openat would reject, so normalize that case explicitly.
-  dir_path := filepath.dir(path_str)
-  if dir_path == "" do dir_path = "."
-  dir_fd, dir_errno := fs_open_dir_path(dir_path)
-  if dir_errno == .None {
-    interp.base_dir_fd = dir_fd
-    interp.has_base_dir = true
-    interp.base_dir_path = absolute_dir_path(dir_path)
-  }
-  defer if dir_errno == .None do fs_close(dir_fd)
-
+  interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(dirs)}
   // eval_program, not eval: it also resolves a bare top-level `async` (§2)
   // and waits for any task nothing awaited, so the program can't exit with
   // work half-done (eval_async.odin).
@@ -202,7 +257,16 @@ eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) ->
 // buffered) ends the session. Works the same whether stdin is a terminal or
 // piped - unlike the two-pane editor, it needs no raw terminal mode. With
 // `-a`/`--ast`, the AST is printed above the value on every evaluation too.
-run_eval_repl :: proc(show_ast: bool, cache_dir: string) {
+run_eval_repl :: proc(show_ast: bool, opts: Cli_Options) {
+  // Opened once for the session, not once per submission: `ctx.dir` is a
+  // real descriptor, and a fresh one per line typed would leak one per line.
+  dirs, dir_err, dir_ok := open_run_dirs(opts, "")
+  if !dir_ok {
+    fmt.eprintfln("error: %s", dir_err)
+    os.exit(1)
+  }
+  defer close_root_dirs(dirs)
+
   fmt.println("HashedBuild REPL")
   fmt.println("Type an expression, then an empty line to evaluate it. ':q' to quit.")
   fmt.println()
@@ -232,7 +296,7 @@ run_eval_repl :: proc(show_ast: bool, cache_dir: string) {
     }
 
     if trimmed == "" {
-      eval_and_print(strings.to_string(builder), show_ast, cache_dir)
+      eval_and_print(strings.to_string(builder), show_ast, dirs)
       strings.builder_reset(&builder)
       continue
     }
@@ -242,7 +306,7 @@ run_eval_repl :: proc(show_ast: bool, cache_dir: string) {
   }
 
   if strings.builder_len(builder) > 0 {
-    eval_and_print(strings.to_string(builder), show_ast, cache_dir) // evaluate whatever's left at EOF
+    eval_and_print(strings.to_string(builder), show_ast, dirs) // evaluate whatever's left at EOF
   }
   fmt.println()
 }
@@ -251,7 +315,14 @@ run_eval_repl :: proc(show_ast: bool, cache_dir: string) {
 // a single REPL submission, then exits: parse errors and runtime errors take
 // the same exit codes run_file uses for them.
 @(private = "file")
-eval_once :: proc(src: string, show_ast: bool, cache_dir: string) {
+eval_once :: proc(src: string, show_ast: bool, opts: Cli_Options) {
+  dirs, dir_err, dir_ok := open_run_dirs(opts, "") // no file: ctx.dir is the working directory
+  if !dir_ok {
+    fmt.eprintfln("error: %s", dir_err)
+    os.exit(1)
+  }
+  defer close_root_dirs(dirs)
+
   source := source_t{name = "<eval>", n_bytes = u64(len(src)), data = raw_data(src)}
   ast := parse(source, ast_t{})
   defer ast_destroy(&ast)
@@ -264,7 +335,7 @@ eval_once :: proc(src: string, show_ast: bool, cache_dir: string) {
     os.exit(1)
   }
 
-  interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(cache_dir)}
+  interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(dirs)}
   env := make_global_env()
   val, ok := eval_program(&interp, ast.root, env)
   if !ok {
@@ -277,7 +348,7 @@ eval_once :: proc(src: string, show_ast: bool, cache_dir: string) {
 }
 
 @(private = "file")
-eval_and_print :: proc(src: string, show_ast: bool, cache_dir: string) {
+eval_and_print :: proc(src: string, show_ast: bool, dirs: Root_Dirs) {
   source := source_t{name = "<repl>", n_bytes = u64(len(src)), data = raw_data(src)}
   ast := parse(source, ast_t{})
   defer ast_destroy(&ast)
@@ -291,7 +362,7 @@ eval_and_print :: proc(src: string, show_ast: bool, cache_dir: string) {
     return
   }
 
-  interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(cache_dir)}
+  interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(dirs)}
   env := make_global_env()
   val, ok := eval_program(&interp, ast.root, env)
   if !ok {

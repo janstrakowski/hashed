@@ -9,15 +9,16 @@ import "core:testing"
 
 // Evaluates with the real global environment and root context bound in - the
 // filesystem builtins and `ctx` - the same way builtins_fs_test.odin does, so
-// `loadfile` and `ctx.cache` resolve. The cache path is a scratch one that is
-// never actually created: nothing here writes, and the directory is made
-// lazily on the first write (builtins_fs.odin).
+// `loadfile` and `ctx.cache` resolve. `ctx.dir` is the checkout, so every
+// path written below is a sub-path of it (§16 has no other kind). The cache
+// path is a scratch one that is never actually created: nothing here writes,
+// and the directory is made lazily on the first write (builtins_fs.odin).
 @(private = "file")
 eval_with_globals :: proc(src: string) -> (val: Value, ok: bool, err: string) {
   ast := parse(source_t{name = "test", n_bytes = u64(len(src)), data = raw_data(src)}, ast_t{})
   cache := strings.concatenate({repo_root(), "/.hash_test_cache"})
   defer delete(cache)
-  interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(cache)}
+  interp := Interpreter{ast = &ast, src = src, current_ctx = test_root_context(cache, repo_root())}
   val, ok = eval_program(&interp, ast.root, make_global_env())
   return val, ok, interp.error_message
 }
@@ -65,9 +66,7 @@ test_sha256_of_utf8_is_a_tagged_digest :: proc(t: ^testing.T) {
 // is a single known line, so the digest is checkable against a fixed value.
 @(test)
 test_sha256_of_a_regular_file_is_its_bare_content_digest :: proc(t: ^testing.T) {
-  path := strings.concatenate({repo_root(), "/examples/optiona.txt"})
-  defer delete(path)
-  src := strings.concatenate({`sha256 loadfile "`, path, `"`})
+  src := strings.concatenate({`sha256 loadfile "examples/optiona.txt"`})
   defer delete(src)
 
   // sha256sum says 653eaf05...6072908d; the same 32 bytes in base64 are what
@@ -79,10 +78,8 @@ test_sha256_of_a_regular_file_is_its_bare_content_digest :: proc(t: ^testing.T) 
 // path is how it was obtained, not part of what it is.
 @(test)
 test_file_identity_is_content_not_path :: proc(t: ^testing.T) {
-  a := strings.concatenate({repo_root(), "/examples/optiona.txt"})
-  b := strings.concatenate({repo_root(), "/examples/optionb.txt"})
-  defer delete(a)
-  defer delete(b)
+  a := "examples/optiona.txt"
+  b := "examples/optionb.txt"
 
   same := strings.concatenate({`(loadfile "`, a, `") == (loadfile "`, a, `")`})
   diff := strings.concatenate({`(loadfile "`, a, `") == (loadfile "`, b, `")`})
@@ -135,16 +132,18 @@ test_sha256_awaits_an_async_operand :: proc(t: ^testing.T) {
 // and then change one thing about it.
 @(private = "file")
 Tree :: struct {
-  root: string,
+  root: string, // the host path, for the test's own os.* calls
+  name: string, // the same directory as a sub-path of ctx.dir, for the source under test
 }
 
 @(private = "file")
 make_tree :: proc(t: ^testing.T, name: string) -> Tree {
-  root := strings.concatenate({repo_root(), "/.hash_test_", name})
+  sub := strings.concatenate({".hash_test_", name})
+  root := strings.concatenate({repo_root(), "/", sub})
   clear_tree_at(root) // a leftover from an interrupted run
   err := os.make_directory(root)
   testing.expect(t, err == nil, "could not create the scratch tree")
-  return Tree{root = root}
+  return Tree{root = root, name = sub}
 }
 
 @(private = "file")
@@ -186,11 +185,12 @@ clear_tree_at :: proc(root: string) {
 remove_tree :: proc(tree: Tree) {
   clear_tree_at(tree.root)
   delete(tree.root)
+  delete(tree.name)
 }
 
 @(private = "file")
 tree_digest :: proc(t: ^testing.T, tree: Tree) -> string {
-  src := strings.concatenate({`sha256 loadfile "`, tree.root, `"`}, context.temp_allocator)
+  src := strings.concatenate({`sha256 loadfile "`, tree.name, `"`}, context.temp_allocator)
   return eval_str(t, src)
 }
 
@@ -246,7 +246,7 @@ test_a_directory_is_not_its_only_file :: proc(t: ^testing.T) {
   defer remove_tree(tree)
   tree_write(tree, "only.txt", "content")
 
-  file_src := strings.concatenate({`sha256 loadfile "`, tree.root, `/only.txt"`}, context.temp_allocator)
+  file_src := strings.concatenate({`sha256 loadfile "`, tree.name, `/only.txt"`}, context.temp_allocator)
   testing.expect(t, tree_digest(t, tree) != eval_str(t, file_src))
 }
 
@@ -260,7 +260,7 @@ test_two_directory_handles_on_one_tree_are_equal :: proc(t: ^testing.T) {
   tree_write(tree, "x.txt", "same")
 
   src := strings.concatenate({
-    `let a loadfile "`, tree.root, `"; let b loadfile "`, tree.root, `"; a == b`,
+    `let a loadfile "`, tree.name, `"; let b loadfile "`, tree.name, `"; a == b`,
   }, context.temp_allocator)
   testing.expect(t, eval_bool(t, src), "two handles on one tree are one value")
 }
@@ -275,7 +275,7 @@ test_different_trees_are_not_equal :: proc(t: ^testing.T) {
   tree_write(b, "x.txt", "two")
 
   src := strings.concatenate({
-    `let a loadfile "`, a.root, `"; let b loadfile "`, b.root, `"; a == b`,
+    `let a loadfile "`, a.name, `"; let b loadfile "`, b.name, `"; a == b`,
   }, context.temp_allocator)
   testing.expect(t, !eval_bool(t, src))
 }
@@ -290,7 +290,7 @@ test_hashing_a_directory_needs_io :: proc(t: ^testing.T) {
   tree_write(tree, "x.txt", "content")
 
   src := strings.concatenate({
-    `let d loadfile "`, tree.root, `"; (sha256 d) chctx chperm { .name = "io", .enabled = 1 > 2 }`,
+    `let d loadfile "`, tree.name, `"; (sha256 d) chctx chperm { .name = "io", .enabled = 1 > 2 }`,
   }, context.temp_allocator)
   testing.expect(t, strings.contains(eval_failure(t, src), "needs the io permission"))
 }
@@ -305,7 +305,7 @@ test_a_directory_digest_is_read_once :: proc(t: ^testing.T) {
   tree_write(tree, "x.txt", "before")
 
   src := strings.concatenate({
-    `let d loadfile "`, tree.root, `";`,
+    `let d loadfile "`, tree.name, `";`,
     ` (sha256 d) == ((sha256 d) chctx chperm { .name = "io", .enabled = 1 > 2 })`,
   }, context.temp_allocator)
   testing.expect(t, eval_bool(t, src), "the second ask is answered from the first read")

@@ -150,7 +150,15 @@ Editor :: struct {
   example_menu:   Example_Menu,
   status_message: string, // transient, shown in the footer until the next action; "" if none
   completion_hint: string, // candidate names from the last Tab press, shown while prompting; "" if none
-  cache_dir:      string, // CLI --cache-dir override; "" resolves the XDG default (SPEC.md §9/§16)
+  // What the CLI was invoked with, kept whole because the buffer's own
+  // directories are reopened from it whenever the edited file changes.
+  cli:            Cli_Options,
+  // `ctx.dir`/`ctx.dirs` for the buffer as it stands (SPEC.md §9), opened
+  // once and reused: every keystroke re-evaluates the buffer, and opening a
+  // directory per keystroke would burn a descriptor per keystroke.
+  dirs:           Root_Dirs,
+  dirs_path:      string, // the current_path `dirs` was opened for
+  dirs_ready:     bool,
   debugger:       ^Debugger_Run, // the live, paused-in-place debugger run; nil until first needed
   debug_last_src: string, // buffer content the current `debugger` run was started from - edits auto-restart it
 }
@@ -178,6 +186,10 @@ editor_destroy :: proc(e: ^Editor) {
   delete(e.example_menu.filtered)
   delete(e.example_menu.search)
   delete(e.debug_last_src)
+  if e.dirs_ready {
+    close_root_dirs(e.dirs)
+    delete(e.dirs_path)
+  }
 }
 
 @(private = "file")
@@ -398,7 +410,7 @@ read_key :: proc() -> (key: Key, ch: u8) {
 // shown, and reordered (Alt+1/2/3 toggle Source/Ast/Result, Alt+,/Alt+. rotate
 // the display order). Requires stdin to be an actual terminal (see `main.odin`,
 // which falls back to the line-based REPL otherwise).
-run_live_editor :: proc(cache_dir: string) {
+run_live_editor :: proc(opts: Cli_Options) {
   state, ok := term_enable_raw()
   if !ok {
     fmt.eprintln("error: could not put the terminal into raw mode")
@@ -408,7 +420,7 @@ run_live_editor :: proc(cache_dir: string) {
 
   editor: Editor
   editor_init(&editor)
-  editor.cache_dir = cache_dir
+  editor.cli = opts
   defer editor_destroy(&editor)
 
   // Alternate screen buffer, same as vim/htop/less use - leaving it restores
@@ -709,19 +721,42 @@ run_prompt_action :: proc(e: ^Editor) {
 // Unsandboxed loadfile/createfile calls (no .dir given) resolve relative
 // paths against the edited buffer's own saved/loaded path, if it has one -
 
+// The directories the buffer evaluates against (SPEC.md §9): `ctx.dir` is the
+// edited file's own directory, or the working directory while the buffer is
+// unsaved, unless `--dir`/`--no-default-dir` said otherwise. Reopened only
+// when the buffer changes file - see Editor.dirs on why that matters here.
+//
+// A directory that will not open is not reported: the buffer is being edited,
+// so it is normal for it to name a file that does not exist yet, and the
+// program itself says so clearly enough ("no .dir given, and this context has
+// no ctx.dir") the moment it actually needs one.
+@(private = "file")
+editor_dirs :: proc(e: ^Editor) -> Root_Dirs {
+  if e.dirs_ready && e.dirs_path == e.current_path do return e.dirs
+  if e.dirs_ready {
+    close_root_dirs(e.dirs)
+    delete(e.dirs_path)
+  }
+  dirs, _, ok := open_run_dirs(e.cli, e.current_path)
+  if !ok do dirs = Root_Dirs{cache_dir = e.cli.cache_dir}
+  e.dirs = dirs
+  e.dirs_path = strings.clone(e.current_path)
+  e.dirs_ready = true
+  return e.dirs
+}
+
 // Evaluates the current buffer and renders its result as display lines -
 // same ownership contract as `ast_lines`: caller frees every line plus the
 // returned slice. Not independently scrollable (results are usually short);
 // it just shows from the top, clipped to the pane's height like anything else.
 @(private = "file")
-compute_result_lines :: proc(ast: ^ast_t, src: string, current_path: string, cache_dir: string) -> [dynamic]string {
+compute_result_lines :: proc(ast: ^ast_t, src: string, dirs: Root_Dirs) -> [dynamic]string {
   lines := make([dynamic]string, 0, 1)
   if len(ast.errors) > 0 {
     append(&lines, strings.clone("(fix parse errors first)"))
     return lines
   }
-  interp := Interpreter{ast = ast, src = src, current_ctx = make_root_context(cache_dir)}
-  setup_interp_base_dir(&interp, current_path)
+  interp := Interpreter{ast = ast, src = src, current_ctx = make_root_context(dirs)}
   env := make_global_env()
   val, ok := eval_program(&interp, ast.root, env) // resolve a bare top-level `async <expr>` (§2)
   if !ok {
@@ -738,15 +773,14 @@ compute_result_lines :: proc(ast: ^ast_t, src: string, current_path: string, cac
 // last (same completion order the evaluator actually works in). Same
 // ownership contract as `ast_lines`/`compute_result_lines`.
 @(private = "file")
-compute_trace_lines :: proc(ast: ^ast_t, src: string, current_path: string, cache_dir: string) -> [dynamic]string {
+compute_trace_lines :: proc(ast: ^ast_t, src: string, dirs: Root_Dirs) -> [dynamic]string {
   lines := make([dynamic]string, 0, 8)
   if len(ast.errors) > 0 {
     append(&lines, strings.clone("(fix parse errors first)"))
     return lines
   }
 
-  interp := Interpreter{ast = ast, src = src, enable_trace = true, current_ctx = make_root_context(cache_dir)}
-  setup_interp_base_dir(&interp, current_path)
+  interp := Interpreter{ast = ast, src = src, enable_trace = true, current_ctx = make_root_context(dirs)}
   env := make_global_env()
   eval(&interp, ast.root, env) // only the trace matters here, not the final value
   defer {
@@ -790,7 +824,7 @@ restart_debugger :: proc(e: ^Editor, src: string) {
   e.debugger = nil
   delete(e.debug_last_src)
   e.debug_last_src = strings.clone(src)
-  e.debugger = start_debugger_run(strings.clone(src), e.current_path, e.cache_dir)
+  e.debugger = start_debugger_run(strings.clone(src), editor_dirs(e))
 }
 
 @(private = "file")
@@ -1049,7 +1083,7 @@ redraw_panels :: proc(e: ^Editor) {
   // run's own attempt at the same path.
   result_content: [dynamic]string
   if e.panel_visible[.Result] {
-    result_content = compute_result_lines(&ast, src, e.current_path, e.cache_dir)
+    result_content = compute_result_lines(&ast, src, editor_dirs(e))
   }
   defer {
     for line in result_content do delete(line)
@@ -1075,7 +1109,7 @@ redraw_panels :: proc(e: ^Editor) {
   // pay for that when the panel is actually shown.
   steps_content: [dynamic]string
   if e.panel_visible[.Steps] {
-    steps_content = compute_trace_lines(&ast, src, e.current_path, e.cache_dir)
+    steps_content = compute_trace_lines(&ast, src, editor_dirs(e))
   }
   defer {
     for line in steps_content do delete(line)

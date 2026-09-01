@@ -53,6 +53,24 @@ fmt_scratch_path :: proc(name: string) -> string {
   return strings.concatenate({repo_root(), "/.builtins_fs_test_", name})
 }
 
+// The same scratch entry as a *sub-path* of the checkout, which is how a test
+// program names it: §16 has no other kind of path, and repo_root() is what
+// these tests hand over as ctx.dir (test_root_context, below).
+@(private = "file")
+scratch_name :: proc(name: string) -> string {
+  return strings.concatenate({".builtins_fs_test_", name})
+}
+
+// The root context the tests evaluate under: `io` granted, `ctx.cache` on a
+// scratch directory, and `ctx.dir` opened on `main_dir` - the directory whose
+// contents the source under test names. Package-visible because hash_test and
+// cache_test evaluate real programs too, and a program with no ctx.dir cannot
+// read anything at all (§16).
+test_root_context :: proc(cache_dir: string, main_dir: string) -> Value {
+  dirs, _, _ := open_root_dirs(cache_dir, main_dir, nil)
+  return make_root_context(dirs)
+}
+
 @(private = "file")
 remove_scratch_dir :: proc(s: Scratch_Dir) {
   fs_close(s.handle.dir_fd)
@@ -76,17 +94,19 @@ fs_parse :: proc(s: string) -> ast_t {
 // Evaluates `src` with the real global environment/root context (the
 // filesystem builtins, io granted) bound in, plus one extra name (e.g. a
 // scratch directory handle) additionally bound into that same top-level
-// scope - "" means nothing extra to bind. ctx.cache points at a scratch dir
-// under a name unique to the calling test (not the user's real cache dir,
-// and not shared across tests - odin test may run tests in parallel, and
-// tests that actually write to the cache need their own directory to avoid
-// colliding with each other).
+// scope - "" means nothing extra to bind. ctx.dir is the checkout, so a
+// program with no handle of its own reads and writes there by sub-path,
+// exactly as `hb <file>` gives it the source file's own directory (§16).
+// ctx.cache points at a scratch dir under a name unique to the calling test
+// (not the user's real cache dir, and not shared across tests - odin test may
+// run tests in parallel, and tests that actually write to the cache need
+// their own directory to avoid colliding with each other).
 @(private = "file")
 eval_with_builtins :: proc(src: string, extra_name: string, extra_val: Value, cache_name := "cache_default") -> (val: Value, ok: bool, err: string) {
   ast := fs_parse(src)
   defer ast_destroy(&ast)
 
-  interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(fmt_scratch_path(cache_name))}
+  interp := Interpreter{ast = &ast, src = src, current_ctx = test_root_context(fmt_scratch_path(cache_name), repo_root())}
   env := make_global_env()
   if extra_name != "" do env_bind(env, extra_name, extra_val)
 
@@ -98,12 +118,17 @@ eval_with_builtins :: proc(src: string, extra_name: string, extra_val: Value, ca
 
 // ---- createfile ---------------------------------------------------------------
 
+// A call that names no .dir lands in ctx.dir (§16) - here the checkout, so
+// the file appears next to the one the sandboxed test below writes, just
+// reached without a handle in the program's own hands.
 @(test)
-test_builtin_createfile_unsandboxed :: proc(t: ^testing.T) {
+test_builtin_createfile_defaults_to_ctx_dir :: proc(t: ^testing.T) {
   path := fmt_scratch_path("createfile_plain.txt")
   defer os.remove(path)
+  name := scratch_name("createfile_plain.txt")
+  defer delete(name)
 
-  src := fmt.aprintf(`createfile {{ .path = "%s", .content = "hello" }}`, path)
+  src := fmt.aprintf(`createfile {{ .path = "%s", .content = "hello" }}`, name)
   defer delete(src)
   val, ok, err := eval_with_builtins(src, "", nil)
   testing.expect(t, ok, err)
@@ -121,8 +146,10 @@ test_builtin_createfile_unsandboxed :: proc(t: ^testing.T) {
 test_builtin_createfile_is_exclusive :: proc(t: ^testing.T) {
   path := fmt_scratch_path("createfile_excl.txt")
   defer os.remove(path)
+  name := scratch_name("createfile_excl.txt")
+  defer delete(name)
 
-  src := fmt.aprintf(`createfile {{ .path = "%s", .content = "a" }}`, path)
+  src := fmt.aprintf(`createfile {{ .path = "%s", .content = "a" }}`, name)
   defer delete(src)
   _, ok1, _ := eval_with_builtins(src, "", nil)
   testing.expect(t, ok1)
@@ -166,7 +193,11 @@ test_file_display_shows_path :: proc(t: ^testing.T) {
   testing.expect(t, ok2, err2)
   testing.expect_value(t, format_value(loaded), fmt.tprintf("<file: %s/made.txt>", sd.path))
 
-  load_dir_src := fmt.aprintf(`loadfile "%s"`, sd.path)
+  // The same directory reached the other way - by sub-path from ctx.dir,
+  // with no handle in hand - displays the same absolute path (§3).
+  dir_name := scratch_name("display_dir")
+  defer delete(dir_name)
+  load_dir_src := fmt.aprintf(`loadfile "%s"`, dir_name)
   defer delete(load_dir_src)
   dir_val, ok3, err3 := eval_with_builtins(load_dir_src, "", nil)
   testing.expect(t, ok3, err3)
@@ -230,12 +261,14 @@ test_builtin_symlink_rejects_path_escape :: proc(t: ^testing.T) {
 // ---- loadfile -------------------------------------------------------------------
 
 @(test)
-test_builtin_loadfile_unsandboxed_file_and_directory :: proc(t: ^testing.T) {
+test_builtin_loadfile_defaults_to_ctx_dir :: proc(t: ^testing.T) {
   path := fmt_scratch_path("loadfile_plain.txt")
   _ = os.write_entire_file(path, transmute([]u8)string("content!"))
   defer os.remove(path)
+  name := scratch_name("loadfile_plain.txt")
+  defer delete(name)
 
-  load_src := fmt.aprintf(`loadfile "%s"`, path)
+  load_src := fmt.aprintf(`loadfile "%s"`, name)
   defer delete(load_src)
   val, ok, err := eval_with_builtins(load_src, "", nil)
   testing.expect(t, ok, err)
@@ -244,14 +277,82 @@ test_builtin_loadfile_unsandboxed_file_and_directory :: proc(t: ^testing.T) {
   testing.expect_value(t, fv.kind, File_Kind.Regular)
   testing.expect_value(t, string(fv.content), "content!")
 
-  load_dir_src := fmt.aprintf(`loadfile "%s"`, repo_root())
-  defer delete(load_dir_src)
-  dir_val, dir_ok, dir_err := eval_with_builtins(load_dir_src, "", nil)
+  // A directory reached the same way is a handle like any other (§16).
+  dir_val, dir_ok, dir_err := eval_with_builtins(`loadfile "examples"`, "", nil)
   testing.expect(t, dir_ok, dir_err)
   dfv, is_dir_file := dir_val.(^File_Value)
   testing.expect(t, is_dir_file)
   testing.expect_value(t, dfv.kind, File_Kind.Directory)
   if is_dir_file do fs_close(dfv.dir_fd)
+}
+
+// The rule §16 states as one sentence: a sub-path is a sequence of ordinary
+// names, so a root, an empty segment, and "." or ".." **anywhere** are all
+// refused - including the spellings that would have reduced to something
+// inside. None of these touches the filesystem before being rejected.
+@(test)
+test_sub_paths_may_not_say_dot_dotdot_or_a_root :: proc(t: ^testing.T) {
+  sd := make_scratch_dir(t, "sub_path_rules")
+  defer remove_scratch_dir(sd)
+
+  for bad in ([]string{
+    ".",           // the handle itself is already a value - ctx.dir, or the handle in hand
+    "..",
+    "a/./b",       // would reduce to "a/b", and is still refused
+    "a/../b",      // would reduce to "b"
+    "./a",
+    "a/..",
+    "a//b",        // an empty segment
+    "a/",          // ditto, at the end
+    "",
+  }) {
+    src := fmt.aprintf(`loadfile {{ .dir = d, .path = "%s" }}`, bad)
+    defer delete(src)
+    _, ok, err := eval_with_builtins(src, "d", sd.handle)
+    testing.expect(t, !ok, fmt.tprintf("%q must be refused as a sub-path", bad))
+    testing.expect(t, strings.contains(err, "sub-path"), err)
+  }
+
+  // The same rule with no handle named, where the directory is ctx.dir.
+  _, ok, err := eval_with_builtins(`loadfile "../SPEC.md"`, "", nil)
+  testing.expect(t, !ok, "ctx.dir is a sandbox like any other handle")
+  testing.expect(t, strings.contains(err, "sub-path"), err)
+}
+
+// Absolute paths are the other half of the same rule, and the spelling
+// differs per target: a leading "/" everywhere, plus a drive, a drive-relative
+// name and an alternate data stream on Windows (fs_windows.odin).
+@(test)
+test_sub_paths_may_not_be_rooted :: proc(t: ^testing.T) {
+  sd := make_scratch_dir(t, "sub_path_roots")
+  defer remove_scratch_dir(sd)
+
+  rooted := []string{"/etc/passwd", "/"}
+  when ODIN_OS == .Windows {
+    rooted = []string{"/etc/passwd", "/", "C:/Windows", "C:passwd", `\\server\share`, "name:stream"}
+  }
+  for bad in rooted {
+    src := fmt.aprintf(`loadfile {{ .dir = d, .path = "%s" }}`, bad)
+    defer delete(src)
+    _, ok, err := eval_with_builtins(src, "d", sd.handle)
+    testing.expect(t, !ok, fmt.tprintf("%q must be refused as a sub-path", bad))
+    testing.expect(t, strings.contains(err, "sub-path"), err)
+  }
+}
+
+// With no ctx.dir (`--no-default-dir`) a call that names no handle has nothing
+// to resolve against, and says so rather than falling back to anything.
+@(test)
+test_a_call_with_no_dir_needs_a_ctx_dir :: proc(t: ^testing.T) {
+  src := `loadfile "README.md"`
+  ast := fs_parse(src)
+  defer ast_destroy(&ast)
+
+  dirs, _, _ := open_root_dirs(fmt_scratch_path("no_ctx_dir_cache"), "", nil)
+  interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(dirs)}
+  _, ok := eval_program(&interp, ast.root, make_global_env())
+  testing.expect(t, !ok, "there is no directory for a bare sub-path to resolve against")
+  testing.expect(t, strings.contains(interp.error_message, "ctx.dir"), interp.error_message)
 }
 
 @(test)
@@ -272,8 +373,10 @@ test_builtin_loadfile_rejects_path_escape :: proc(t: ^testing.T) {
 test_builtin_chperm_denies_io_for_wrapped_expr :: proc(t: ^testing.T) {
   path := fmt_scratch_path("chperm_denied.txt")
   defer os.remove(path)
+  name := scratch_name("chperm_denied.txt")
+  defer delete(name)
 
-  src := fmt.aprintf(`createfile {{ .path = "%s", .content = "x" }} chctx chperm {{ .name = "io", .enabled = 1 > 2 }}`, path)
+  src := fmt.aprintf(`createfile {{ .path = "%s", .content = "x" }} chctx chperm {{ .name = "io", .enabled = 1 > 2 }}`, name)
   defer delete(src)
   _, ok, err := eval_with_builtins(src, "", nil)
   testing.expect(t, !ok, "createfile should be denied once chperm revokes io")
@@ -285,8 +388,10 @@ test_builtin_chperm_denies_io_for_wrapped_expr :: proc(t: ^testing.T) {
 test_builtin_chperm_keeps_io_granted :: proc(t: ^testing.T) {
   path := fmt_scratch_path("chperm_allowed.txt")
   defer os.remove(path)
+  name := scratch_name("chperm_allowed.txt")
+  defer delete(name)
 
-  src := fmt.aprintf(`createfile {{ .path = "%s", .content = "x" }} chctx chperm {{ .name = "io", .enabled = 1 < 2 }}`, path)
+  src := fmt.aprintf(`createfile {{ .path = "%s", .content = "x" }} chctx chperm {{ .name = "io", .enabled = 1 < 2 }}`, name)
   defer delete(src)
   val, ok, err := eval_with_builtins(src, "", nil)
   testing.expect(t, ok, err)
@@ -316,8 +421,10 @@ test_builtin_chperm_leaves_other_permissions_alone :: proc(t: ^testing.T) {
 test_builtin_filetext_round_trips_createfile_content :: proc(t: ^testing.T) {
   path := fmt_scratch_path("filetext.txt")
   defer os.remove(path)
+  name := scratch_name("filetext.txt")
+  defer delete(name)
 
-  src := fmt.aprintf(`filetext (createfile {{ .path = "%s", .content = "hello there" }})`, path)
+  src := fmt.aprintf(`filetext (createfile {{ .path = "%s", .content = "hello there" }})`, name)
   defer delete(src)
   val, ok, err := eval_with_builtins(src, "", nil)
   testing.expect(t, ok, err)
@@ -328,9 +435,7 @@ test_builtin_filetext_round_trips_createfile_content :: proc(t: ^testing.T) {
 
 @(test)
 test_builtin_filetext_rejects_directory :: proc(t: ^testing.T) {
-  src := fmt.aprintf(`filetext (loadfile "%s")`, repo_root())
-  defer delete(src)
-  val, ok, _ := eval_with_builtins(src, "", nil)
+  val, ok, _ := eval_with_builtins(`filetext (loadfile "examples")`, "", nil)
   _ = val
   testing.expect(t, !ok, "filetext should refuse a directory File")
 }
@@ -401,17 +506,19 @@ test_builtin_cache_is_not_searchable :: proc(t: ^testing.T) {
   testing.expect(t, !ok, "loadfile must not accept ctx.cache as a directory handle")
 }
 
-// NOTE: loadfile's successful dir-relative *read* ({ .dir, .path } naming an
-// existing file) is intentionally not covered by a passing test here - this
-// dev machine's WSL2 kernel fails openat() via a real directory fd whenever
-// O_CREAT is absent (see the wsl2-openat-dirfd-bug memory), which is exactly
-// what that read needs. The same containment logic (resolve_parent_beneath/
-// resolve_target) is already exercised by the createfile/symlink/readlink
-// tests above, which all succeed here since their final *at() calls either
-// use O_CREAT or aren't `openat` at all - so the only genuinely untested
-// piece is open_and_load's final read-only openat call, which is otherwise
-// identical to loadfile's unsandboxed form tested above and should work
-// correctly on a Linux host without this specific kernel bug.
+// NOTE: loadfile's successful read through an explicitly named `.dir` handle
+// is intentionally not covered by a passing test here - this dev machine's
+// WSL2 kernel fails openat() via a real directory fd whenever O_CREAT is
+// absent (see the wsl2-openat-dirfd-bug memory), which is exactly what that
+// read needs. The same containment logic (validate_sub_path/
+// resolve_parent_beneath/resolve_target) is already exercised by the
+// createfile/symlink/readlink tests above, which all succeed here since their
+// final *at() calls either use O_CREAT or aren't `openat` at all - and by the
+// ctx.dir reads above, which take the identical path through resolve_target
+// with the handle coming from the context instead of the argument. So the
+// only piece this machine cannot run is open_and_load's read-only openat
+// against a program-held handle, which should work on a Linux host without
+// this specific kernel bug.
 
 // ---- failure semantics (§8/§16) ---------------------------------------------
 
@@ -429,7 +536,7 @@ test_builtin_failure_is_not_caught_by_else :: proc(t: ^testing.T) {
 
   // A denied permission, same story - narrowing io away doesn't produce a
   // recoverable value, it ends the evaluation.
-  denied := `(loadfile "SPEC.md" chctx chperm { .name = "io", .enabled = 1 == 0 }) then 1 else 2`
+  denied := `(loadfile "SPEC.md" chctx chperm { .name = "io", .enabled = 1 == 0 }) then 1 else 2` // SPEC.md sits in ctx.dir
   _, denied_ok, denied_err := eval_with_builtins(denied, "", nil)
   testing.expect(t, !denied_ok, "a denied loadfile must not be caught by an else")
   testing.expect(t, strings.contains(denied_err, "permission"))
@@ -465,9 +572,14 @@ test_display_join_cleans_paths_lexically :: proc(t: ^testing.T) {
   Case :: struct{ dir, name, want: string }
   for c in ([]Case{
     {"/a/b", "c.txt", "/a/b/c.txt"},
-    {"/a/b", ".", "/a/b"},              // `loadfile "."` - a directory handle on itself
+    // The four below can no longer arrive from a program - §16 refuses ".",
+    // "..", and a root in a sub-path (validate_sub_path). They are still
+    // pinned because display_join also builds ctx.dir's and ctx.cache's own
+    // display paths out of what the *command line* said, where all four are
+    // ordinary (open_root_dirs, absolute_dir_path).
+    {"/a/b", ".", "/a/b"},
     {"/a/b", "./c.txt", "/a/b/c.txt"},
-    {"/a/b", "../c.txt", "/a/c.txt"},   // only reachable unsandboxed; .dir rejects ".."
+    {"/a/b", "../c.txt", "/a/c.txt"},
     {"/a/b", "/elsewhere", "/elsewhere"}, // an absolute name replaces the directory
     {"/a//b", "c", "/a/b/c"},
     {"", "c.txt", "c.txt"},             // no base directory known

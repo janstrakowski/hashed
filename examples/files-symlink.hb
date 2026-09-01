@@ -10,8 +10,11 @@
 // (§16): it would fail the second time you ran this file. `link-to-optiona`
 // is a symlink committed next to this example, pointing at optiona.txt.
 //
+// `ctx.dir` is the directory the runtime handed the program - for `hb <file>`
+// the source file's own (§9/§16), which is where that link lives.
+//
 // Note the target comes back as the literal string that was stored - a
 // relative path stays relative, and nothing checks that it resolves to
 // anything at all. Evaluates to "optiona.txt".
-let here loadfile ".";
+let here ctx.dir;
   readlink { .dir = here, .path = "link-to-optiona" }

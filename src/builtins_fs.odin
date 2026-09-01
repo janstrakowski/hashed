@@ -12,34 +12,140 @@ import "core:unicode/utf8"
 // Function values pre-bound in the global scope (see make_global_env), each
 // gated by ctx.permissions.io (§9) checked live at call time.
 //
-// Path containment ("a sub path cannot point above its directory", §16) is
-// done via a manual, component-by-component walk (resolve_parent_beneath)
-// rather than openat2's RESOLVE_BENEATH: tested directly on this project's
-// dev machine, openat2's resolve flags turned out to hit an environment-
-// specific kernel bug (see the wsl2-openat-dirfd-bug memory) - and more
-// generally, openat2 itself is a newer syscall (Linux 5.6+) with uneven
-// support, whereas the plain *at() family used here has been portable for
-// decades. Each intermediate directory component is opened with O_NOFOLLOW,
-// so a symlink placed inside the sandboxed directory - even one that would
-// resolve back inside it - is rejected outright, not just one that escapes;
-// simpler and safer than trying to distinguish the two.
+// Every one of them is (directory handle, sub-path). There is no form that
+// takes a path on its own: a call naming no `.dir` resolves against
+// `ctx.dir` (§9), the program's main directory, which is a handle like any
+// other. A program therefore cannot name anything outside the handles it was
+// given - not by a root, not by "..", not through a symlink pointing out.
+// The only paths arriving from outside a handle are the runtime's own
+// (`--dir`, `--cache-dir`), and those are the host's, opened before the
+// program starts.
+//
+// Sub-path containment (§16) is done in two steps. validate_sub_path is the
+// pure half: a sub-path is a non-empty sequence of ordinary names, so a root,
+// an empty segment, and a "." or ".." segment anywhere are refused before the
+// filesystem is touched at all. resolve_parent_beneath is the half that needs
+// the disk: it walks the remaining components one at a time, opening each
+// with O_NOFOLLOW, so a symlink inside the directory - even one resolving
+// back inside it - is rejected outright, not just one that escapes; simpler
+// and safer than trying to distinguish the two.
+//
+// That walk is used rather than openat2's RESOLVE_BENEATH because, tested
+// directly on this project's dev machine, openat2's resolve flags turned out
+// to hit an environment-specific kernel bug (see the wsl2-openat-dirfd-bug
+// memory) - and more generally, openat2 itself is a newer syscall (Linux
+// 5.6+) with uneven support, whereas the plain *at() family used here has
+// been portable for decades.
 
 // ---- root context / global env ------------------------------------------------
 
-// The context every real HashedBuild program starts with (SPEC.md §9):
-// io is granted by default at the root; `withctx` narrows it for a sub-scope.
-// `cache_dir_override` is the CLI's `--cache-dir`, if given; "" means resolve
-// the XDG-default location instead (see resolve_cache_dir).
-make_root_context :: proc(cache_dir_override: string = "") -> Value {
+// One `--dir <name>=<path>`: a directory the runtime opens on the program's
+// behalf and hands over under that name in `ctx.dirs` (SPEC.md §9).
+Named_Dir :: struct {
+  name: string,
+  path: string,
+}
+
+// The same, once opened.
+Named_Handle :: struct {
+  name:   string,
+  handle: ^File_Value,
+}
+
+// Everything a root context is built out of: where the cache lives, the
+// program's main directory (`ctx.dir`), and any further named ones
+// (`ctx.dirs`). The two directory fields hold handles rather than paths
+// because they are opened **once per process**, not once per context - a REPL
+// builds a fresh root context for every line submitted, and opening a
+// directory per context would leak a descriptor per line.
+Root_Dirs :: struct {
+  cache_dir: string,         // --cache-dir; "" resolves the XDG default instead
+  main:      ^File_Value,    // ctx.dir; nil means the program gets none at all
+  named:     []Named_Handle, // ctx.dirs
+}
+
+// Opens the directories a run was given, turning the command line's paths
+// into the handles a root context carries. `main_dir` is "" when the run is
+// to have no `ctx.dir` at all (`--no-default-dir`).
+//
+// The paths here are the *host's*: absolute, relative, "." and ".." are all
+// fine, since the OS resolves them before any program runs. §16's rule that a
+// path may not say ".", ".." or a root governs sub-paths written *inside* a
+// program, which are always resolved against one of these handles.
+open_root_dirs :: proc(cache_dir: string, main_dir: string, named: []Named_Dir) -> (dirs: Root_Dirs, err_msg: string, ok: bool) {
+  dirs.cache_dir = cache_dir
+  if main_dir != "" {
+    handle, err := open_dir_handle(main_dir)
+    if err != .None do return {}, fmt.tprintf("could not open %s as ctx.dir (%v)", main_dir, err), false
+    dirs.main = handle
+  }
+  if len(named) > 0 {
+    handles := make([]Named_Handle, len(named))
+    for nd, i in named {
+      handle, err := open_dir_handle(nd.path)
+      if err != .None {
+        // Give back what opened before the one that did not: the caller is
+        // handed an error and no handles, so nothing else can close these.
+        close_root_dirs(Root_Dirs{main = dirs.main, named = handles[:i]})
+        return {}, fmt.tprintf("could not open %s as ctx.dirs.%s (%v)", nd.path, nd.name, err), false
+      }
+      handles[i] = Named_Handle{name = nd.name, handle = handle}
+    }
+    dirs.named = handles
+  }
+  return dirs, "", true
+}
+
+// Releases what open_root_dirs opened, at the end of a run rather than per
+// evaluation - see Root_Dirs on why these last as long as the process.
+close_root_dirs :: proc(dirs: Root_Dirs) {
+  if dirs.main != nil do fs_close(dirs.main.dir_fd)
+  for n in dirs.named do fs_close(n.handle.dir_fd)
+}
+
+// A directory File for a path the *runtime* was handed (§9's ctx.dir and
+// ctx.dirs) - the one place a path still arrives from outside a program.
+// Everything a program opens for itself goes through one of these plus a
+// sub-path (§16).
+open_dir_handle :: proc(path: string) -> (^File_Value, Fs_Error) {
+  fd, err := fs_open_dir_path(path)
+  if err != .None do return nil, err
+  fv := new(File_Value)
+  fv.kind = .Directory
+  fv.dir_fd = fd
+  fv.display_path = absolute_dir_path(path)
+  return fv, .None
+}
+
+// The context every real HashedBuild program starts with (SPEC.md §9): io is
+// granted by default at the root, and the directories the runtime was told to
+// hand over arrive as `.dir` (the main one) and `.dirs` (every other, by
+// name). `withctx` narrows any of it for a sub-scope - taking `.dir` away is
+// as meaningful as taking `io` away, and denies every call that doesn't name
+// a handle of its own.
+make_root_context :: proc(dirs: Root_Dirs) -> Value {
   perms := new(Table_Value)
   append(&perms.entries, Table_Entry_Value{key = "io", value = Nothing_Value{}})
 
   cache := new(Cache_Value)
-  cache.dir_path = resolve_cache_dir(cache_dir_override)
+  cache.dir_path = resolve_cache_dir(dirs.cache_dir)
 
   ctx_table := new(Table_Value)
   append(&ctx_table.entries, Table_Entry_Value{key = "permissions", value = perms})
   append(&ctx_table.entries, Table_Entry_Value{key = "cache", value = cache})
+  // Absent rather than nothing when there is none: §9's context is read by
+  // presence, exactly as a permission is.
+  if dirs.main != nil {
+    append(&ctx_table.entries, Table_Entry_Value{key = "dir", value = dirs.main})
+  }
+  // Always present, empty when nothing was named - `ctx.dirs` is a Table to
+  // look names up in, and an empty one answers "no such handle" the same way
+  // a populated one answers it for a name it does not hold.
+  named := new(Table_Value)
+  for n in dirs.named {
+    append(&named.entries, Table_Entry_Value{key = n.name, value = n.handle})
+  }
+  append(&ctx_table.entries, Table_Entry_Value{key = "dirs", value = named})
   return ctx_table
 }
 
@@ -108,64 +214,90 @@ ctx_allows_io :: proc(interp: ^Interpreter) -> bool {
   return io_found
 }
 
-// The directory unsandboxed (no .dir given) loadfile/createfile calls
-// resolve relative paths against - the running source file's own directory
-// if one was set up (see Interpreter.base_dir_fd), else the process's cwd.
+// `ctx.dir` (§9), read live off the current context exactly as ctx_allows_io
+// reads the permissions - and for the same reason: a builtin must see the
+// context actually active at its call site, so that narrowing it with
+// `withctx` genuinely takes the directory away from the inside.
 @(private = "file")
-unsandboxed_dir_fd :: proc(interp: ^Interpreter) -> Fs_Fd {
-  if interp.has_base_dir do return interp.base_dir_fd
-  return fs_cwd_dir()
+ctx_main_dir :: proc(interp: ^Interpreter) -> (^File_Value, bool) {
+  t, is_table := interp.current_ctx.(^Table_Value)
+  if !is_table do return nil, false
+  dir_val, found := table_find(t, "dir")
+  if !found do return nil, false
+  fv, is_file := dir_val.(^File_Value)
+  if !is_file || fv.kind != .Directory do return nil, false
+  return fv, true
 }
 
 // ---- path containment -----------------------------------------------------------
 
-// Resolves `sub_path` relative to `base_fd`, walking one component at a time
-// and refusing to leave `base_fd`'s subtree: a literal ".."/absolute path is
-// rejected outright, and every intermediate directory is opened with
-// O_NOFOLLOW so a symlink anywhere along the way - not just one that would
-// resolve outside - is rejected too. Returns the fd of the final component's
-// *parent* plus that component's own name, so the caller acts on it with an
-// ordinary *at() syscall (open/create/symlinkat/readlinkat) - the final
-// component can't itself smuggle a "..", since any "/" in it would mean the
-// split below was wrong, not that this single name escapes anything.
-@(private = "file")
-resolve_parent_beneath :: proc(base_fd: Fs_Fd, sub_path: string) -> (parent_fd: Fs_Fd, basename: string, err: Fs_Error) {
-  if len(sub_path) == 0 || is_absolute_path(sub_path) {
-    return FS_INVALID_FD, "", .Access
+// SPEC.md §16's sub-path rule, as a pure check - no filesystem, so it gives
+// the same answer for a name about to be created as for one that exists.
+//
+// A sub-path names something *inside* a directory handle, and is therefore a
+// non-empty sequence of ordinary names: no root, no empty segment, and no "."
+// or ".." **anywhere** - not even where they would cancel out. Refusing
+// "a/./b" and "a/../b" rather than reducing them is deliberate: a reader
+// should not have to run a normaliser in their head to see which directory a
+// call lands in, and the ones that would reduce to something outside are then
+// not a special case to get right, since none of the three spellings exists.
+//
+// Returns the reason as a message, because these are the failures a program
+// author has to read and fix; the walk below returns an Fs_Error instead,
+// since those come from the OS.
+validate_sub_path :: proc(sub_path: string) -> (err_msg: string, ok: bool) {
+  if len(sub_path) == 0 do return "a sub-path cannot be empty", false
+  if is_absolute_path(sub_path) {
+    return fmt.tprintf("a sub-path cannot start at a root: %s", sub_path), false
   }
   when WINDOWS_PATHS {
     // A colon is never part of an ordinary name on Windows. It introduces
     // either a drive-relative path ("C:x", which resolves against that
     // drive's own working directory, not against anything here) or an
     // alternate data stream ("name:stream", a second body hidden behind the
-    // same entry). Neither is a sub path of this directory, so both are
-    // refused outright rather than walked - the walk below splits on
-    // separators, and would otherwise hand either one through as a basename.
+    // same entry). Neither is a sub-path of any directory.
     if strings.index_byte(sub_path, ':') >= 0 {
-      return FS_INVALID_FD, "", .Access
+      return fmt.tprintf("a sub-path cannot name a drive or an alternate data stream: %s", sub_path), false
     }
   }
+  rest := sub_path
+  for {
+    slash := index_path_sep(rest)
+    segment := rest
+    if slash >= 0 do segment = rest[:slash]
+    switch segment {
+    case "":
+      return fmt.tprintf("a sub-path cannot have an empty segment: %s", sub_path), false
+    case ".", "..":
+      return fmt.tprintf("a sub-path cannot contain a %s segment: %s", segment, sub_path), false
+    }
+    if slash < 0 do break
+    rest = rest[slash + 1:]
+  }
+  return "", true
+}
 
+// Walks an already-validated `sub_path` from `base_fd`, opening every
+// intermediate directory with O_NOFOLLOW so a symlink anywhere along the way
+// - not just one that would resolve outside - is rejected. Returns the fd of
+// the final component's *parent* plus that component's own name, so the
+// caller acts on it with an ordinary *at() syscall (open/create/symlinkat/
+// readlinkat).
+//
+// Containment rests on validate_sub_path having run first: with no root, no
+// ".." and no symlinked component, every name the walk opens is one level
+// further *into* the tree, and the basename it hands back is a single
+// ordinary name.
+@(private = "file")
+resolve_parent_beneath :: proc(base_fd: Fs_Fd, sub_path: string) -> (parent_fd: Fs_Fd, basename: string, err: Fs_Error) {
   cur_fd := base_fd
   remaining := sub_path
   for {
     slash := index_path_sep(remaining)
-    if slash < 0 {
-      if remaining == "" || remaining == ".." {
-        if cur_fd != base_fd do fs_close(cur_fd)
-        return FS_INVALID_FD, "", .Access
-      }
-      return cur_fd, remaining, .None
-    }
+    if slash < 0 do return cur_fd, remaining, .None
 
     component := remaining[:slash]
     remaining = remaining[slash + 1:]
-    if component == "" || component == ".." {
-      if cur_fd != base_fd do fs_close(cur_fd)
-      return FS_INVALID_FD, "", .Access
-    }
-    if component == "." do continue // stays at the same fd
-
     next_fd, open_err := fs_open_dir_at(cur_fd, component, true)
     if cur_fd != base_fd do fs_close(cur_fd)
     if open_err != .None do return FS_INVALID_FD, "", open_err
@@ -179,9 +311,9 @@ Resolved_Path :: struct {
   basename:    string,
   needs_close: bool, // true iff `fd` was freshly opened by resolve_parent_beneath, not just the caller's own dir handle
   // The directory this resolved against, as a path - the handle's own
-  // display path, or the base directory for an unsandboxed call. The File
-  // this produces displays `display_dir` joined with the sub-path the caller
-  // asked for (§3), which is why it travels alongside the descriptor.
+  // display path. The File this produces displays `display_dir` joined with
+  // the sub-path the caller asked for (§3), which is why it travels alongside
+  // the descriptor.
   display_dir: string,
 }
 
@@ -190,25 +322,37 @@ close_resolved :: proc(r: Resolved_Path) {
   if r.needs_close do fs_close(r.fd)
 }
 
-// Resolves an optional `.dir` + required `.path` pair out of a builtin's
-// Table argument. If `.dir` is absent: unsandboxed (relative to the running
-// source file's own directory, or the process's cwd if there isn't one - see
-// unsandboxed_dir_fd), unless `dir_required` says otherwise (symlink/
-// readlink, §16 - a symlink is always an entry inside some directory).
+// The directory a call resolves against: its own `.dir` if it names one, else
+// `ctx.dir` (§16). `t` is nil for loadfile's single-path form, which is the
+// same call with `.dir` left out.
 @(private = "file")
-resolve_target :: proc(interp: ^Interpreter, t: ^Table_Value, path_str: string, dir_required: bool) -> (r: Resolved_Path, err_msg: string, ok: bool) {
-  dir_val, has_dir := table_find(t, "dir")
-  if !has_dir {
-    if dir_required do return {}, "requires a .dir directory handle", false
-    return Resolved_Path{fd = unsandboxed_dir_fd(interp), basename = path_str, display_dir = unsandboxed_dir_path(interp)}, "", true
+target_dir :: proc(interp: ^Interpreter, t: ^Table_Value) -> (dir: ^File_Value, err_msg: string, ok: bool) {
+  if t != nil {
+    if dir_val, has_dir := table_find(t, "dir"); has_dir {
+      dir_file, is_file := dir_val.(^File_Value)
+      if !is_file || dir_file.kind != .Directory do return nil, ".dir must be a directory File", false
+      return dir_file, "", true
+    }
   }
-  dir_file, dir_ok := dir_val.(^File_Value)
-  if !dir_ok || dir_file.kind != .Directory {
-    return {}, ".dir must be a directory File", false
+  main_dir, has_main := ctx_main_dir(interp)
+  if !has_main {
+    return nil, "no .dir given, and this context has no ctx.dir to resolve against", false
   }
+  return main_dir, "", true
+}
+
+// Resolves a builtin's (directory, sub-path) pair: the handle from `.dir` or
+// `ctx.dir`, the sub-path checked against §16's rule and then walked.
+@(private = "file")
+resolve_target :: proc(interp: ^Interpreter, t: ^Table_Value, path_str: string) -> (r: Resolved_Path, err_msg: string, ok: bool) {
+  dir_file, dir_err, dir_ok := target_dir(interp, t)
+  if !dir_ok do return {}, dir_err, false
+
+  if verr, valid := validate_sub_path(path_str); !valid do return {}, verr, false
+
   parent_fd, basename, rerr := resolve_parent_beneath(dir_file.dir_fd, path_str)
   if rerr != .None {
-    return {}, fmt.tprintf("path escapes its directory or doesn't exist (%v)", rerr), false
+    return {}, fmt.tprintf("%s is not reachable inside %s (%v)", path_str, dir_file.display_path, rerr), false
   }
   return Resolved_Path{
     fd = parent_fd, basename = basename,
@@ -220,8 +364,8 @@ resolve_target :: proc(interp: ^Interpreter, t: ^Table_Value, path_str: string, 
 // ---- display paths (§3) -------------------------------------------------------
 
 // A File shows the path it was reached by (SPEC.md §3), so that path is built
-// as the value is - joined from the directory handle it came through, or from
-// the base directory for an unsandboxed call - and stored in the File_Value.
+// as the value is - joined from the display path of the directory handle it
+// came through - and stored in the File_Value.
 //
 // It used to be read back off the kernel via /proc/self/fd, which was tidier
 // (it resolved symlinks and normalised on its own) but doesn't port: WASI has
@@ -229,17 +373,6 @@ resolve_target :: proc(interp: ^Interpreter, t: ^Table_Value, path_str: string, 
 // *at() family offers one either. Constructing the path costs a lexical
 // cleanup below and gives the same answer for every path a program can
 // actually write, absolute and free of "." and ".." segments.
-
-// The directory an unsandboxed loadfile/createfile resolves against, as a
-// path (see Interpreter.base_dir_path): the running source file's own
-// directory, or the process's cwd when there isn't one.
-@(private = "file")
-unsandboxed_dir_path :: proc(interp: ^Interpreter) -> string {
-  if interp.has_base_dir && interp.base_dir_path != "" do return interp.base_dir_path
-  cwd, err := os.get_working_directory(context.temp_allocator)
-  if err != nil do return "" // no cwd to speak of: fall back to the path as written
-  return cwd
-}
 
 // ---- what a path looks like on this target ------------------------------------
 //
@@ -391,6 +524,12 @@ clean_path :: proc(path: string, allocator := context.allocator) -> string {
 
 // ---- loadfile ---------------------------------------------------------------------
 
+// `no_follow_final` is true for every caller now that there is no unsandboxed
+// form: a symlink is refused as the last component exactly as it is as an
+// intermediate one (§16), so a handle plus a sub-path can never read through
+// a link out of the tree. Kept as a parameter rather than folded in because
+// it is what the two fs calls below are actually passed, and reading the
+// policy at the call site beats reading it here.
 @(private = "file")
 open_and_load :: proc(interp: ^Interpreter, dir_fd: Fs_Fd, path: string, no_follow_final: bool, display: string) -> (Value, bool) {
   // Type first, then open: a directory and a regular file need different
@@ -424,21 +563,29 @@ open_and_load :: proc(interp: ^Interpreter, dir_fd: Fs_Fd, path: string, no_foll
   return fv, true
 }
 
+// The two spellings are one operation: `loadfile <sub_path>` is
+// `loadfile { .path = <sub_path> }`, and either resolves against `.dir` if
+// the call names one or `ctx.dir` if it doesn't (§16). There is no third form
+// that resolves a path against something other than a handle.
 @(private = "file")
 builtin_loadfile :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, bool) {
   if !ctx_allows_io(interp) do return fail(interp, "loadfile: io permission not granted in the current context")
 
+  t: ^Table_Value // nil for the bare sub-path form, which is the same call without .dir
+  path_str: string
   if path, is_str := arg.(string); is_str {
-    return open_and_load(interp, unsandboxed_dir_fd(interp), path, false, display_join(unsandboxed_dir_path(interp), path))
+    path_str = path
+  } else {
+    is_table: bool
+    t, is_table = arg.(^Table_Value)
+    if !is_table do return fail(interp, "loadfile expects a Utf8 sub-path or a { [.dir], .path } Table")
+    path_val, has_path := table_find(t, "path")
+    ps, path_ok := path_val.(string)
+    if !has_path || !path_ok do return fail(interp, "loadfile's Table form needs a Utf8 .path")
+    path_str = ps
   }
 
-  t, is_table := arg.(^Table_Value)
-  if !is_table do return fail(interp, "loadfile expects a Utf8 path or a { .dir, .path } Table")
-  path_val, has_path := table_find(t, "path")
-  path_str, path_ok := path_val.(string)
-  if !has_path || !path_ok do return fail(interp, "loadfile's Table form needs a Utf8 .path")
-
-  r, err_msg, ok := resolve_target(interp, t, path_str, true)
+  r, err_msg, ok := resolve_target(interp, t, path_str)
   if !ok do return fail(interp, fmt.tprintf("loadfile: %s", err_msg))
   defer close_resolved(r)
 
@@ -491,7 +638,7 @@ builtin_createfile :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value
   path_str, path_ok := path_val.(string)
   if !has_path || !path_ok do return fail(interp, "createfile needs a Utf8 .path")
 
-  r, err_msg, ok := resolve_target(interp, t, path_str, false)
+  r, err_msg, ok := resolve_target(interp, t, path_str)
   if !ok do return fail(interp, fmt.tprintf("createfile: %s", err_msg))
   defer close_resolved(r)
 
@@ -582,7 +729,7 @@ builtin_symlink :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, b
   if !ctx_allows_io(interp) do return fail(interp, "symlink: io permission not granted in the current context")
 
   t, is_table := arg.(^Table_Value)
-  if !is_table do return fail(interp, "symlink expects a { .dir, .path, .target } Table")
+  if !is_table do return fail(interp, "symlink expects a { [.dir], .path, .target } Table")
 
   path_val, has_path := table_find(t, "path")
   target_val, has_target := table_find(t, "target")
@@ -591,7 +738,7 @@ builtin_symlink :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, b
   if !has_path || !path_ok do return fail(interp, "symlink needs a Utf8 .path")
   if !has_target || !target_ok do return fail(interp, "symlink needs a Utf8 .target")
 
-  r, err_msg, ok := resolve_target(interp, t, path_str, true) // .dir is required - a symlink is always inside some directory
+  r, err_msg, ok := resolve_target(interp, t, path_str)
   if !ok do return fail(interp, fmt.tprintf("symlink: %s", err_msg))
   defer close_resolved(r)
 
@@ -607,13 +754,13 @@ builtin_readlink :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, 
   if !ctx_allows_io(interp) do return fail(interp, "readlink: io permission not granted in the current context")
 
   t, is_table := arg.(^Table_Value)
-  if !is_table do return fail(interp, "readlink expects a { .dir, .path } Table")
+  if !is_table do return fail(interp, "readlink expects a { [.dir], .path } Table")
 
   path_val, has_path := table_find(t, "path")
   path_str, path_ok := path_val.(string)
   if !has_path || !path_ok do return fail(interp, "readlink needs a Utf8 .path")
 
-  r, err_msg, ok := resolve_target(interp, t, path_str, true)
+  r, err_msg, ok := resolve_target(interp, t, path_str)
   if !ok do return fail(interp, fmt.tprintf("readlink: %s", err_msg))
   defer close_resolved(r)
 

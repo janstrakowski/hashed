@@ -20,6 +20,14 @@ cache_scratch :: proc(name: string) -> string {
   return strings.concatenate({repo_root(), "/.cache_test_", name})
 }
 
+// The same scratch entry as a sub-path of the checkout, which is how the
+// source under test names it: ctx.dir here is the checkout, and §16 gives a
+// program no way to write a path that isn't relative to a handle.
+@(private = "file")
+cache_scratch_name :: proc(name: string) -> string {
+  return strings.concatenate({".cache_test_", name})
+}
+
 @(private = "file")
 remove_cache_scratch :: proc(path: string) {
   remove_recursively(path)
@@ -42,11 +50,12 @@ remove_recursively :: proc(path: string) {
 
 // Evaluates with the real global environment and a root context whose
 // ctx.cache points at `cache_dir` - the same setup a real run has, since
-// `cached` is only meaningful against a real store.
+// `cached` is only meaningful against a real store. ctx.dir is the checkout,
+// so a test program reads its scratch files by sub-path (§16).
 @(private = "file")
 eval_cached_src :: proc(src: string, cache_dir: string) -> (val: Value, ok: bool, err: string) {
   ast := parse(source_t{name = "test", n_bytes = u64(len(src)), data = raw_data(src)}, ast_t{})
-  interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(cache_dir)}
+  interp := Interpreter{ast = &ast, src = src, current_ctx = test_root_context(cache_dir, repo_root())}
   val, ok = eval_program(&interp, ast.root, make_global_env())
   return val, ok, interp.error_message
 }
@@ -113,7 +122,9 @@ test_cached_hit_survives_the_source_changing :: proc(t: ^testing.T) {
   path := fmt.tprintf("%s/f.txt", data)
   _ = os.write_entire_file(path, transmute([]u8)string("first"))
 
-  src := fmt.aprintf(`filetext cached (loadfile "%s")`, path)
+  sub := cache_scratch_name("hit_data")
+  defer delete(sub)
+  src := fmt.aprintf(`filetext cached (loadfile "%s/f.txt")`, sub)
   defer delete(src)
 
   val, ok, err := eval_cached_src(src, dir)
@@ -124,7 +135,7 @@ test_cached_hit_survives_the_source_changing :: proc(t: ^testing.T) {
   _ = os.write_entire_file(path, transmute([]u8)string("SECOND"))
 
   // Uncached, the change is visible...
-  fresh := fmt.aprintf(`filetext (loadfile "%s")`, path)
+  fresh := fmt.aprintf(`filetext (loadfile "%s/f.txt")`, sub)
   defer delete(fresh)
   val2, ok2, err2 := eval_cached_src(fresh, dir)
   testing.expect(t, ok2, err2)
@@ -203,7 +214,7 @@ test_cached_file_value_is_stored_as_a_file :: proc(t: ^testing.T) {
   defer delete(dir)                 // LIFO: the path has to outlive the cleanup
   defer remove_cache_scratch(dir)
 
-  src := fmt.aprintf(`cached (loadfile "%s/README.md")`, repo_root())
+  src := fmt.aprintf(`cached (loadfile "README.md")`)
   defer delete(src)
   val, ok, err := eval_cached_src(src, dir)
   testing.expect(t, ok, err)
@@ -241,8 +252,10 @@ test_cached_directory_value_round_trips :: proc(t: ^testing.T) {
   os.make_directory(fmt.tprintf("%s/sub", tree))
   _ = os.write_entire_file(fmt.tprintf("%s/sub/b.txt", tree), transmute([]u8)string("beta"))
 
+  tree_sub := cache_scratch_name("tree_src")
+  defer delete(tree_sub)
   src := fmt.aprintf(
-    `(sha256 cached (loadfile "%s")) == (sha256 loadfile "%s")`, tree, tree,
+    `(sha256 cached (loadfile "%s")) == (sha256 loadfile "%s")`, tree_sub, tree_sub,
   )
   defer delete(src)
   val, ok, err := eval_cached_src(src, dir)
@@ -268,7 +281,7 @@ test_cached_composite_holds_its_files_beside_the_text :: proc(t: ^testing.T) {
 
   // strings.concatenate, not fmt.aprintf: the value being cached is a Table
   // literal, and fmt reads its `{` as the start of a format verb.
-  src := strings.concatenate({`cached { .doc = loadfile "`, repo_root(), `/README.md", .n = 7 }`})
+  src := strings.concatenate({`cached { .doc = loadfile "README.md", .n = 7 }`})
   defer delete(src)
   val, ok, err := eval_cached_src(src, dir)
   testing.expect(t, ok, err)

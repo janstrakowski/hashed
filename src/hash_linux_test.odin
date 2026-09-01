@@ -11,14 +11,16 @@ import "core:strings"
 import "core:sys/linux"
 import "core:testing"
 
+// `sub_path` names the tree relative to the checkout, which is what this run
+// gets as ctx.dir - a program has no other way to name anything (§16).
 @(private = "file")
-eval_digest :: proc(t: ^testing.T, path: string) -> string {
-  src := strings.concatenate({`sha256 loadfile "`, path, `"`})
+eval_digest :: proc(t: ^testing.T, sub_path: string) -> string {
+  src := strings.concatenate({`sha256 loadfile "`, sub_path, `"`})
   defer delete(src)
   ast := parse(source_t{name = "test", n_bytes = u64(len(src)), data = raw_data(src)}, ast_t{})
   cache := strings.concatenate({repo_root(), "/.hash_linux_test_cache"})
   defer delete(cache)
-  interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(cache)}
+  interp := Interpreter{ast = &ast, src = src, current_ctx = test_root_context(cache, repo_root())}
   val, ok := eval_program(&interp, ast.root, make_global_env())
   testing.expect(t, ok, interp.error_message)
   digest, is_str := val.(string)
@@ -28,7 +30,8 @@ eval_digest :: proc(t: ^testing.T, path: string) -> string {
 
 @(test)
 test_the_executable_bit_is_not_part_of_a_directory_hash :: proc(t: ^testing.T) {
-  root := strings.concatenate({repo_root(), "/.hash_linux_test_exec"})
+  name := ".hash_linux_test_exec"
+  root := strings.concatenate({repo_root(), "/", name})
   defer delete(root)
   file := strings.concatenate({root, "/build.sh"})
   defer delete(file)
@@ -46,10 +49,10 @@ test_the_executable_bit_is_not_part_of_a_directory_hash :: proc(t: ^testing.T) {
   // depending on where it was checked out.
   cname := strings.clone_to_cstring(file, context.temp_allocator)
   testing.expect(t, linux.chmod(cname, {.IRUSR, .IWUSR}) == .NONE)
-  plain := eval_digest(t, root)
+  plain := eval_digest(t, name)
 
   testing.expect(t, linux.chmod(cname, {.IRUSR, .IWUSR, .IXUSR}) == .NONE)
-  executable := eval_digest(t, root)
+  executable := eval_digest(t, name)
 
   // That the bit actually landed is half the test - without it the comparison
   // would hold for the wrong reason.
@@ -69,5 +72,5 @@ test_the_executable_bit_is_not_part_of_a_directory_hash :: proc(t: ^testing.T) {
   // No other mode bit counts either - the rule is that permissions are not part
   // of what a tree is, not that one particular bit was singled out.
   testing.expect(t, linux.chmod(cname, {.IRUSR, .IWUSR, .IXUSR, .IRGRP, .IROTH}) == .NONE)
-  testing.expect_value(t, eval_digest(t, root), plain)
+  testing.expect_value(t, eval_digest(t, name), plain)
 }
