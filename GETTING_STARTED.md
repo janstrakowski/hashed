@@ -55,6 +55,31 @@ If a freshly built binary refuses to start with *"An Application Control policy 
 - **`./hb --cache-dir <path> ...`** - override where `ctx.cache` writes to, and where `cached` keeps its entries (defaults to your XDG cache dir; `%LOCALAPPDATA%\hashedbuild` on Windows). Handy for a throwaway cache: point it somewhere temporary and `cached` starts from nothing.
 - **`./hb --help`**, **`./hb --version`** - usage and version.
 
+### `hashmake` - the build tool
+
+A second binary, built from `tools/hashmake`, that treats a HashedBuild program
+as a dependency graph:
+
+```sh
+odin build tools/hashmake -out:hashmake
+cd examples/hashmake && ../../hashmake
+```
+
+That discovers the C sources in a vendored cJSON checkout, compiles each with
+clang, links them, and runs the result. Run it a second time and it rebuilds
+nothing - not because hashmake remembers, but because each node wraps its work
+in `cached`, whose key contains the *content* of the files it read.
+
+- **`hashmake`** - build the graph's `.default` target.
+- **`hashmake <target>...`** - build these instead.
+- **`hashmake --graph`** - print the dependency graph and stop.
+- **`hashmake -n`** - print the order targets would be built in, and stop.
+- **`hashmake -C <dir>`**, **`-f <file>`** - run elsewhere, or read a differently named build file.
+- **`hashmake --allow-any-path`** - let the build file read outside its own directory. By default it cannot: hashmake evaluates it with `ctx.dir` set and only the `workdir` permission (LANGUAGE.md's "Where a path is allowed to reach").
+- **`hashmake --cache-dir <path>`** - as `hb`'s.
+
+`tools/hashmake/README.md` covers what a `hashmake.hb` has to evaluate to.
+
 ## Try each part of the video
 
 ### 1. The parser - see the AST
