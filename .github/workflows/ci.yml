@@ -21,6 +21,8 @@ jobs:
       ODIN_VERSION: dev-2026-08
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       # The release tarball's top-level directory is named after the nightly
       # it was cut from (odin-linux-amd64-nightly+2026-08-06), not after the
@@ -67,6 +69,49 @@ jobs:
           odin build src -out:hb
           python3 scripts/editor_keys_test.py ./hb
 
+      # hashmake lives outside src/, so `odin test src` never builds it. This
+      # is the end-to-end check: it discovers cJSON's sources by listing the
+      # submodule, compiles each with clang, links them and runs the result.
+      - name: hashmake builds and runs the cJSON demo
+        run: |
+          odin build tools/hashmake -out:hashmake
+          cd examples/hashmake
+          ../../hashmake --graph
+          ../../hashmake -n
+          ../../hashmake | tee /tmp/demo.out
+          grep -q "Version:" /tmp/demo.out
+
+      # The second build must reuse every cache entry the first one wrote.
+      # Checked by entry count rather than by wall-clock, which is not a thing
+      # a CI runner can promise.
+      - name: hashmake rebuilds nothing when nothing changed
+        run: |
+          cd examples/hashmake
+          rm -rf /tmp/hmcache
+          ../../hashmake --cache-dir /tmp/hmcache >/dev/null
+          before=$(ls /tmp/hmcache | grep -c "^sha256-")
+          ../../hashmake --cache-dir /tmp/hmcache >/dev/null
+          after=$(ls /tmp/hmcache | grep -c "^sha256-")
+          echo "cache entries: $before then $after"
+          test "$before" = "$after"
+
+      - name: hashmake refuses a cycle
+        run: |
+          mkdir -p /tmp/cyc && cd /tmp/cyc
+          cat > hashmake.hb <<'EOF'
+          {
+            .default = "a",
+            .targets = {
+              .a = { .needs = { .x = "b" }, .build = (let p; nothing) },
+              .b = { .needs = { .x = "a" }, .build = (let p; nothing) },
+            },
+          }
+          EOF
+          if "$GITHUB_WORKSPACE/hashmake" 2>/tmp/cyc.err; then
+            echo "expected a cycle to be refused"; exit 1
+          fi
+          grep -q "dependency cycle" /tmp/cyc.err
+
   # The third backend. `odin test` builds natively, so this job is what
   # actually executes fs_windows.odin, task_native.odin's Windows half and
   # term_windows.odin - the same suite as the Linux job, on the other native
@@ -87,6 +132,8 @@ jobs:
         run: git config --global core.symlinks true
 
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Cache Odin
         id: cache-odin
@@ -157,6 +204,8 @@ jobs:
       ODIN_VERSION: dev-2026-08
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Cache Odin
         id: cache-odin
@@ -230,6 +279,8 @@ jobs:
       WAMR_COMMIT: 16ea74cc6f3671d81db2c4a8dac08fba6eadc73b
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Cache Odin
         id: cache-odin
@@ -301,6 +352,8 @@ jobs:
       ODIN_VERSION: dev-2026-08
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Cache Odin
         id: cache-odin

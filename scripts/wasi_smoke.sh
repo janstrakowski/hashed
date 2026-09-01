@@ -38,7 +38,10 @@ cd "$REPO"
 #   files-sandboxed, option-picker
 #       display real paths, which differ by construction: native shows the
 #       checkout, WASI shows the path inside its preopen.
-SKIP="files-sandboxed.hb option-picker.hb"
+# running-a-program.hb drives clang: WASI cannot start a process at all (core:os's
+# backend answers .Unsupported, which `exec` reports as such), so there is no
+# answer for the two targets to agree on.
+SKIP="files-sandboxed.hb option-picker.hb running-a-program.hb"
 ASYNC="async-basics.hb async-branching.hb async-table.hb"
 
 failures=0
