@@ -36,6 +36,10 @@ EXAMPLE_CASES := []Example_Case{
   {"cached.hb", "{answer: 42, asking_again_agrees: true, per_argument: {small: 2, large: 11}, file_survives_the_round_trip: true, a_cycle_survives_too: true}"},
   {"check-and-invariants.hb", "100"},
   {"comparison-and-logic.hb", "{ordered: true, both: true, either: true, mixed: false}"},
+  {"folding-a-table.hb", `{sum: 60, in_index_order: "abc", by_key_not_by_entry: "AMZ", equal_tables_agree: true, length: 3}`},
+  {"text-slicing.hb", `{length: 7, bytes_would_say: 5, extension: ".c", stem: "cJSON", is_c: true, is_not_h: false, too_short_is_false: false}`},
+  {"listing-a-directory.hb", `{all: {"alpha.txt", "beta.md", "gamma.txt"}, only_txt: {"alpha.txt", "gamma.txt"}}`},
+  {"workdir-containment.hb", `{root_grants: {io: nothing, exec: nothing, anypath: nothing}, contained_grants: {io: nothing, exec: nothing, workdir: nothing}, reads_inside: "This is the payload for option A.\n"}`},
   {"context-permissions.hb", "{ambient: {io: nothing, exec: nothing, anypath: nothing}, io_denied: {exec: nothing, anypath: nothing}, replaced: {}, still_ambient: {io: nothing, exec: nothing, anypath: nothing}}"},
   {"cyclic-data.hb", `{round_trip: "Alice", mutual: true, second_hop: "Carol", reordered: 3, same_shape: true}`},
   {"files-symlink.hb", `"optiona.txt"`},
@@ -70,7 +74,7 @@ EXAMPLE_CASES := []Example_Case{
 // can't be a fixed string, so they get their own tests below. Listed here so
 // the coverage check counts them as covered rather than missing.
 @(private = "file")
-EXAMPLES_WITH_THEIR_OWN_TEST := []string{"option-picker.hb", "files-sandboxed.hb"}
+EXAMPLES_WITH_THEIR_OWN_TEST := []string{"option-picker.hb", "files-sandboxed.hb", "running-a-program.hb"}
 
 // examples/link-to-optiona is committed as a symlink, and files-symlink.hb
 // reads its target. Git only materialises it as a real symlink where it can:
@@ -204,7 +208,9 @@ read_dir_names :: proc(dir: string) -> []string {
 // The is_dir check is not an optimisation: os.open succeeds on a regular file
 // too, and reading a directory listing out of that handle is not something
 // every target survives.
-@(private = "file")
+// Package-visible rather than file-private because builtins_build_test.odin
+// needs the same sweep: its `exec` tests build a scratch directory under the
+// cache, and leaving one behind makes the next run trip over it.
 remove_dir_and_entries :: proc(dir: string) {
   if is_dir, err := fs_stat_is_dir_at(fs_cwd_dir(), dir, true); err == .None && is_dir {
     for name in read_dir_names(dir) do remove_dir_and_entries(fmt.tprintf("%s/%s", dir, name))
@@ -218,3 +224,46 @@ clear_branch_markers :: proc() {
     os.remove(fmt.tprintf("%s/examples/branch-%s.marker", repo_root(), branch))
   }
 }
+
+// running-a-program.hb is the only example that needs something outside this
+// repository - it drives `clang`, the same compiler examples/hashmake builds
+// cJSON with. It gets its own test rather than an EXAMPLE_CASES row so that a
+// checkout without clang skips it with a reason, exactly as files-symlink.hb
+// does where symlinks aren't available.
+@(test)
+test_example_running_a_program_drives_clang :: proc(t: ^testing.T) {
+  if !command_exists("clang") {
+    log.info("skipping running-a-program.hb: clang is not on PATH in this environment")
+    return
+  }
+  cache := fmt.tprintf("%s/.examples_test_exec_cache", repo_root())
+  defer remove_dir_and_entries(cache)
+
+  path := fmt.tprintf("%s/examples/running-a-program.hb", repo_root())
+  formatted, err_msg, ok := eval_source_file(path, false, cache)
+  testing.expect(t, ok, err_msg)
+  if !ok do return
+  defer delete(formatted)
+
+  testing.expect_value(
+    t,
+    formatted,
+    `{compiled: 0, said_its_version: true, ran_what_it_built: "hello from C\n"}`,
+  )
+}
+
+@(private = "file")
+command_exists :: proc(name: string) -> bool {
+  path_env := os.get_env("PATH", context.temp_allocator)
+  for dir in strings.split(path_env, PATH_LIST_SEPARATOR, context.temp_allocator) {
+    if dir == "" do continue
+    if os.exists(strings.concatenate({dir, "/", name}, context.temp_allocator)) do return true
+    when ODIN_OS == .Windows {
+      if os.exists(strings.concatenate({dir, "/", name, ".exe"}, context.temp_allocator)) do return true
+    }
+  }
+  return false
+}
+
+@(private = "file")
+PATH_LIST_SEPARATOR :: ";" when ODIN_OS == .Windows else ":"
