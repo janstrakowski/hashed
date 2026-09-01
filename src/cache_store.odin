@@ -107,7 +107,7 @@ load_file_entry :: proc(cache: ^Cache_Value, name: string, is_dir: bool) -> (Val
 load_text_entry :: proc(cache: ^Cache_Value, dir_name: string) -> (Value, bool, string) {
   entry_fd, open_err := fs_open_dir_at(cache.dir_fd, dir_name, true)
   if open_err != .None {
-    return nil, false, fmt.tprintf("could not open cache entry %s (%v)", dir_name, open_err)
+    return nil, false, fmt.tprintf("could not open %s (%v)", dir_name, open_err)
   }
   defer fs_close(entry_fd)
 
@@ -162,29 +162,28 @@ resolve_entry_file :: proc(entry_name: string, is_dir: bool, userdata: rawptr) -
 // One File value for a name inside the store, of the kind the text said it
 // was. A mismatch is reported rather than followed: it means the entry and
 // what is on disk have drifted apart.
-@(private = "file")
 open_as_file_value :: proc(dir_fd: Fs_Fd, name: string, is_dir: bool, display: string) -> (^File_Value, string) {
   actually_dir, stat_err := fs_stat_is_dir_at(dir_fd, name, true)
-  if stat_err != .None do return nil, fmt.tprintf("could not read cache entry %s (%v)", name, stat_err)
+  if stat_err != .None do return nil, fmt.tprintf("could not read %s (%v)", name, stat_err)
   if actually_dir != is_dir {
-    return nil, fmt.tprintf("cache entry %s is not the kind of File the entry says it is", name)
+    return nil, fmt.tprintf("%s is not the kind of File it was expected to be", name)
   }
 
   fv := new(File_Value)
   fv.display_path = display
   if is_dir {
     fd, err := fs_open_dir_at(dir_fd, name, true)
-    if err != .None do return nil, fmt.tprintf("could not open cache entry %s (%v)", name, err)
+    if err != .None do return nil, fmt.tprintf("could not open %s (%v)", name, err)
     fv.kind = .Directory
     fv.dir_fd = fd
     return fv, ""
   }
 
   fd, err := fs_open_read_at(dir_fd, name, true)
-  if err != .None do return nil, fmt.tprintf("could not open cache entry %s (%v)", name, err)
+  if err != .None do return nil, fmt.tprintf("could not open %s (%v)", name, err)
   defer fs_close(fd)
   content, read_err := fs_read_all(fd)
-  if read_err != .None do return nil, fmt.tprintf("could not read cache entry %s (%v)", name, read_err)
+  if read_err != .None do return nil, fmt.tprintf("could not read %s (%v)", name, read_err)
   fv.kind = .Regular
   fv.content = content
   return fv, ""
@@ -264,7 +263,6 @@ cache_store :: proc(cache: ^Cache_Value, key_name: string, v: Value, interp: ^In
 // source of randomness and no process id - neither of which every target here
 // has. The cap only has to exceed the number of runs racing on one key at
 // once; anything near it means something else is wrong.
-@(private = "file")
 make_temp_dir :: proc(dir_fd: Fs_Fd, final_name: string) -> (string, bool) {
   for i in 0 ..< 64 {
     name := fmt.tprintf("%s.tmp%d", final_name, i)
@@ -328,16 +326,22 @@ collect_files :: proc(v: Value, out: ^[dynamic]^File_Value, seen: ^map[^Table_Va
 }
 
 // ---- writing a File out -----------------------------------------------------
+//
+// The four procs below (write_file_value, open_as_file_value, make_temp_dir,
+// remove_tree_at, copy_tree and write_bytes) are package-visible rather than file-private because `exec`
+// (builtins_build.odin) needs exactly the same four operations: it materialises
+// input Files into a scratch directory, reads the declared outputs back out as
+// Files, and removes the scratch afterwards. Sharing them is what keeps a File
+// round-tripping identically through a build step and through the cache.
 
-@(private = "file")
 write_file_value :: proc(dir_fd: Fs_Fd, name: string, fv: ^File_Value) -> string {
   if fv.kind == .Regular do return write_bytes(dir_fd, name, fv.content, false)
 
   if err := fs_mkdir_at(dir_fd, name); err != .None {
-    return fmt.tprintf("could not create %s in the cache (%v)", name, err)
+    return fmt.tprintf("could not create %s (%v)", name, err)
   }
   dst, open_err := fs_open_dir_at(dir_fd, name, true)
-  if open_err != .None do return fmt.tprintf("could not open %s in the cache (%v)", name, open_err)
+  if open_err != .None do return fmt.tprintf("could not open %s (%v)", name, open_err)
   defer fs_close(dst)
   return copy_tree(fv.dir_fd, dst)
 }
@@ -352,7 +356,6 @@ write_file_value :: proc(dir_fd: Fs_Fd, name: string, fv: ^File_Value) -> string
 // so copying it changes no digest; it is copied because caching a build output
 // and getting back something you can no longer run would be a poor trade for a
 // build system. Nothing else about a directory is copied.
-@(private = "file")
 copy_tree :: proc(src_fd: Fs_Fd, dst_fd: Fs_Fd) -> string {
   entries, list_err := fs_list_entries_at(src_fd, context.temp_allocator)
   if list_err != .None do return fmt.tprintf("could not read a directory being cached (%v)", list_err)
@@ -369,13 +372,13 @@ copy_tree :: proc(src_fd: Fs_Fd, dst_fd: Fs_Fd) -> string {
 
     case .Directory:
       if err := fs_mkdir_at(dst_fd, entry.name); err != .None {
-        return fmt.tprintf("could not create %s in the cache (%v)", entry.name, err)
+        return fmt.tprintf("could not create %s (%v)", entry.name, err)
       }
       child_src, src_err := fs_open_dir_at(src_fd, entry.name, true)
       if src_err != .None do return fmt.tprintf("could not open %s (%v)", entry.name, src_err)
       defer fs_close(child_src)
       child_dst, dst_err := fs_open_dir_at(dst_fd, entry.name, true)
-      if dst_err != .None do return fmt.tprintf("could not open %s in the cache (%v)", entry.name, dst_err)
+      if dst_err != .None do return fmt.tprintf("could not open %s (%v)", entry.name, dst_err)
       defer fs_close(child_dst)
       if msg := copy_tree(child_src, child_dst); msg != "" do return msg
 
@@ -398,10 +401,9 @@ copy_tree :: proc(src_fd: Fs_Fd, dst_fd: Fs_Fd) -> string {
   return ""
 }
 
-@(private = "file")
 write_bytes :: proc(dir_fd: Fs_Fd, name: string, data: []u8, executable: bool) -> string {
   fd, err := fs_create_exclusive_at(dir_fd, name)
-  if err != .None do return fmt.tprintf("could not create %s in the cache (%v)", name, err)
+  if err != .None do return fmt.tprintf("could not create %s (%v)", name, err)
   werr := fs_write_all(fd, data)
   fs_close(fd)
   if werr != .None do return fmt.tprintf("could not write %s in the cache (%v)", name, werr)
@@ -415,7 +417,6 @@ write_bytes :: proc(dir_fd: Fs_Fd, name: string, data: []u8, executable: bool) -
 // the caller is already on its way to reporting something else (or to using
 // the entry another run published). Leaving a `.tmpN` behind is untidy, not
 // wrong - the next run picks a different N.
-@(private = "file")
 remove_tree_at :: proc(parent: Fs_Fd, name: string) {
   if fs_unlink_at(parent, name) == .None do return
   if fd, err := fs_open_dir_at(parent, name, true); err == .None {

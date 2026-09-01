@@ -1228,7 +1228,10 @@ top_of :: proc(stack: []Value, count: int) -> []Value {
 // `ctx.cache`, if this context has one. §9 lets a program build a context by
 // hand, and one built without carrying `.cache` over simply hasn't got a cache
 // to use - so this is a question, not an assertion.
-@(private = "file")
+//
+// Package-visible because `exec` (builtins_build.odin) asks the same question:
+// its scratch directory lives under the cache's, so a run with no cache has
+// nowhere to put one.
 cache_of_ctx :: proc(ctx: Value) -> (^Cache_Value, bool) {
   t, is_table := ctx.(^Table_Value)
   if !is_table do return nil, false

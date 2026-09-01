@@ -7,6 +7,8 @@ package hashedbuild
 // Function values pre-bound in the global scope, so adding one never touches
 // the grammar.
 
+import "core:fmt"
+import "core:os"
 import "core:slice"
 import "core:strings"
 import "core:unicode/utf8"
@@ -206,6 +208,202 @@ builtin_listdir :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, b
   return out, true
 }
 
+// ---- exec ---------------------------------------------------------------------
+
+// exec { .cmd, .args, .inputs, .outputs, .stdin }
+//   -> { .status, .stdout, .stderr, .outputs = { name -> File } }
+//
+// Runs a program, and is the first builtin here that is designed *around* the
+// cache rather than beside it. The shape is the whole point: the command runs
+// in a fresh scratch directory that holds nothing but the `.inputs` it was
+// given, and what comes back out are the `.outputs` **as values**, never
+// paths. That is what makes `cached exec { … }` correct - §15's key excludes
+// anything an expression reads at run time, so a thinner exec that wrote into
+// a directory and let the caller `loadfile` the result afterwards would cache
+// the first run's answer forever. Here every input is a File, a File is its
+// content (§3), so the inputs are *in* the key and a changed source
+// invalidates exactly the steps that consumed it.
+//
+//   .cmd     Utf8, looked up on PATH.
+//   .args    a sequence of Utf8; default none.
+//   .inputs  either a directory File (its contents become the scratch root) or
+//            a Table of relative-name -> File. Default: an empty scratch.
+//   .outputs a sequence of Utf8 relative paths to collect afterwards.
+//   .stdin   optional Utf8 fed to the program.
+//
+// **A non-zero exit is not a failure here.** It comes back as `.status`, so a
+// build can `check(r.status == 0, …)` and show `.stderr` - which is the useful
+// thing to do with a compiler that rejected its input. Everything else is
+// fatal like any other builtin (§16): a command that could not be started, an
+// input that could not be written, a declared output that is not there.
+//
+// Gated by `ctx.permissions.exec`, checked live at the call site. Running an
+// arbitrary program is strictly more authority than reading a file, so it does
+// not ride on `io`.
+//
+// Worth being plain about in the docs: this contains what is *handed to* a
+// build step, not what that step then does. A compiler started here is an
+// ordinary process and can read whatever the user running it can.
+@(private = "file")
+builtin_exec :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, bool) {
+  if !ctx_has_permission(interp, "exec") {
+    return fail(interp, "exec: exec permission not granted in the current context")
+  }
+  if !ctx_allows_io(interp) {
+    return fail(interp, "exec: io permission not granted in the current context")
+  }
+
+  t, is_table := arg.(^Table_Value)
+  if !is_table do return fail(interp, "exec expects a { .cmd, .args, .inputs, .outputs } Table")
+
+  cmd_val, has_cmd := table_find(t, "cmd")
+  cmd, cmd_ok := cmd_val.(string)
+  if !has_cmd || !cmd_ok do return fail(interp, "exec needs a Utf8 .cmd")
+
+  // argv[0] is the command itself, as every exec-family call expects.
+  command := make([dynamic]string, 0, 8, context.temp_allocator)
+  append(&command, cmd)
+  if args_val, has_args := table_find(t, "args"); has_args {
+    args_t, args_is_table := args_val.(^Table_Value)
+    if !args_is_table do return fail(interp, "exec's .args must be a Table of Utf8")
+    for idx in fold_order(args_t) {
+      a, a_ok := args_t.entries[idx].value.(string)
+      if !a_ok do return fail(interp, "exec's .args must all be Utf8")
+      append(&command, a)
+    }
+  }
+
+  scratch_path, scratch_fd, made := exec_make_scratch(interp)
+  if !made do return fail(interp, "exec: could not create a scratch directory to run in")
+  defer fs_close(scratch_fd)
+  defer exec_remove_scratch(interp, scratch_path)
+
+  if inputs_val, has_inputs := table_find(t, "inputs"); has_inputs {
+    if msg := exec_materialize(scratch_fd, inputs_val); msg != "" {
+      return fail(interp, fmt.tprintf("exec: %s", msg))
+    }
+  }
+
+  desc := os.Process_Desc{working_dir = scratch_path, command = command[:]}
+
+  // .stdin is handed over as a real file inside the scratch rather than a
+  // pipe: the program is waited on to completion anyway, so there is nothing
+  // a pipe would buy beyond a second failure mode to get wrong.
+  stdin_file: ^os.File
+  if stdin_val, has_stdin := table_find(t, "stdin"); has_stdin {
+    text, text_ok := stdin_val.(string)
+    if !text_ok do return fail(interp, "exec's .stdin must be a Utf8")
+    if msg := write_bytes(scratch_fd, EXEC_STDIN_NAME, transmute([]u8)text, false); msg != "" {
+      return fail(interp, fmt.tprintf("exec: %s", msg))
+    }
+    f, ferr := os.open(strings.concatenate({scratch_path, "/", EXEC_STDIN_NAME}, context.temp_allocator))
+    if ferr != nil do return fail(interp, "exec: could not open .stdin for the program to read")
+    stdin_file = f
+    desc.stdin = f
+  }
+  defer if stdin_file != nil do os.close(stdin_file)
+
+  state, stdout_bytes, stderr_bytes, run_err := os.process_exec(desc, context.allocator)
+  if run_err != nil {
+    // WASI has no way to start a process at all - core:os's backend answers
+    // .Unsupported - so this is also where a wasm build lands, and it says so
+    // rather than reporting a missing program.
+    if run_err == .Unsupported {
+      return fail(interp, "exec: running a program is not available on this target")
+    }
+    return fail(interp, fmt.tprintf("exec: could not run %s (%v)", cmd, run_err))
+  }
+
+  outputs := new(Table_Value)
+  if outs_val, has_outs := table_find(t, "outputs"); has_outs {
+    outs_t, outs_is_table := outs_val.(^Table_Value)
+    if !outs_is_table do return fail(interp, "exec's .outputs must be a Table of Utf8")
+    for idx in fold_order(outs_t) {
+      name, name_ok := outs_t.entries[idx].value.(string)
+      if !name_ok do return fail(interp, "exec's .outputs must all be Utf8")
+      is_dir, stat_err := fs_stat_is_dir_at(scratch_fd, name, true)
+      if stat_err != .None {
+        return fail(interp, fmt.tprintf("exec: %s declared no output named %s", cmd, name))
+      }
+      if is_dir {
+        return fail(interp, fmt.tprintf("exec: .outputs names %s, which is a directory - only regular files can be collected today", name))
+      }
+      fv, msg := open_as_file_value(scratch_fd, name, false, display_join(scratch_path, name))
+      if msg != "" do return fail(interp, fmt.tprintf("exec: %s", msg))
+      append(&outputs.entries, Table_Entry_Value{key = strings.clone(name), value = fv})
+    }
+  }
+
+  result := new(Table_Value)
+  append(&result.entries, Table_Entry_Value{key = "status", value = i64(state.exit_code)})
+  append(&result.entries, Table_Entry_Value{key = "stdout", value = exec_text(stdout_bytes)})
+  append(&result.entries, Table_Entry_Value{key = "stderr", value = exec_text(stderr_bytes)})
+  append(&result.entries, Table_Entry_Value{key = "outputs", value = outputs})
+  return result, true
+}
+
+EXEC_STDIN_NAME :: ".hb-exec-stdin"
+
+// A program's output is whatever bytes it chose to write, which need not be
+// text at all. Utf8 is the only shape the language has for it, so invalid
+// bytes are replaced rather than failing the build - a compiler that emitted
+// one stray byte on stderr should not take the whole run down, and the
+// diagnostic is still what the user needs to read.
+@(private = "file")
+exec_text :: proc(raw: []u8) -> Value {
+  if utf8.valid_string(string(raw)) do return strings.clone(string(raw))
+  b := strings.builder_make()
+  for r in string(raw) do strings.write_rune(&b, r == utf8.RUNE_ERROR ? '?' : r)
+  return strings.to_string(b)
+}
+
+// The scratch lives under the cache directory: it is already the place this
+// language keeps working files, `--cache-dir` already points it somewhere
+// writable, and putting it there keeps build droppings out of the project.
+@(private = "file")
+exec_make_scratch :: proc(interp: ^Interpreter) -> (path: string, fd: Fs_Fd, ok: bool) {
+  cache, has_cache := cache_of_ctx(interp.current_ctx)
+  if !has_cache do return "", FS_INVALID_FD, false
+  if ensure_cache_dir_open(cache) != .None do return "", FS_INVALID_FD, false
+
+  name, made := make_temp_dir(cache.dir_fd, "exec")
+  if !made do return "", FS_INVALID_FD, false
+  dir_fd, err := fs_open_dir_at(cache.dir_fd, name, true)
+  if err != .None do return "", FS_INVALID_FD, false
+  return strings.concatenate({cache.dir_path, "/", name}), dir_fd, true
+}
+
+@(private = "file")
+exec_remove_scratch :: proc(interp: ^Interpreter, scratch_path: string) {
+  cache, has_cache := cache_of_ctx(interp.current_ctx)
+  if !has_cache do return
+  idx := strings.last_index_byte(scratch_path, '/')
+  if idx < 0 do return
+  remove_tree_at(cache.dir_fd, scratch_path[idx + 1:])
+}
+
+// `.inputs` is either one directory File - whose contents become the scratch
+// root, which is what lets `listdir` names be used as arguments verbatim - or
+// a Table placing each File at its own key.
+@(private = "file")
+exec_materialize :: proc(scratch_fd: Fs_Fd, inputs: Value) -> string {
+  #partial switch v in inputs {
+  case ^File_Value:
+    if v.kind != .Directory do return ".inputs given as a single File must be a directory"
+    return copy_tree(v.dir_fd, scratch_fd)
+  case ^Table_Value:
+    for entry in v.entries {
+      name, name_ok := entry.key.(string)
+      if !name_ok do return ".inputs keys must be Utf8 names"
+      fv, is_file := entry.value.(^File_Value)
+      if !is_file do return fmt.tprintf(".inputs entry %s is not a File", name)
+      if msg := write_file_value(scratch_fd, name, fv); msg != "" do return msg
+    }
+    return ""
+  }
+  return ".inputs must be a directory File or a Table of name -> File"
+}
+
 // ---- registration -------------------------------------------------------------
 
 // Called by make_global_env (builtins_fs.odin) alongside §16's six. Kept here
@@ -215,6 +413,7 @@ builtin_listdir :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, b
 bind_build_builtins :: proc(env: ^Env) {
   env_bind(env, "fold", new_build_native("fold", builtin_fold))
   env_bind(env, "listdir", new_build_native("listdir", builtin_listdir))
+  env_bind(env, "exec", new_build_native("exec", builtin_exec))
   env_bind(env, "textlen", new_build_native("textlen", builtin_textlen))
   env_bind(env, "textslice", new_build_native("textslice", builtin_textslice))
 }
