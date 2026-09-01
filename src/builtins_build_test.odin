@@ -184,18 +184,40 @@ test_ctx_dir_works_as_a_directory_handle :: proc(t: ^testing.T) {
 // the tree. Hashing as a bare tag is what keeps a cache key stable while the
 // project changes around it.
 @(test)
-test_ctx_dir_does_not_hash_as_the_directorys_contents :: proc(t: ^testing.T) {
-  // The same directory, reached two ways: as ctx.dir, and as a directory File.
-  // The File hashes over every byte of the tree (§3); ctx.dir must not, or the
-  // whole project would be inside every cache key.
-  val, ok, err := eval_build(`(sha256 ctx.dir) == (sha256 (loadfile "."))`)
+test_ctx_dir_hashes_as_a_constant :: proc(t: ^testing.T) {
+  // Two handles rooted at different directories must hash alike. That is the
+  // property the whole incremental story rests on: §15 puts the entire ctx
+  // into every cache key, so if ctx.dir encoded either its contents or its
+  // path, every entry would depend on the whole project tree or on where the
+  // checkout happens to live.
+  //
+  // Asserted on constructed values rather than by hashing a real directory:
+  // the point is that nothing about the directory reaches the digest, and a
+  // test that walked a tree to show it would be testing the walk. (An earlier
+  // version compared against `sha256 (loadfile ".")`, which hashed the whole
+  // checkout - .git included - and failed on Windows for an unrelated reason.)
+  here := new(Workdir_Value)
+  here.dir_path = "/some/checkout"
+  elsewhere := new(Workdir_Value)
+  elsewhere.dir_path = "/a/quite/different/place"
+
+  a, a_fail := value_digest(Value(here))
+  b, b_fail := value_digest(Value(elsewhere))
+  testing.expect(t, a_fail.kind == .None, "hashing ctx.dir should not fail")
+  testing.expect(t, b_fail.kind == .None, "hashing ctx.dir should not fail")
+  testing.expect(t, a == b, "two ctx.dir handles must hash alike - a path in the key would invalidate a moved checkout")
+}
+
+// The other half of the same promise: a directory File still hashes over its
+// contents, so what a program reads *through* ctx.dir is unaffected. Uses the
+// three-file fixture rather than the checkout root, which is large and, on
+// Windows, contains entries the runner cannot open.
+@(test)
+test_a_directory_file_still_hashes_by_content :: proc(t: ^testing.T) {
+  val, ok, err := eval_build(`(sha256 (loadfile "examples/listing")) == (sha256 ctx.dir)`)
   testing.expect(t, ok, err)
   if !ok do return
-  testing.expect(
-    t,
-    !val.(bool),
-    "ctx.dir hashed as its directory's contents - every cached entry would then depend on the whole tree",
-  )
+  testing.expect(t, !val.(bool), "a directory File must not hash as the ctx.dir constant")
 }
 
 // ---- exec ---------------------------------------------------------------------
