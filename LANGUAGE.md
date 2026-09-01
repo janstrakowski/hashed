@@ -56,7 +56,7 @@ takes the outer `;` for itself.
 | `Nothing` | `nothing` | the unit value |
 | `Table` | `{ .a = 1 }`, `{10, 20}`, `empty` | the one composite type |
 | `Function` | `func …`, `(*2)`, `asfunc …` | ordinary values |
-| `File` | `loadfile "…"` | a file or directory, read through a directory handle; displays as its path |
+| `File` | `loadfile { .dir = …, .path = "…" }` | a file or directory, read through a directory handle; displays as its path |
 
 → `examples/arithmetic.hb`, `examples/strings.hb`,
 `examples/nothing-and-empty.hb` (§3, §4, §6)
@@ -359,29 +359,33 @@ readlink { .dir = <handle>, .path = "l" }
 filetext <file>                                       // a regular file's bytes as Utf8
 ```
 
-Leave `.dir` out and the call lands in `ctx.dir`, the program's main directory,
-so these two are the same call:
+`.dir` is required. There is no bare `loadfile "notes.txt"`, because there is
+nothing for it to resolve against — the language has no working directory, and
+nothing is inferred from where a source file sits.
 
-```hashedbuild
-loadfile "notes.txt"
-loadfile { .dir = ctx.dir, .path = "notes.txt" }
-```
-
-**The first handle comes from the runtime, not from a path.** `hb <file>` opens
-the source file's own directory as `ctx.dir` — so a script reads its neighbours
-wherever you invoke it from — and `hb -e`/the REPL open the working directory,
-having no file to be relative to. The flags below change that; anything else a
-program reaches, it reaches by opening it from a handle it already has.
+**The first handle comes from the command line.** Each `--dir <name>=<path>`
+opens a directory and hands it over as `ctx.dirs.<name>`; a program reaches
+those and whatever it opens from them, and nothing else. **A run that names no
+directory hands over none, and such a program cannot touch the filesystem at
+all.**
 
 ```sh
-hb --dir build/out prog.hb        # ctx.dir is build/out instead
-hb --dir src=./src prog.hb        # and ctx.dirs.src as well; repeatable
-hb --no-default-dir prog.hb       # no ctx.dir at all
+hb --dir here=examples examples/option-picker.hb   # ctx.dirs.here
+hb --dir src=./src --dir out=/tmp/out prog.hb      # repeatable
+hb prog.hb                                         # reaches nothing
 ```
 
-A directory `File` — from `ctx.dir`, from `ctx.dirs.<name>`, or from a
-`loadfile` that returned one — doubles as a handle for the next call down, so a
-tree is traversed by opening each directory in turn.
+That makes a program's inputs visible in how it is run, which is why every
+example here that touches the filesystem carries its own command line on a
+`run:` line in its header — the flags are part of the example:
+
+```hashedbuild
+// run: hb --dir here=. option-picker.hb
+```
+
+A directory `File` — from `ctx.dirs.<name>`, or from a `loadfile` that returned
+one — doubles as a handle for the next call down, so a tree is traversed by
+opening each directory in turn.
 
 **A sub-path is a sequence of ordinary names, and nothing else.** It may not
 start at a root, and it may not contain `.` or `..` **anywhere** — not even
@@ -393,6 +397,7 @@ loadfile { .dir = d, .path = "." }             // refused
 loadfile { .dir = d, .path = "src/./main.hb" } // refused, though it would reduce
 loadfile { .dir = d, .path = "../secrets" }    // refused
 loadfile { .dir = d, .path = "/etc/passwd" }   // refused
+loadfile "src/main.hb"                         // refused: which directory?
 ```
 
 The last thing a sub-path can't do is leave through a **symlink**: every
@@ -414,9 +419,9 @@ digest of the value it evaluates to, base64-encoded as `Utf8`:
 
 ```hashedbuild
 sha256 "hello"                    // => "Ar9oHTBiuRDqs+ZdbYD2daaU7RcvIDTJNB3UICNP92A="
-sha256 loadfile "pkg.tar.gz"      // exactly what sha256sum reports for that file
+sha256 loadfile { .dir = d, .path = "pkg.tar.gz" }   // what sha256sum reports for it
 sha256 { .a = 1, .b = 2 }
-sha256 loadfile "src"             // a whole directory, hashed over its entries
+sha256 loadfile { .dir = d, .path = "src" }          // a whole directory, over its entries
 sha256 func (1 + 2)               // a function, hashed as code plus what it captures
 ```
 
@@ -426,7 +431,7 @@ follow from that, and they are the reason to reach for it:
 
 - **A regular `File` hashes as its content bytes and nothing else.** No path,
   no name, no length prefix of the language's own. So
-  `sha256 loadfile "pkg.tar.gz"` is the digest `sha256sum` prints for the same
+  `sha256 loadfile { .dir = d, .path = "pkg.tar.gz" }` is the digest `sha256sum` prints for the same
   file, which is what makes it checkable against a hash upstream published.
 - **A `Table` hashes over its entries sorted by key**, so the order they were
   written in doesn't matter — `{ .a = 1, .b = 2 }` and `{ .b = 2, .a = 1 }`
@@ -439,7 +444,7 @@ That last point is what makes `File` equality work at all: two `File`s are the
 same value when their bytes match, however they were reached.
 
 ```hashedbuild
-(loadfile "a.txt") == (loadfile "copy-of-a.txt")   // true, if the bytes match
+(loadfile { .dir = d, .path = "a.txt" }) == (loadfile { .dir = d, .path = "copy.txt" })  // true, if the bytes match
 ```
 
 → `examples/hashing.hb` (§3, §6, §15)
@@ -453,8 +458,9 @@ directory hash for a sub-directory, or its target string for a symlink — which
 is never followed, so a link to a directory is a link, not a directory.
 
 ```hashedbuild
-sha256 loadfile "examples"                     // the digest of a whole tree
-(loadfile "examples") == (loadfile "examples") // true — one tree, two handles
+sha256 loadfile { .dir = d, .path = "examples" }   // the digest of a whole tree
+(loadfile { .dir = d, .path = "examples" })        // one tree, two handles:
+  == (loadfile { .dir = d, .path = "examples" })   // true
 ```
 
 Two things about it are worth knowing before you rely on it:
@@ -531,7 +537,7 @@ every later run reads the answer back instead of computing it.
 
 ```hashedbuild
 cached (6 * 7)                          // => 42, and again on every later run
-cached (loadfile "pkg.tar.gz")          // the bytes as they were the first time
+cached (loadfile { .dir = d, .path = "pkg.tar.gz" })  // the bytes as they were
 ```
 
 **The key is the expression treated as a function**, hashed with the one hash
@@ -546,7 +552,8 @@ system above (§15). Three things go into it, and it is worth knowing which:
 
 What is deliberately *not* in the key is anything the expression goes and reads
 at run time. That is the point of a cache, and its one sharp edge: cache
-`loadfile "pkg.tar.gz"` and you keep getting the bytes from the first run,
+`loadfile { .dir = d, .path = "pkg.tar.gz" }` and you keep getting the bytes
+from the first run,
 however the file changes afterwards.
 
 **Where entries live.** In `ctx.cache`'s directory — `--cache-dir <path>`, else
@@ -573,6 +580,15 @@ node "1" { .name = "alice", .friend = node "2" { .name = "bob", .friend = ref "1
 temporary name and renamed into place, so an interrupted run leaves a `.tmp`
 rather than a half-written entry, and two runs racing on one key settle it
 without locking anything.
+
+**What a key reaches.** A cached expression is hashed as a closure, so its key
+covers the values it captures and — when the expression mentions `ctx` — the
+context it runs under. `ctx.dirs` holds directory `File`s, and a directory
+hashes over its contents, so a cached read through a handle is keyed on the
+contents of the directories the run handed over: a hit while its inputs are
+unchanged, a miss once any of them changes. Hand over the directory a program
+actually reads rather than a large tree it happens to sit in, or keys change
+more often than they need to.
 
 **What it refuses.** `cached` needs `ctx.permissions.io`, since it reads and
 writes files, and it needs a `ctx` that still carries `.cache`. A value holding
@@ -605,15 +621,14 @@ inside a wider context can't grant it more authority than it was made with;
 builtins are the deliberate exception, since being restrictable from the outside
 is the entire point.
 
-`ctx.dir` and `ctx.dirs` are the directories the runtime opened for the program
-(see "Files"): `ctx.dir` is its **main** directory, the one a call with no
-`.dir` lands in, and `ctx.dirs` holds every **other** one by name. Neither is a
-working directory — the language has no current directory and no path that
-resolves against the process, only handles and names inside them. Narrowing
-works on them exactly as it does on permissions:
+`ctx.dirs` holds the directories the command line opened for the program, by
+name (see "Files") — the whole of what it can reach. It is not a working
+directory and there is no current directory anywhere in the language, only
+handles and names inside them. Narrowing works on it exactly as it does on
+permissions:
 
 ```hashedbuild
-<expr> withctx (ctx concat { .dir = nothing })   // only handles already in hand
+<expr> withctx (ctx concat { .dirs = empty })   // only handles already in hand
 ```
 
 `ctx.cache` is a write-only, content-addressed store: `createfile { .dir =
@@ -631,7 +646,8 @@ cache entry.
 explicitly — a value is resolved at the moment something actually needs it:
 
 ```hashedbuild
-(async filetext (loadfile "a.txt")) concat (async filetext (loadfile "b.txt"))
+(async filetext (loadfile { .dir = d, .path = "a.txt" }))
+  concat (async filetext (loadfile { .dir = d, .path = "b.txt" }))
 ```
 
 Both reads are in flight before `concat` needs either. Every entry of a Table
@@ -667,12 +683,12 @@ repetition there is — see above), a `Bytes`-returning counterpart to
 design; none of them run today.
 
 Removed rather than pending: the **unsandboxed path** — `loadfile "/etc/passwd"`,
-or a `createfile` with no directory behind it — is gone as of 2026-09-01. Every
-filesystem call is now a directory handle plus a sub-path inside it, and the
-handles a program starts with are the ones the runtime opened for it (see
-"Files"). `loadfile "notes.txt"` still works, meaning "in `ctx.dir`"; what no
-longer exists is a path that resolves against the process rather than against a
-handle.
+or a `createfile` with no directory behind it — is gone as of 2026-09-01, and so
+is the bare `loadfile "notes.txt"`. Every filesystem call is a directory handle
+plus a sub-path inside it, `.dir` is required, and the handles a program starts
+with are exactly the ones `--dir` named on the command line that ran it (see
+"Files"). What no longer exists is any path that resolves against something the
+call did not name.
 
 `serialize` and `serialize_file` were specified in
 §15 and are gone as of 2026-08-28 — the canonical byte encoding they would have
@@ -761,9 +777,10 @@ Either way, one thing differs from native, enforced by the target rather than
 chosen: **a program can only reach what the host preopened for it.** WASI has
 no working directory and no absolute paths — which is the same capability model
 §16 describes, arrived at independently, and the reason the two fit together
-with nothing in between. `wasmtime --dir=.` (the *runtime's* flag, not `hb`'s)
-preopens the current directory for the module, and preopening nothing makes
-every filesystem builtin fail, `ctx.dir` included. Displayed paths are relative
+with nothing in between. `wasmtime --dir=.` (the *runtime's* flag, which
+preopens a directory for the module — not `hb`'s `--dir`, which names one for
+the program inside it) is what makes anything reachable at all; preopen nothing
+and `hb`'s own `--dir` cannot open anything either. Displayed paths are relative
 to that preopen, so a file shows as `examples/optiona.txt` there and as its
 checkout path natively.
 

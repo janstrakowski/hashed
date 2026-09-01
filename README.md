@@ -37,29 +37,28 @@ Prefer it locally? **[GETTING_STARTED.md](GETTING_STARTED.md)** walks through se
 A real parser and tree-walking evaluator exist now (`src/`, with a full test suite), covering the core expression language - functions, pattern matching, guard chains, real concurrency (`async`, running on actual OS threads) - plus a small set of filesystem builtins with capability-scoped permissions and a live, self-hosted terminal editor with a genuinely pausable/resumable debugger. Unlike the aspirational examples further down, the program below actually runs:
 
 ```hashedbuild
-// examples/option-picker.hb - reads choice.txt out of ctx.dir, the directory
-// `hb` opened for this program (its own, not wherever you invoked `hb` from),
-// then branches on its exact content.
-// "option A" writes an entry starting with "Option A:" followed by
+// examples/option-picker.hb - reads choice.txt out of ctx.dirs.here, the
+// directory the command line handed this program, then branches on its exact
+// content. "option A" writes an entry starting with "Option A:" followed by
 // optiona.txt's content; "option B" does the analogous thing with
 // optionb.txt; anything else is an unrecoverable runtime error. The result
 // goes into ctx.cache, which names it by its own content hash.
-let choice loadfile "choice.txt" |> filetext;
+let choice loadfile { .dir = ctx.dirs.here, .path = "choice.txt" } |> filetext;
   choice == "option A" then
     createfile {
       .dir = ctx.cache,
-      .content = "Option A:\n" concat filetext (loadfile "optiona.txt"),
+      .content = "Option A:\n" concat filetext (loadfile { .dir = ctx.dirs.here, .path = "optiona.txt" }),
     }
   else choice == "option B" then
     createfile {
       .dir = ctx.cache,
-      .content = "Option B:\n" concat filetext (loadfile "optionb.txt"),
+      .content = "Option B:\n" concat filetext (loadfile { .dir = ctx.dirs.here, .path = "optionb.txt" }),
     }
   else
     error "choice.txt must contain exactly \"option A\" or \"option B\""
 ```
 
-Run it with `./hb examples/option-picker.hb` (from anywhere - `hb` hands a program its own directory as `ctx.dir`, and a program can only name things inside the directories it was handed), or explore it live with `./hb -i` - a two-to-four-pane terminal editor with a built-in examples picker, a live AST view, and a step-by-step evaluation trace. This one example touches a few of the language's actual design points: files are ordinary values reached through directory handles rather than paths (`loadfile`/`createfile`), branching is built from general composable operators rather than bespoke syntax (`then`/`else` chains into an if/else-if/else), and `error` is a genuinely unrecoverable failure - unlike a failed `then`, no enclosing `else` catches it.
+Run it with `./hb --dir here=examples examples/option-picker.hb` - a program reaches exactly the directories the command line names and nothing else, which is why its inputs are visible in how you run it (the example carries that line in its own header, as every example that touches the filesystem does). Or explore it live with `./hb -i` - a two-to-four-pane terminal editor with a built-in examples picker, a live AST view, and a step-by-step evaluation trace. This one example touches a few of the language's actual design points: files are ordinary values reached through directory handles rather than paths (`loadfile`/`createfile`), branching is built from general composable operators rather than bespoke syntax (`then`/`else` chains into an if/else-if/else), and `error` is a genuinely unrecoverable failure - unlike a failed `then`, no enclosing `else` catches it.
 
 **[LANGUAGE.md](LANGUAGE.md)** is the tour of everything that works today, feature by feature, with a runnable snippet for each and an explicit list of what isn't built yet. **[examples/](examples/)** has a runnable file per feature - all of them executed by the test suite, so they can't drift from the implementation. `SPEC.md` is the full design, including the parts that don't run yet.
 

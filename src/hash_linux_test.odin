@@ -11,11 +11,12 @@ import "core:strings"
 import "core:sys/linux"
 import "core:testing"
 
-// `sub_path` names the tree relative to the checkout, which is what this run
-// gets as ctx.dir - a program has no other way to name anything (§16).
+// `sub_path` names the tree relative to the checkout, which this run gets as
+// `ctx.dirs.here` - a program has no way to name anything except as a
+// sub-path of a handle it holds (§16).
 @(private = "file")
 eval_digest :: proc(t: ^testing.T, sub_path: string) -> string {
-  src := strings.concatenate({`sha256 loadfile "`, sub_path, `"`})
+  src := strings.concatenate({`sha256 loadfile { .dir = ctx.dirs.here, .path = "`, sub_path, `" }`})
   defer delete(src)
   ast := parse(source_t{name = "test", n_bytes = u64(len(src)), data = raw_data(src)}, ast_t{})
   cache := strings.concatenate({repo_root(), "/.hash_linux_test_cache"})

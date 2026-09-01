@@ -17,8 +17,8 @@ package hashedbuild
 // already describe. Every operation below therefore takes a directory
 // handle plus a name within it, never a bare path - except the three the
 // runtime itself needs (fs_open_dir_path, fs_make_dirs, fs_cwd_dir), which
-// are where `ctx.dir`, `ctx.dirs` and the cache come from (§9): the only
-// paths in the system that arrive from outside a program.
+// are where `ctx.dirs` and the cache come from (§9): the only paths in the
+// system that arrive from outside a program.
 //
 // Windows is the one target that has no descriptor-relative open at all, so
 // fs_windows.odin keeps a numbered table of handles and reaches a child by

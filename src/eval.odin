@@ -87,10 +87,11 @@ Interpreter :: struct {
   // `ctx`/`withctx` don't need to care.
   current_ctx: Value,
 
-  // There is deliberately no base directory here. A call that names no
-  // handle resolves against `ctx.dir` (§9/§16), which travels in
-  // `current_ctx` above like every other capability - so `withctx` can take
-  // it away, and a spawned task inherits exactly what its parent had.
+  // There is deliberately no base directory here, and no default one
+  // anywhere: a call names the handle it means (§16), and the handles a
+  // program has travel in `current_ctx` above like every other capability -
+  // so `withctx` can take one away, and a spawned task inherits exactly what
+  // its parent had.
 
   // The `let rec` Table literals currently being built, innermost last
   // (rec_build.odin). Empty for every program that doesn't write a cyclic

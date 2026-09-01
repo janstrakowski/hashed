@@ -1,3 +1,5 @@
+// run: hb --dir here=. cached.hb
+//
 // `cached` (SPEC.md §15): evaluate an expression once, and read the answer
 // back on every later run. Like `sha256`, `func` and `async`, it is a bare
 // keyword prefix taking one trailing expression - no parentheses of its own.
@@ -10,7 +12,8 @@
 //
 // What is *not* part of the key is anything the expression goes and reads at
 // run time. That is the point of a cache and also its one sharp edge: cache
-// `loadfile "pkg.tar.gz"` and you get the bytes as they were the first time,
+// `loadfile { .dir = …, .path = "pkg.tar.gz" }` and you get the bytes as they
+// were the first time,
 // however the file changes afterwards.
 //
 // Entries live in `ctx.cache`'s directory (`--cache-dir`, else the per-user
@@ -40,7 +43,8 @@ let bump func (cached (#arg + 1));
 // is its content (§3), so this holds even though the copy in the cache is at
 // a different path than the one it was read from.
 let file_survives_the_round_trip
-  ((sha256 cached (loadfile "optiona.txt")) == (sha256 loadfile "optiona.txt"));
+  ((sha256 cached (loadfile { .dir = ctx.dirs.here, .path = "optiona.txt" }))
+    == (sha256 loadfile { .dir = ctx.dirs.here, .path = "optiona.txt" }));
 
 // So does a value that reaches itself. The comparison is the whole test: §6
 // compares cyclic values by bisimulation, so a back-edge that came back as an

@@ -15,19 +15,16 @@ source_t :: struct {
   data: [^]u8,
 }
 
-// The directory a program gets as `ctx.dir` (§9): the source file's own, so a
-// script behaves the same wherever it is run from. "" - an unsaved editor
-// buffer, or the REPL, with no file to be relative to - means the process's
-// working directory instead. `filepath.dir` answers "" for a bare filename
-// with no directory component, which no target will open, so that case is
-// normalised here rather than at each call site.
+// The directory a source file sits in, which is what a `// run:` line's
+// relative paths are resolved against (run_line.odin). Nothing derives a
+// program's *own* directories from this: those come from `--dir` and nowhere
+// else (§9/§16).
 //
-// Lives here, not beside the editor, because main, the editor and the
-// debugger all set a run up the same way and none of it is target-specific.
-// What the caller does with the answer is open it (open_root_dirs) - unless
-// `--dir <path>` named a different directory, or `--no-default-dir` said the
-// program is to have no main directory at all.
-main_dir_for_source :: proc(current_path: string) -> string {
+// `filepath.dir` answers "" for a bare filename with no directory component,
+// which no target will open, so that case is normalised here rather than at
+// each call site. Lives here because it is target-independent and both the
+// tests and the editor want it.
+dir_of_source :: proc(current_path: string) -> string {
   if current_path == "" do return "."
   dir_path := filepath.dir(current_path)
   if dir_path == "" do dir_path = "."

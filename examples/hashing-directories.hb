@@ -1,3 +1,5 @@
+// run: hb --dir here=. hashing-directories.hb
+//
 // A directory `File`'s hash (SPEC.md §3). A directory is a value like any
 // other, so `sha256` answers for one - but its children are on the disk rather
 // than in the value, which makes this the one digest that reads.
@@ -17,9 +19,9 @@
 //
 // `tree/` is a fixture committed next to this example - a.txt and sub/b.txt -
 // so the two handles below read something that does not change underneath
-// them. `ctx.dir` is the directory the runtime handed the program (§9/§16),
-// this example's own; a call that names no `.dir` resolves against it, so the
-// two loads below are the same call written two ways.
+// them. `ctx.dirs.here` is the directory the `run:` line above handed the
+// program (§9/§16); the two loads below open the same sub-path of it twice,
+// which is what makes them two handles rather than one.
 //
 // Reading a directory is I/O, so the first `sha256` of one needs
 // `ctx.permissions.io` like `loadfile` does - and it is only the first, since
@@ -30,12 +32,13 @@
 //
 // Evaluates to { a_tree_is_not_its_file: true, one_tree_is_one_value: true,
 //                reading_twice_agrees: true }.
-let a loadfile { .dir = ctx.dir, .path = "tree" };
-let b loadfile "tree";
+let a loadfile { .dir = ctx.dirs.here, .path = "tree" };
+let b loadfile { .dir = ctx.dirs.here, .path = "tree" };
 {
   // A directory holding a file is not that file. Both digests are built from
   // the same bytes on disk, and §3's tagging is what keeps them apart.
-  .a_tree_is_not_its_file = ((sha256 a) == (sha256 loadfile "tree/a.txt")) == (1 > 2),
+  .a_tree_is_not_its_file =
+    ((sha256 a) == (sha256 loadfile { .dir = ctx.dirs.here, .path = "tree/a.txt" })) == (1 > 2),
 
   // Two separate handles, one tree. §3 makes a File's identity its content,
   // so these are the same value even though they were opened separately - and

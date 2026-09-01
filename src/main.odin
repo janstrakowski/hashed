@@ -15,22 +15,19 @@ Options:
   -i, --interactive   Start the live editor (requires a terminal)
   -a, --ast           Print the parsed AST before evaluating
   -e, --eval <expr>   Evaluate <expr> like one REPL submission and exit
-      --dir <path>     Open <path> as ctx.dir, the program's main
-                       directory (default: the source file's own
-                       directory, or the working directory with no file)
       --dir <name>=<path>
-                       Also open <path> as ctx.dirs.<name>. Repeatable
-      --no-default-dir Give the program no ctx.dir at all, so every
-                       filesystem call must name a handle of its own
+                       Open <path> as ctx.dirs.<name>, a directory the
+                       program may read and write inside. Repeatable
       --cache-dir <path>
                        Override where ctx.cache and cached keep
                        their entries (SPEC.md §15/§16)
   -h, --help           Print this help and exit
       --version        Print the version and exit
 
-A program reaches the filesystem only through the directories opened for it
-here (SPEC.md §9/§16): it can read and write inside them, by name, and cannot
-name anything else - no absolute path, no "..", no symlink pointing out.`
+A program reaches the filesystem only through the directories named by --dir
+(SPEC.md §9/§16): it can read and write inside them, by name, and cannot name
+anything else - no absolute path, no "..", no symlink pointing out. A run that
+names none cannot touch the filesystem at all.`
 
 // What the CLI was asked to do, parsed out of argv as a plain value: no
 // printing and no os.exit in here, so main stays a thin dispatch over the
@@ -50,14 +47,8 @@ Cli_Options :: struct {
   file_path: string,
   cache_dir: string, // "" means resolve the XDG default (SPEC.md §9/§16) instead
   eval_expr: string,
-  // --dir <path>: what to open as ctx.dir. "" means derive it - the source
-  // file's own directory, or the working directory when there is no file
-  // (main_dir_for_source, source.odin).
-  main_dir:  string,
-  // --no-default-dir: hand the program no ctx.dir at all. Contradicts an
-  // explicit --dir <path>, and parse_args says so rather than picking one.
-  no_main_dir: bool,
-  // --dir <name>=<path>, in the order given: ctx.dirs (SPEC.md §9).
+  // --dir <name>=<path>, in the order given: ctx.dirs (SPEC.md §9), and the
+  // whole of what a program can reach. Empty means it reaches nothing.
   named_dirs: [dynamic]Named_Dir,
 }
 
@@ -83,23 +74,18 @@ parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: b
       i += 1
       if i >= len(args) do return opts, "--cache-dir requires a path argument", false
       opts.cache_dir = args[i]
-    case "--no-default-dir":
-      opts.no_main_dir = true
     case "--dir":
       i += 1
-      if i >= len(args) do return opts, "--dir requires a <path> or <name>=<path> argument", false
-      // One flag, two jobs, told apart by the "=": a bare path is the main
-      // directory, a named one is an extra handle. Split at the *first* "="
-      // so a path may contain one; a name may not, which is why the name is
-      // the part before it.
+      if i >= len(args) do return opts, "--dir requires a <name>=<path> argument", false
+      // Split at the *first* "=", so a path may contain one and a name may
+      // not - which is what makes the name the part in front of it.
       eq := strings.index_byte(args[i], '=')
       if eq < 0 {
-        opts.main_dir = args[i]
-        continue
+        return opts, fmt.tprintf("--dir %s needs a name: --dir <name>=<path>", args[i]), false
       }
       name := args[i][:eq]
       path := args[i][eq + 1:]
-      if name == "" do return opts, fmt.tprintf("--dir %s has an empty name (use --dir <path> for ctx.dir)", args[i]), false
+      if name == "" do return opts, fmt.tprintf("--dir %s has an empty name", args[i]), false
       if path == "" do return opts, fmt.tprintf("--dir %s has an empty path", args[i]), false
       for existing in opts.named_dirs {
         if existing.name == name {
@@ -118,10 +104,6 @@ parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: b
       }
       if opts.file_path == "" do opts.file_path = args[i] // extra positionals are ignored
     }
-  }
-
-  if opts.no_main_dir && opts.main_dir != "" {
-    return opts, "--dir <path> cannot be combined with --no-default-dir", false
   }
 
   switch {
@@ -178,26 +160,11 @@ main :: proc() {
   }
 }
 
-// The directories a run hands its program (SPEC.md §9), opened once for the
-// whole process: `--dir <path>` if it was given, otherwise the source file's
-// own directory - or the working directory when there is no file, which is
-// what the REPL and `-e` get. `--no-default-dir` means no `ctx.dir` at all,
-// and then every filesystem call in the program has to name a handle of its
-// own or fail.
-open_run_dirs :: proc(opts: Cli_Options, source_path: string) -> (Root_Dirs, string, bool) {
-  main_dir := ""
-  if !opts.no_main_dir {
-    main_dir = opts.main_dir
-    if main_dir == "" do main_dir = main_dir_for_source(source_path)
-  }
-  return open_root_dirs(opts.cache_dir, main_dir, opts.named_dirs[:])
-}
-
 // Runs a HashedBuild source file as a real program, printing the result -
 // `hb <file>`. Every failure here is fatal to the process; eval_source_file
 // below is the same work without the printing or the exiting.
 run_file :: proc(path_str: string, show_ast: bool, opts: Cli_Options) {
-  dirs, dir_err, dir_ok := open_run_dirs(opts, path_str)
+  dirs, dir_err, dir_ok := open_root_dirs(opts.cache_dir, opts.named_dirs[:])
   if !dir_ok {
     fmt.eprintfln("error: %s", dir_err)
     os.exit(1)
@@ -258,9 +225,9 @@ eval_source_file :: proc(path_str: string, show_ast: bool, dirs: Root_Dirs) -> (
 // piped - unlike the two-pane editor, it needs no raw terminal mode. With
 // `-a`/`--ast`, the AST is printed above the value on every evaluation too.
 run_eval_repl :: proc(show_ast: bool, opts: Cli_Options) {
-  // Opened once for the session, not once per submission: `ctx.dir` is a
-  // real descriptor, and a fresh one per line typed would leak one per line.
-  dirs, dir_err, dir_ok := open_run_dirs(opts, "")
+  // Opened once for the session, not once per submission: each is a real
+  // descriptor, and a fresh set per line typed would leak one per line.
+  dirs, dir_err, dir_ok := open_root_dirs(opts.cache_dir, opts.named_dirs[:])
   if !dir_ok {
     fmt.eprintfln("error: %s", dir_err)
     os.exit(1)
@@ -316,7 +283,7 @@ run_eval_repl :: proc(show_ast: bool, opts: Cli_Options) {
 // the same exit codes run_file uses for them.
 @(private = "file")
 eval_once :: proc(src: string, show_ast: bool, opts: Cli_Options) {
-  dirs, dir_err, dir_ok := open_run_dirs(opts, "") // no file: ctx.dir is the working directory
+  dirs, dir_err, dir_ok := open_root_dirs(opts.cache_dir, opts.named_dirs[:])
   if !dir_ok {
     fmt.eprintfln("error: %s", dir_err)
     os.exit(1)

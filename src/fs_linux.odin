@@ -29,10 +29,10 @@ fs_errno_to_error :: proc(errno: linux.Errno) -> Fs_Error {
   return .Io
 }
 
-// The process's own working directory, which the runtime opens as `ctx.dir`
-// when there is no source file to be relative to - the REPL and `-e` (§9).
-// Nothing in the language resolves against it: a program only ever names a
-// sub-path of a handle.
+// The process's own working directory, which is what a relative `--dir` path
+// is resolved against when the runtime opens it. Nothing in the *language*
+// resolves against it: a program only ever names a sub-path of a handle it
+// holds (§16).
 fs_cwd_dir :: proc() -> Fs_Fd {
   return Fs_Fd(linux.AT_FDCWD)
 }

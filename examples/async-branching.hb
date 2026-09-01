@@ -1,3 +1,5 @@
+// run: hb --dir here=. async-branching.hb
+//
 // SPEC.md §2's branching rule made visible: ordinarily a `then`/`else` only
 // evaluates the branch actually taken, but when a branch contains `async`
 // anywhere, the untaken one still has to be started and awaited to
@@ -17,10 +19,10 @@
 // not negative, not over 80, but over 40).
 let score 55;
   score < 0 then
-    async (let _ (createfile { .path = "branch-negative.marker", .content = "ran" }); "negative")
+    async (let _ (createfile { .dir = ctx.dirs.here, .path = "branch-negative.marker", .content = "ran" }); "negative")
   else score > 80 then
-    async (let _ (createfile { .path = "branch-high.marker", .content = "ran" }); "high")
+    async (let _ (createfile { .dir = ctx.dirs.here, .path = "branch-high.marker", .content = "ran" }); "high")
   else score > 40 then
-    async (let _ (createfile { .path = "branch-medium.marker", .content = "ran" }); "medium")
+    async (let _ (createfile { .dir = ctx.dirs.here, .path = "branch-medium.marker", .content = "ran" }); "medium")
   else
-    async (let _ (createfile { .path = "branch-low.marker", .content = "ran" }); "low")
+    async (let _ (createfile { .dir = ctx.dirs.here, .path = "branch-low.marker", .content = "ran" }); "low")

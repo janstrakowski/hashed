@@ -53,7 +53,7 @@ Fs_Slot :: struct {
 }
 
 // Guarded because `async` runs on real OS threads (task.odin) and a spawned
-// interpreter inherits its parent's context, `ctx.dir` and all (eval_async.odin),
+// interpreter inherits its parent's context, handles and all (eval_async.odin),
 // so two threads can be opening and closing descriptors at the same time.
 @(private = "file")
 fs_table: struct {

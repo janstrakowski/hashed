@@ -20,14 +20,6 @@ cache_scratch :: proc(name: string) -> string {
   return strings.concatenate({repo_root(), "/.cache_test_", name})
 }
 
-// The same scratch entry as a sub-path of the checkout, which is how the
-// source under test names it: ctx.dir here is the checkout, and §16 gives a
-// program no way to write a path that isn't relative to a handle.
-@(private = "file")
-cache_scratch_name :: proc(name: string) -> string {
-  return strings.concatenate({".cache_test_", name})
-}
-
 @(private = "file")
 remove_cache_scratch :: proc(path: string) {
   remove_recursively(path)
@@ -50,12 +42,16 @@ remove_recursively :: proc(path: string) {
 
 // Evaluates with the real global environment and a root context whose
 // ctx.cache points at `cache_dir` - the same setup a real run has, since
-// `cached` is only meaningful against a real store. ctx.dir is the checkout,
-// so a test program reads its scratch files by sub-path (§16).
+// `cached` is only meaningful against a real store. `here_dir` becomes
+// `ctx.dirs.here`, and is deliberately a small directory holding only what the
+// test reads rather than the whole checkout: §15 folds the context into a
+// key, the context holds these handles, and a directory hashes over its
+// contents (§3) - so a handle on the checkout would key every entry on a tree
+// that the rest of the suite is concurrently writing scratch files into.
 @(private = "file")
-eval_cached_src :: proc(src: string, cache_dir: string) -> (val: Value, ok: bool, err: string) {
+eval_cached_src :: proc(src: string, cache_dir: string, here_dir := "") -> (val: Value, ok: bool, err: string) {
   ast := parse(source_t{name = "test", n_bytes = u64(len(src)), data = raw_data(src)}, ast_t{})
-  interp := Interpreter{ast = &ast, src = src, current_ctx = test_root_context(cache_dir, repo_root())}
+  interp := Interpreter{ast = &ast, src = src, current_ctx = test_root_context(cache_dir, here_dir)}
   val, ok = eval_program(&interp, ast.root, make_global_env())
   return val, ok, interp.error_message
 }
@@ -105,12 +101,18 @@ test_cached_returns_the_value_and_writes_one_entry :: proc(t: ^testing.T) {
   testing.expect(t, strings.has_suffix(names[0], ".hb"), "a non-File value is stored as text")
 }
 
-// The one test that distinguishes a cache from a very elaborate way of
-// evaluating twice: the file the expression reads is changed underneath it,
-// and the second call still answers with what the first one stored. Nothing
-// in the key mentions the file's contents, so the entry stays valid.
+// What distinguishes a cache from a very elaborate way of evaluating twice,
+// and what bounds it. §15 keys an entry on the expression *as a closure*,
+// which folds in the context an expression that mentions `ctx` runs under -
+// and the context now holds the directories the run handed the program (§9),
+// each hashing over its contents like any other directory (§3).
+//
+// So both halves are asserted here: run again over inputs that have not
+// changed and the stored answer comes back with no second entry written; touch
+// anything inside a handed directory and it is a miss, because the inputs -
+// which is what those directories are - are not what they were.
 @(test)
-test_cached_hit_survives_the_source_changing :: proc(t: ^testing.T) {
+test_cached_hits_until_a_handed_directory_changes :: proc(t: ^testing.T) {
   dir := cache_scratch("hit")
   defer delete(dir)                 // LIFO: the path has to outlive the cleanup
   defer remove_cache_scratch(dir)
@@ -122,29 +124,26 @@ test_cached_hit_survives_the_source_changing :: proc(t: ^testing.T) {
   path := fmt.tprintf("%s/f.txt", data)
   _ = os.write_entire_file(path, transmute([]u8)string("first"))
 
-  sub := cache_scratch_name("hit_data")
-  defer delete(sub)
-  src := fmt.aprintf(`filetext cached (loadfile "%s/f.txt")`, sub)
-  defer delete(src)
+  src := `filetext cached (loadfile { .dir = ctx.dirs.here, .path = "f.txt" })`
 
-  val, ok, err := eval_cached_src(src, dir)
+  val, ok, err := eval_cached_src(src, dir, data)
   testing.expect(t, ok, err)
   testing.expect_value(t, val.(string), "first")
+
+  // Nothing changed: the same key, so the stored answer rather than a second
+  // entry. Without a hit there would be two entries holding the same bytes.
+  val2, ok2, err2 := eval_cached_src(src, dir, data)
+  testing.expect(t, ok2, err2)
+  testing.expect_value(t, val2.(string), "first")
+  testing.expect_value(t, len(entry_names(dir)), 1)
 
   os.remove(path)
   _ = os.write_entire_file(path, transmute([]u8)string("SECOND"))
 
-  // Uncached, the change is visible...
-  fresh := fmt.aprintf(`filetext (loadfile "%s/f.txt")`, sub)
-  defer delete(fresh)
-  val2, ok2, err2 := eval_cached_src(fresh, dir)
-  testing.expect(t, ok2, err2)
-  testing.expect_value(t, val2.(string), "SECOND")
-
-  // ...and through `cached` it is not: the stored answer is returned.
-  val3, ok3, err3 := eval_cached_src(src, dir)
+  val3, ok3, err3 := eval_cached_src(src, dir, data)
   testing.expect(t, ok3, err3)
-  testing.expect_value(t, val3.(string), "first")
+  testing.expect_value(t, val3.(string), "SECOND")
+  testing.expect_value(t, len(entry_names(dir)), 2) // a different key, so a second entry
 }
 
 // The half of §15's key that has to be right for a hit to be correct: two
@@ -214,9 +213,14 @@ test_cached_file_value_is_stored_as_a_file :: proc(t: ^testing.T) {
   defer delete(dir)                 // LIFO: the path has to outlive the cleanup
   defer remove_cache_scratch(dir)
 
-  src := fmt.aprintf(`cached (loadfile "README.md")`)
-  defer delete(src)
-  val, ok, err := eval_cached_src(src, dir)
+  data := cache_scratch("file_data")
+  defer delete(data)
+  defer remove_cache_scratch(data)
+  os.make_directory(data)
+  _ = os.write_entire_file(fmt.tprintf("%s/doc.txt", data), transmute([]u8)string("a document"))
+
+  src := `cached (loadfile { .dir = ctx.dirs.here, .path = "doc.txt" })`
+  val, ok, err := eval_cached_src(src, dir, data)
   testing.expect(t, ok, err)
 
   fv, is_file := val.(^File_Value)
@@ -241,24 +245,25 @@ test_cached_directory_value_round_trips :: proc(t: ^testing.T) {
   defer delete(dir)                 // LIFO: the path has to outlive the cleanup
   defer remove_cache_scratch(dir)
 
-  // A tree built here rather than one of the repo's own: nothing else writes
+  // A tree built here rather than one of the repo own: nothing else writes
   // into it (async-branching drops marker files into examples/ as it runs, and
   // tests run concurrently), and the two hashes here have to see one tree.
-  tree := cache_scratch("tree_src")
-  defer delete(tree)
-  defer remove_cache_scratch(tree)
+  // It is built one level down, inside the directory handed over as
+  // ctx.dirs.here, so the program can name it.
+  tree_parent := cache_scratch("tree_src")
+  defer delete(tree_parent)
+  defer remove_cache_scratch(tree_parent)
+  os.make_directory(tree_parent)
+  tree := fmt.tprintf("%s/src", tree_parent)
   os.make_directory(tree)
   _ = os.write_entire_file(fmt.tprintf("%s/a.txt", tree), transmute([]u8)string("alpha"))
   os.make_directory(fmt.tprintf("%s/sub", tree))
   _ = os.write_entire_file(fmt.tprintf("%s/sub/b.txt", tree), transmute([]u8)string("beta"))
 
-  tree_sub := cache_scratch_name("tree_src")
-  defer delete(tree_sub)
-  src := fmt.aprintf(
-    `(sha256 cached (loadfile "%s")) == (sha256 loadfile "%s")`, tree_sub, tree_sub,
-  )
-  defer delete(src)
-  val, ok, err := eval_cached_src(src, dir)
+  // The handle is the tree's parent, so "src" below names the tree itself.
+  src := `(sha256 cached (loadfile { .dir = ctx.dirs.here, .path = "src" })) == ` +
+    `(sha256 loadfile { .dir = ctx.dirs.here, .path = "src" })`
+  val, ok, err := eval_cached_src(src, dir, tree_parent)
   testing.expect(t, ok, err)
   testing.expect(t, val.(bool), "a cached directory is the same value it was")
 
@@ -279,11 +284,17 @@ test_cached_composite_holds_its_files_beside_the_text :: proc(t: ^testing.T) {
   defer delete(dir)                 // LIFO: the path has to outlive the cleanup
   defer remove_cache_scratch(dir)
 
+  data := cache_scratch("composite_data")
+  defer delete(data)
+  defer remove_cache_scratch(data)
+  os.make_directory(data)
+  _ = os.write_entire_file(fmt.tprintf("%s/doc.txt", data), transmute([]u8)string("a document"))
+
   // strings.concatenate, not fmt.aprintf: the value being cached is a Table
   // literal, and fmt reads its `{` as the start of a format verb.
-  src := strings.concatenate({`cached { .doc = loadfile "README.md", .n = 7 }`})
+  src := strings.concatenate({`cached { .doc = loadfile { .dir = ctx.dirs.here, .path = "doc.txt" }, .n = 7 }`})
   defer delete(src)
-  val, ok, err := eval_cached_src(src, dir)
+  val, ok, err := eval_cached_src(src, dir, data)
   testing.expect(t, ok, err)
 
   table, is_table := val.(^Table_Value)
@@ -521,7 +532,7 @@ test_cache_format_rejects_a_broken_reference :: proc(t: ^testing.T) {
 @(test)
 test_cache_format_rejects_anything_that_is_not_a_value :: proc(t: ^testing.T) {
   for src in ([]string{
-    `loadfile "/etc/passwd"`,
+    `loadfile { .dir = d, .path = "x" }`,
     `1 + 2`,
     `{ .a = 1 } concat { .b = 2 }`,
     `func 1`,

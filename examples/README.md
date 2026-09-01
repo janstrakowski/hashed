@@ -53,7 +53,7 @@ prose around each of these.
 
 | Example | Shows |
 |---|---|
-| `files-sandboxed.hb` | `ctx.dir`, directory handles, contained sub-paths, `filetext`, path display |
+| `files-sandboxed.hb` | `ctx.dirs`, directory handles, contained sub-paths, `filetext`, path display |
 | `files-symlink.hb` | `readlink` — and why symlinks aren't values of their own |
 | `hashing.hb` | `sha256`, and the content identity that makes two Files one value |
 | `hashing-directories.hb` | A directory's hash: its entries, and the one digest that reads |
@@ -73,6 +73,23 @@ the async examples; `link-to-optiona` is a symlink `files-symlink.hb` reads;
 `tree/` (holding `a.txt` and `sub/b.txt`) is the small, unchanging directory
 `hashing-directories.hb` opens twice.
 
-`async-branching.hb` writes `branch-*.marker` files next to itself as evidence of
-which branches ran. `createfile` is exclusive, so delete them before re-running
-it.
+## Running one
+
+A program reaches only the directories the command line names (SPEC.md
+§9/§16), so an example that reads or writes carries its own command line on a
+`run:` line in its header - **as run from this directory**:
+
+```sh
+cd examples
+head -1 files-sandboxed.hb          # // run: hb --dir here=. files-sandboxed.hb
+../hb --dir here=. files-sandboxed.hb
+```
+
+The suite runs each example through that same line, and fails an example that
+touches the filesystem without one, or whose line names a different file - so
+what you copy is what is tested. Examples that compute without reading anything
+(most of them) need no line and no flags: `../hb guard-chain.hb`.
+
+`async-branching.hb` writes `branch-*.marker` files into the directory its
+`run:` line hands it - this one, as evidence of which branches ran. `createfile`
+is exclusive, so delete them before re-running it.

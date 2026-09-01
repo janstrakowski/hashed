@@ -150,15 +150,11 @@ Editor :: struct {
   example_menu:   Example_Menu,
   status_message: string, // transient, shown in the footer until the next action; "" if none
   completion_hint: string, // candidate names from the last Tab press, shown while prompting; "" if none
-  // What the CLI was invoked with, kept whole because the buffer's own
-  // directories are reopened from it whenever the edited file changes.
-  cli:            Cli_Options,
-  // `ctx.dir`/`ctx.dirs` for the buffer as it stands (SPEC.md §9), opened
-  // once and reused: every keystroke re-evaluates the buffer, and opening a
-  // directory per keystroke would burn a descriptor per keystroke.
+  // `ctx.dirs` for the buffer (SPEC.md §9) - whatever `--dir` gave this
+  // session, opened once at startup and reused: every keystroke re-evaluates
+  // the buffer, and opening a directory per keystroke would burn a descriptor
+  // per keystroke.
   dirs:           Root_Dirs,
-  dirs_path:      string, // the current_path `dirs` was opened for
-  dirs_ready:     bool,
   debugger:       ^Debugger_Run, // the live, paused-in-place debugger run; nil until first needed
   debug_last_src: string, // buffer content the current `debugger` run was started from - edits auto-restart it
 }
@@ -186,10 +182,6 @@ editor_destroy :: proc(e: ^Editor) {
   delete(e.example_menu.filtered)
   delete(e.example_menu.search)
   delete(e.debug_last_src)
-  if e.dirs_ready {
-    close_root_dirs(e.dirs)
-    delete(e.dirs_path)
-  }
 }
 
 @(private = "file")
@@ -420,7 +412,18 @@ run_live_editor :: proc(opts: Cli_Options) {
 
   editor: Editor
   editor_init(&editor)
-  editor.cli = opts
+  // An example opened from the picker (Ctrl+E) that reads files needs its
+  // directories named on *this* command line - `hb -i --dir here=examples` -
+  // exactly as running it would (§9/§16). Nothing is derived from the buffer's
+  // own path; the editor is not a second, quieter way to grant a program
+  // directories it was not given.
+  dirs, dir_err, dir_ok := open_root_dirs(opts.cache_dir, opts.named_dirs[:])
+  if !dir_ok {
+    fmt.eprintfln("error: %s", dir_err)
+    return
+  }
+  editor.dirs = dirs
+  defer close_root_dirs(dirs)
   defer editor_destroy(&editor)
 
   // Alternate screen buffer, same as vim/htop/less use - leaving it restores
@@ -721,30 +724,6 @@ run_prompt_action :: proc(e: ^Editor) {
 // Unsandboxed loadfile/createfile calls (no .dir given) resolve relative
 // paths against the edited buffer's own saved/loaded path, if it has one -
 
-// The directories the buffer evaluates against (SPEC.md §9): `ctx.dir` is the
-// edited file's own directory, or the working directory while the buffer is
-// unsaved, unless `--dir`/`--no-default-dir` said otherwise. Reopened only
-// when the buffer changes file - see Editor.dirs on why that matters here.
-//
-// A directory that will not open is not reported: the buffer is being edited,
-// so it is normal for it to name a file that does not exist yet, and the
-// program itself says so clearly enough ("no .dir given, and this context has
-// no ctx.dir") the moment it actually needs one.
-@(private = "file")
-editor_dirs :: proc(e: ^Editor) -> Root_Dirs {
-  if e.dirs_ready && e.dirs_path == e.current_path do return e.dirs
-  if e.dirs_ready {
-    close_root_dirs(e.dirs)
-    delete(e.dirs_path)
-  }
-  dirs, _, ok := open_run_dirs(e.cli, e.current_path)
-  if !ok do dirs = Root_Dirs{cache_dir = e.cli.cache_dir}
-  e.dirs = dirs
-  e.dirs_path = strings.clone(e.current_path)
-  e.dirs_ready = true
-  return e.dirs
-}
-
 // Evaluates the current buffer and renders its result as display lines -
 // same ownership contract as `ast_lines`: caller frees every line plus the
 // returned slice. Not independently scrollable (results are usually short);
@@ -824,7 +803,7 @@ restart_debugger :: proc(e: ^Editor, src: string) {
   e.debugger = nil
   delete(e.debug_last_src)
   e.debug_last_src = strings.clone(src)
-  e.debugger = start_debugger_run(strings.clone(src), editor_dirs(e))
+  e.debugger = start_debugger_run(strings.clone(src), e.dirs)
 }
 
 @(private = "file")
@@ -1083,7 +1062,7 @@ redraw_panels :: proc(e: ^Editor) {
   // run's own attempt at the same path.
   result_content: [dynamic]string
   if e.panel_visible[.Result] {
-    result_content = compute_result_lines(&ast, src, editor_dirs(e))
+    result_content = compute_result_lines(&ast, src, e.dirs)
   }
   defer {
     for line in result_content do delete(line)
@@ -1109,7 +1088,7 @@ redraw_panels :: proc(e: ^Editor) {
   // pay for that when the panel is actually shown.
   steps_content: [dynamic]string
   if e.panel_visible[.Steps] {
-    steps_content = compute_trace_lines(&ast, src, editor_dirs(e))
+    steps_content = compute_trace_lines(&ast, src, e.dirs)
   }
   defer {
     for line in steps_content do delete(line)

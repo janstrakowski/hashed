@@ -12,11 +12,14 @@ import "core:unicode/utf8"
 // Function values pre-bound in the global scope (see make_global_env), each
 // gated by ctx.permissions.io (§9) checked live at call time.
 //
-// Every one of them is (directory handle, sub-path). There is no form that
-// takes a path on its own: a call naming no `.dir` resolves against
-// `ctx.dir` (§9), the program's main directory, which is a handle like any
-// other. A program therefore cannot name anything outside the handles it was
-// given - not by a root, not by "..", not through a symlink pointing out.
+// Every one of them is (directory handle, sub-path), with no exceptions and
+// no defaults: `.dir` is required, and there is no form that takes a path on
+// its own. A program's handles are the ones it was given in `ctx.dirs` (§9,
+// one per `--dir <name>=<path>`) and the ones it opened from those, so a run
+// told about no directories cannot touch the filesystem at all. Nothing is
+// implicit here on purpose - a program's inputs are named where the run is,
+// not inferred from where its source file happens to sit.
+//
 // The only paths arriving from outside a handle are the runtime's own
 // (`--dir`, `--cache-dir`), and those are the host's, opened before the
 // program starts.
@@ -52,33 +55,26 @@ Named_Handle :: struct {
   handle: ^File_Value,
 }
 
-// Everything a root context is built out of: where the cache lives, the
-// program's main directory (`ctx.dir`), and any further named ones
-// (`ctx.dirs`). The two directory fields hold handles rather than paths
-// because they are opened **once per process**, not once per context - a REPL
-// builds a fresh root context for every line submitted, and opening a
-// directory per context would leak a descriptor per line.
+// Everything a root context is built out of: where the cache lives, and the
+// directories the run was told to hand over (`ctx.dirs`). The directories are
+// handles rather than paths because they are opened **once per process**, not
+// once per context - a REPL builds a fresh root context for every line
+// submitted, and opening a directory per context would leak a descriptor per
+// line.
 Root_Dirs :: struct {
   cache_dir: string,         // --cache-dir; "" resolves the XDG default instead
-  main:      ^File_Value,    // ctx.dir; nil means the program gets none at all
-  named:     []Named_Handle, // ctx.dirs
+  named:     []Named_Handle, // ctx.dirs; empty means the program reaches nothing
 }
 
 // Opens the directories a run was given, turning the command line's paths
-// into the handles a root context carries. `main_dir` is "" when the run is
-// to have no `ctx.dir` at all (`--no-default-dir`).
+// into the handles a root context carries.
 //
 // The paths here are the *host's*: absolute, relative, "." and ".." are all
 // fine, since the OS resolves them before any program runs. §16's rule that a
 // path may not say ".", ".." or a root governs sub-paths written *inside* a
 // program, which are always resolved against one of these handles.
-open_root_dirs :: proc(cache_dir: string, main_dir: string, named: []Named_Dir) -> (dirs: Root_Dirs, err_msg: string, ok: bool) {
+open_root_dirs :: proc(cache_dir: string, named: []Named_Dir) -> (dirs: Root_Dirs, err_msg: string, ok: bool) {
   dirs.cache_dir = cache_dir
-  if main_dir != "" {
-    handle, err := open_dir_handle(main_dir)
-    if err != .None do return {}, fmt.tprintf("could not open %s as ctx.dir (%v)", main_dir, err), false
-    dirs.main = handle
-  }
   if len(named) > 0 {
     handles := make([]Named_Handle, len(named))
     for nd, i in named {
@@ -86,7 +82,7 @@ open_root_dirs :: proc(cache_dir: string, main_dir: string, named: []Named_Dir) 
       if err != .None {
         // Give back what opened before the one that did not: the caller is
         // handed an error and no handles, so nothing else can close these.
-        close_root_dirs(Root_Dirs{main = dirs.main, named = handles[:i]})
+        close_root_dirs(Root_Dirs{named = handles[:i]})
         return {}, fmt.tprintf("could not open %s as ctx.dirs.%s (%v)", nd.path, nd.name, err), false
       }
       handles[i] = Named_Handle{name = nd.name, handle = handle}
@@ -99,12 +95,11 @@ open_root_dirs :: proc(cache_dir: string, main_dir: string, named: []Named_Dir) 
 // Releases what open_root_dirs opened, at the end of a run rather than per
 // evaluation - see Root_Dirs on why these last as long as the process.
 close_root_dirs :: proc(dirs: Root_Dirs) {
-  if dirs.main != nil do fs_close(dirs.main.dir_fd)
   for n in dirs.named do fs_close(n.handle.dir_fd)
 }
 
-// A directory File for a path the *runtime* was handed (§9's ctx.dir and
-// ctx.dirs) - the one place a path still arrives from outside a program.
+// A directory File for a path the *runtime* was handed (§9's ctx.dirs, one
+// per --dir) - the one place a path still arrives from outside a program.
 // Everything a program opens for itself goes through one of these plus a
 // sub-path (§16).
 open_dir_handle :: proc(path: string) -> (^File_Value, Fs_Error) {
@@ -119,10 +114,10 @@ open_dir_handle :: proc(path: string) -> (^File_Value, Fs_Error) {
 
 // The context every real HashedBuild program starts with (SPEC.md §9): io is
 // granted by default at the root, and the directories the runtime was told to
-// hand over arrive as `.dir` (the main one) and `.dirs` (every other, by
-// name). `withctx` narrows any of it for a sub-scope - taking `.dir` away is
-// as meaningful as taking `io` away, and denies every call that doesn't name
-// a handle of its own.
+// hand over arrive in `.dirs`, by name. `withctx` narrows any of it for a
+// sub-scope - dropping a handle from `.dirs` is as meaningful as dropping a
+// permission, and leaves an expression able to use only what it already
+// holds.
 make_root_context :: proc(dirs: Root_Dirs) -> Value {
   perms := new(Table_Value)
   append(&perms.entries, Table_Entry_Value{key = "io", value = Nothing_Value{}})
@@ -133,11 +128,6 @@ make_root_context :: proc(dirs: Root_Dirs) -> Value {
   ctx_table := new(Table_Value)
   append(&ctx_table.entries, Table_Entry_Value{key = "permissions", value = perms})
   append(&ctx_table.entries, Table_Entry_Value{key = "cache", value = cache})
-  // Absent rather than nothing when there is none: §9's context is read by
-  // presence, exactly as a permission is.
-  if dirs.main != nil {
-    append(&ctx_table.entries, Table_Entry_Value{key = "dir", value = dirs.main})
-  }
   // Always present, empty when nothing was named - `ctx.dirs` is a Table to
   // look names up in, and an empty one answers "no such handle" the same way
   // a populated one answers it for a name it does not hold.
@@ -212,21 +202,6 @@ ctx_allows_io :: proc(interp: ^Interpreter) -> bool {
   if !perms_is_table do return false
   _, io_found := table_find(perms, "io")
   return io_found
-}
-
-// `ctx.dir` (§9), read live off the current context exactly as ctx_allows_io
-// reads the permissions - and for the same reason: a builtin must see the
-// context actually active at its call site, so that narrowing it with
-// `withctx` genuinely takes the directory away from the inside.
-@(private = "file")
-ctx_main_dir :: proc(interp: ^Interpreter) -> (^File_Value, bool) {
-  t, is_table := interp.current_ctx.(^Table_Value)
-  if !is_table do return nil, false
-  dir_val, found := table_find(t, "dir")
-  if !found do return nil, false
-  fv, is_file := dir_val.(^File_Value)
-  if !is_file || fv.kind != .Directory do return nil, false
-  return fv, true
 }
 
 // ---- path containment -----------------------------------------------------------
@@ -322,30 +297,25 @@ close_resolved :: proc(r: Resolved_Path) {
   if r.needs_close do fs_close(r.fd)
 }
 
-// The directory a call resolves against: its own `.dir` if it names one, else
-// `ctx.dir` (§16). `t` is nil for loadfile's single-path form, which is the
-// same call with `.dir` left out.
+// The directory a call resolves against, which it must name itself (§16):
+// there is no default, and nothing in the context stands in for one. A
+// program holds handles or it holds nothing.
 @(private = "file")
-target_dir :: proc(interp: ^Interpreter, t: ^Table_Value) -> (dir: ^File_Value, err_msg: string, ok: bool) {
-  if t != nil {
-    if dir_val, has_dir := table_find(t, "dir"); has_dir {
-      dir_file, is_file := dir_val.(^File_Value)
-      if !is_file || dir_file.kind != .Directory do return nil, ".dir must be a directory File", false
-      return dir_file, "", true
-    }
+target_dir :: proc(t: ^Table_Value) -> (dir: ^File_Value, err_msg: string, ok: bool) {
+  dir_val, has_dir := table_find(t, "dir")
+  if !has_dir {
+    return nil, "needs a .dir directory handle - a path is always a sub-path of one (try ctx.dirs.<name>)", false
   }
-  main_dir, has_main := ctx_main_dir(interp)
-  if !has_main {
-    return nil, "no .dir given, and this context has no ctx.dir to resolve against", false
-  }
-  return main_dir, "", true
+  dir_file, is_file := dir_val.(^File_Value)
+  if !is_file || dir_file.kind != .Directory do return nil, ".dir must be a directory File", false
+  return dir_file, "", true
 }
 
-// Resolves a builtin's (directory, sub-path) pair: the handle from `.dir` or
-// `ctx.dir`, the sub-path checked against §16's rule and then walked.
+// Resolves a builtin's (directory, sub-path) pair: the handle from `.dir`,
+// and the sub-path checked against §16's rule and then walked.
 @(private = "file")
 resolve_target :: proc(interp: ^Interpreter, t: ^Table_Value, path_str: string) -> (r: Resolved_Path, err_msg: string, ok: bool) {
-  dir_file, dir_err, dir_ok := target_dir(interp, t)
+  dir_file, dir_err, dir_ok := target_dir(t)
   if !dir_ok do return {}, dir_err, false
 
   if verr, valid := validate_sub_path(path_str); !valid do return {}, verr, false
@@ -563,27 +533,22 @@ open_and_load :: proc(interp: ^Interpreter, dir_fd: Fs_Fd, path: string, no_foll
   return fv, true
 }
 
-// The two spellings are one operation: `loadfile <sub_path>` is
-// `loadfile { .path = <sub_path> }`, and either resolves against `.dir` if
-// the call names one or `ctx.dir` if it doesn't (§16). There is no third form
-// that resolves a path against something other than a handle.
+// One form, and deliberately no shorthand: a bare `loadfile "notes.txt"` would
+// have to resolve against something the call did not name, and §16 has nothing
+// for it to resolve against. A string argument is therefore an error with the
+// fix in it, not a second, weaker spelling.
 @(private = "file")
 builtin_loadfile :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, bool) {
   if !ctx_allows_io(interp) do return fail(interp, "loadfile: io permission not granted in the current context")
 
-  t: ^Table_Value // nil for the bare sub-path form, which is the same call without .dir
-  path_str: string
-  if path, is_str := arg.(string); is_str {
-    path_str = path
-  } else {
-    is_table: bool
-    t, is_table = arg.(^Table_Value)
-    if !is_table do return fail(interp, "loadfile expects a Utf8 sub-path or a { [.dir], .path } Table")
-    path_val, has_path := table_find(t, "path")
-    ps, path_ok := path_val.(string)
-    if !has_path || !path_ok do return fail(interp, "loadfile's Table form needs a Utf8 .path")
-    path_str = ps
+  if _, is_str := arg.(string); is_str {
+    return fail(interp, `loadfile expects a { .dir, .path } Table - there is no bare-path form, since a path is always a sub-path of a directory handle (try loadfile { .dir = ctx.dirs.<name>, .path = ... })`)
   }
+  t, is_table := arg.(^Table_Value)
+  if !is_table do return fail(interp, "loadfile expects a { .dir, .path } Table")
+  path_val, has_path := table_find(t, "path")
+  path_str, path_ok := path_val.(string)
+  if !has_path || !path_ok do return fail(interp, "loadfile needs a Utf8 .path")
 
   r, err_msg, ok := resolve_target(interp, t, path_str)
   if !ok do return fail(interp, fmt.tprintf("loadfile: %s", err_msg))
@@ -614,7 +579,7 @@ builtin_createfile :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value
   if !ctx_allows_io(interp) do return fail(interp, "createfile: io permission not granted in the current context")
 
   t, is_table := arg.(^Table_Value)
-  if !is_table do return fail(interp, "createfile expects a { [.dir], .path, .content } Table")
+  if !is_table do return fail(interp, "createfile expects a { .dir, .path, .content } Table")
 
   content_val, has_content := table_find(t, "content")
   if !has_content do return fail(interp, "createfile needs .content")
@@ -729,7 +694,7 @@ builtin_symlink :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, b
   if !ctx_allows_io(interp) do return fail(interp, "symlink: io permission not granted in the current context")
 
   t, is_table := arg.(^Table_Value)
-  if !is_table do return fail(interp, "symlink expects a { [.dir], .path, .target } Table")
+  if !is_table do return fail(interp, "symlink expects a { .dir, .path, .target } Table")
 
   path_val, has_path := table_find(t, "path")
   target_val, has_target := table_find(t, "target")
@@ -754,7 +719,7 @@ builtin_readlink :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, 
   if !ctx_allows_io(interp) do return fail(interp, "readlink: io permission not granted in the current context")
 
   t, is_table := arg.(^Table_Value)
-  if !is_table do return fail(interp, "readlink expects a { [.dir], .path } Table")
+  if !is_table do return fail(interp, "readlink expects a { .dir, .path } Table")
 
   path_val, has_path := table_find(t, "path")
   path_str, path_ok := path_val.(string)

@@ -41,6 +41,29 @@ cd "$REPO"
 SKIP="files-sandboxed.hb option-picker.hb"
 ASYNC="async-basics.hb async-branching.hb async-table.hb"
 
+# An example that reads or writes carries its own command line on a `run:`
+# line (src/run_line.odin), written as run from inside examples/. Both
+# binaries here are invoked from the repo root instead - the wasm one because
+# its preopen is "." - so the paths are rebased onto examples/ on the way
+# through. Reading the line rather than hardcoding flags is what keeps this
+# script running the examples the way the files themselves document.
+run_dirs() {
+  sed -n 's|^// *run: *||p' "$1" | head -1 | tr ' ' '\n' | awk '
+    $0 == "--dir" { want = 1; next }
+    want {
+      eq = index($0, "=")
+      if (eq > 1) {
+        name = substr($0, 1, eq - 1)
+        path = substr($0, eq + 1)
+        if (path == ".") path = "examples"
+        else if (path ~ /^\.\//) path = "examples/" substr(path, 3)
+        else if (path !~ /^\//) path = "examples/" path
+        printf "--dir\n%s=%s\n", name, path
+      }
+      want = 0
+    }'
+}
+
 failures=0
 checked=0
 async_checked=0
@@ -48,10 +71,15 @@ for path in examples/*.hb; do
   name=$(basename "$path")
   case " $SKIP " in *" $name "*) continue;; esac
 
+  dirs=()
+  while IFS= read -r arg; do dirs+=("$arg"); done < <(run_dirs "$path")
+
   rm -f examples/branch-*.marker
-  native_out=$("$NATIVE" "$path" 2>&1 || true)
+  native_out=$("$NATIVE" ${dirs[@]+"${dirs[@]}"} "$path" 2>&1 || true)
   rm -f examples/branch-*.marker
-  wasi_out=$("$RUNTIME" "${RUNTIME_ARGS[@]}" --dir=. "$WASM" "$path" 2>&1 || true)
+  # --dir=. is wasmtime's own preopen flag; the --dir arguments after "$WASM"
+  # are hb's, and name directories inside that preopen for the program.
+  wasi_out=$("$RUNTIME" "${RUNTIME_ARGS[@]}" --dir=. "$WASM" ${dirs[@]+"${dirs[@]}"} "$path" 2>&1 || true)
 
   if [ "$NO_THREADS" -eq 1 ] && [[ " $ASYNC " == *" $name "* ]]; then
     async_checked=$((async_checked + 1))
