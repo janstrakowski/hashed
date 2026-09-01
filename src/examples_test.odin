@@ -232,6 +232,15 @@ clear_branch_markers :: proc() {
 // does where symlinks aren't available.
 @(test)
 test_example_running_a_program_drives_clang :: proc(t: ^testing.T) {
+  // Windows names a linked program greet.exe, and the example declares its
+  // output as "greet" - a declared output that is not there is fatal (§16), by
+  // design. Teaching the example to pick an extension per platform would put
+  // the platform, rather than exec, at the centre of what it demonstrates, so
+  // it stays a Linux check and says so.
+  when ODIN_OS == .Windows {
+    log.info("skipping running-a-program.hb: it names a linked output without a platform extension")
+    return
+  }
   if !command_exists("clang") {
     log.info("skipping running-a-program.hb: clang is not on PATH in this environment")
     return

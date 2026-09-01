@@ -23,7 +23,9 @@
 //
 // This one shells out to `clang`, so unlike every other example it needs
 // something outside the repository; the test that runs it skips itself, with a
-// logged reason, where clang isn't installed. Evaluates to
+// logged reason, where clang isn't installed - and on Windows, where a linked
+// program is `greet.exe` and the `.outputs` below would name something that
+// isn't there. Evaluates to
 // { compiled: 0, said_its_version: true, ran_what_it_built: "hello from C\n" }.
 
 let source createfile {
