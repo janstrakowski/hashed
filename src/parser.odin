@@ -1,5 +1,7 @@
 package hashedbuild
 
+import "core:strings"
+
 // Recursive-descent parser covering the whole of SPEC.md's expression grammar
 // (CST/AST only - no evaluation). Read this file top-down: `parse_expr` is the
 // single entry point every "hard boundary slot" (§7) - a happy_path, a bad_path,
@@ -31,7 +33,17 @@ Parser :: struct {
 }
 
 parse :: proc(source: source_t, ref: ast_t) -> (res: ast_t) {
+  // The prologue comes first and is not part of the expression (SPEC.md §17).
+  // Its errors are parse errors - an unknown attribute is a mistake worth
+  // reporting, not a directive to ignore - and the lexer starts after it.
+  src := string(source.data[:source.n_bytes])
+  res.attributes = scan_attributes(src)
+  for e in res.attributes.errors {
+    append(&res.errors, Parse_Error{span = e.span, message = strings.clone(e.message)})
+  }
+
   p := Parser{lexer = lexer_make(source)}
+  p.lexer.pos = u32(res.attributes.consumed)
   p.ast = &res
   p.cur = next_token(&p.lexer)
 

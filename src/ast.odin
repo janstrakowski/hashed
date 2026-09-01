@@ -140,6 +140,11 @@ ast_t :: struct {
   extra_children: [dynamic]Node_Idx,
   errors:         [dynamic]Parse_Error,
   root:           Node_Idx,
+  // What the file's prologue declared (SPEC.md §17, attributes.odin): how the
+  // program is *run*, as opposed to what it computes. Parsed here so that
+  // everything downstream - the CLI, the debug adapter - reads it from the
+  // same place, and so a malformed one is a parse error like any other.
+  attributes:     Attributes,
 }
 
 Parse_Error :: struct {
@@ -150,5 +155,7 @@ Parse_Error :: struct {
 ast_destroy :: proc(ast: ^ast_t) {
   delete(ast.nodes)
   delete(ast.extra_children)
+  for e in ast.errors do delete(e.message)
   delete(ast.errors)
+  attributes_destroy(&ast.attributes)
 }

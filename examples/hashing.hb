@@ -1,5 +1,5 @@
-// run: hb --dir here=. hashing.hb
-//
+#Directory here .
+
 // `sha256` (SPEC.md §15), and the value identity underneath it (§6). It takes
 // one trailing expression, like `func` or `async`, and returns the digest
 // base64-encoded as `Utf8`.

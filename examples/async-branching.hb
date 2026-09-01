@@ -1,5 +1,5 @@
-// run: hb --dir here=. async-branching.hb
-//
+#Directory here .
+
 // SPEC.md §2's branching rule made visible: ordinarily a `then`/`else` only
 // evaluates the branch actually taken, but when a branch contains `async`
 // anywhere, the untaken one still has to be started and awaited to

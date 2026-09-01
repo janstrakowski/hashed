@@ -1,5 +1,5 @@
-// run: hb --dir here=. files-symlink.hb
-//
+#Directory here .
+
 // Symlinks are metadata of the directory holding them, not values in their
 // own right (SPEC.md §3/§16) - so there's no "symlink value" to get back.
 // What you can do is read the target string exactly as stored, without

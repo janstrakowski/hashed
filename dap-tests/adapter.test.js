@@ -29,14 +29,14 @@ const fixture = (name) => path.join(FIXTURES, name);
 // bugs at once, because no client does that: breakpoints sent before a run
 // existed were dropped, and `setExceptionBreakpoints` was answered with an
 // error a client can abandon the session over.
-async function session(dc, { program, dirs, breakpoints = [], stopOnEntry = false }) {
+async function session(dc, { program, dirs, breakpoints = [], stopOnEntry = false, overrideAttributes = false }) {
   await dc.initializeRequest({
     adapterID: "hashedbuild",
     linesStartAt1: true,
     columnsStartAt1: true,
   });
   await dc.waitForEvent("initialized");
-  await dc.launchRequest({ program, dirs, stopOnEntry });
+  await dc.launchRequest({ program, dirs, stopOnEntry, overrideAttributes });
   if (breakpoints.length) {
     await dc.setBreakpointsRequest({
       source: { path: program },
@@ -224,10 +224,35 @@ describe("hb dap", function () {
     assert.strictEqual(local.body.result, "8", "the stopped scope's own names are visible");
   });
 
-  // A program reaches only the directories the launch names, exactly as on the
-  // command line (SPEC.md §9/§16) - a debug session is not a way around that.
-  it("gives the program only the directories the launch config names", async () => {
-    await session(dc, { program: fixture("reads.hb"), dirs: { here: FIXTURES } });
+  // A program that declares its own inputs (SPEC.md §17) needs no
+  // configuration at all: `program` is the whole launch config.
+  it("runs a program that declares its own directories, with no config", async () => {
+    await session(dc, { program: fixture("reads.hb") });
+    const output = await dc.waitForEvent("output");
+    assert.match(output.body.output, /payload/);
+    await dc.waitForEvent("terminated");
+  });
+
+  // Saying it twice is the same conflict the command line has, and is refused
+  // the same way - a debug session is not a way around what a file says about
+  // itself.
+  it("refuses a launch config that contradicts the program's attributes", async () => {
+    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
+    await dc.waitForEvent("initialized");
+    const launched = await dc.launchRequest({
+      program: fixture("reads.hb"),
+      dirs: { here: FIXTURES },
+    }).catch((e) => e);
+    assert.ok(launched instanceof Error || launched.success === false,
+      "a config that sets what the file already declares must be refused");
+  });
+
+  it("lets a launch config override the attributes when it says so", async () => {
+    await session(dc, {
+      program: fixture("reads.hb"),
+      dirs: { here: FIXTURES },
+      overrideAttributes: true,
+    });
     const output = await dc.waitForEvent("output");
     assert.match(output.body.output, /payload/);
     await dc.waitForEvent("terminated");
@@ -238,11 +263,7 @@ describe("hb dap", function () {
   // a garbled name in a variables pane, and a lookup that failed only
   // sometimes, which is the worst way for it to fail.
   it("keeps the launch config's directory names intact", async () => {
-    await session(dc, {
-      program: fixture("reads.hb"),
-      dirs: { here: FIXTURES },
-      stopOnEntry: true,
-    });
+    await session(dc, { program: fixture("reads.hb"), stopOnEntry: true });
     await dc.waitForEvent("stopped");
     const { frame } = await whereIsIt(dc);
 
@@ -255,7 +276,13 @@ describe("hb dap", function () {
   });
 
   it("fails where a program names a directory it was not given", async () => {
-    await session(dc, { program: fixture("reads.hb") }); // no dirs at all
+    // `here` removed by an overriding config, so the program asks for a handle
+    // that is not there - the same failure as running it without one.
+    await session(dc, {
+      program: fixture("reads.hb"),
+      dirs: { here: "" },
+      overrideAttributes: true,
+    });
     const stopped = await dc.waitForEvent("stopped");
     assert.strictEqual(stopped.body.reason, "exception", "a failure stops where it happened");
   });

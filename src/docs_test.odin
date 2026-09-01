@@ -18,7 +18,9 @@ test_readme_sample_matches_the_example_it_quotes :: proc(t: ^testing.T) {
   example := read_repo_file(t, "examples/option-picker.hb")
   if readme == "" || example == "" do return
 
-  quoted, found := fenced_block(readme, "```hashedbuild\n// examples/option-picker.hb")
+  // The block now opens with the example's own `#Directory` attribute (§17),
+  // which is part of the program rather than a comment about it.
+  quoted, found := fenced_block(readme, "```hashedbuild\n#Directory here .")
   if !testing.expect(t, found, "README.md no longer quotes examples/option-picker.hb in a hashedbuild block") do return
 
   testing.expect_value(t, code_lines(quoted), code_lines(example))

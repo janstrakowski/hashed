@@ -174,6 +174,13 @@ can paste straight into `./hb -e '…'` and a pointer to the example that
 demonstrates it. Run the snippets before committing them; a doc that lies is
 worse than a missing one.
 
+**A program declares its own inputs.** `#Directory here .` and friends (§17)
+sit in a prologue before the expression, and their paths are relative to the
+source file - so `./hb examples/anything.hb` works from any directory, with no
+flags. A run that also passes `--dir` is refused unless it passes `--override`
+too. The suite runs every example exactly as a reader would, with no arguments
+at all, which is what keeps the two the same thing.
+
 **Every language feature gets an example in `examples/`.** One runnable file
 per feature, with a header comment saying what it evaluates to, in the style
 the existing ones use. Features where a runnable file isn't the natural

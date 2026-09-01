@@ -1,5 +1,5 @@
-// run: hb --dir here=. files-sandboxed.hb
-//
+#Directory here .
+
 // Files as values (SPEC.md §3/§16). Every filesystem call is a directory
 // handle plus a sub-path inside it:
 //

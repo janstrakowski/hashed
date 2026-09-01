@@ -65,7 +65,7 @@
               },
               "dirs": {
                 "type": "object",
-                "description": "name -> path. Each becomes ctx.dirs.<name>, and is the whole of what the program may read or write (SPEC.md \u00a79/\u00a716).",
+                "description": "name -> path; becomes ctx.dirs. Not needed for a program that declares its own #Directory attributes - and refused alongside them unless overrideAttributes is set.",
                 "default": {
                   "here": "${fileDirname}"
                 }
@@ -77,6 +77,11 @@
               "stopOnEntry": {
                 "type": "boolean",
                 "description": "Stop at the very first expression the program evaluates. Off by default: that is a name lookup or a literal, which tells you nothing.",
+                "default": false
+              },
+              "overrideAttributes": {
+                "type": "boolean",
+                "description": "Let this configuration's dirs/cacheDir win over the program's own # attributes (SPEC.md \u00a717).",
                 "default": false
               }
             }

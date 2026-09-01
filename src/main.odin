@@ -26,13 +26,18 @@ Options:
       --cache-dir <path>
                        Override where ctx.cache and cached keep
                        their entries (SPEC.md §15/§16)
+      --override       Let the options above win over the program's own
+                       # attributes (SPEC.md §17). Without it, a program
+                       that declares its inputs refuses to be given
+                       different ones
   -h, --help           Print this help and exit
       --version        Print the version and exit
 
-A program reaches the filesystem only through the directories named by --dir
+A program reaches the filesystem only through the directories it was given
 (SPEC.md §9/§16): it can read and write inside them, by name, and cannot name
-anything else - no absolute path, no "..", no symlink pointing out. A run that
-names none cannot touch the filesystem at all.`
+anything else - no absolute path, no "..", no symlink pointing out. Those come
+from the program's own # attributes (§17), or from --dir for a program that
+declares none.`
 
 // What the CLI was asked to do, parsed out of argv as a plain value: no
 // printing and no os.exit in here, so main stays a thin dispatch over the
@@ -57,6 +62,8 @@ Cli_Options :: struct {
   named_dirs: [dynamic]Named_Dir,
   // --log <path>: where `hb dap` writes its protocol trace, or "" for none.
   dap_log: string,
+  // --override: the options above beat the program's own attributes (§17).
+  override: bool,
 }
 
 // -h/--version win wherever they appear (`hb -i --help` prints help rather
@@ -83,6 +90,8 @@ parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: b
       i += 1
       if i >= len(args) do return opts, "--log requires a path argument", false
       opts.dap_log = args[i]
+    case "--override":
+      opts.override = true
     case "--dir":
       i += 1
       if i >= len(args) do return opts, "--dir requires a <name>=<path> argument", false
@@ -95,7 +104,9 @@ parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: b
       name := args[i][:eq]
       path := args[i][eq + 1:]
       if name == "" do return opts, fmt.tprintf("--dir %s has an empty name", args[i]), false
-      if path == "" do return opts, fmt.tprintf("--dir %s has an empty path", args[i]), false
+      // An empty path is deliberately allowed: `--dir here=` with --override
+      // removes a directory the program's attributes declared (§17), and
+      // means nothing without one.
       for existing in opts.named_dirs {
         if existing.name == name {
           return opts, fmt.tprintf("--dir %s= given twice", name), false
@@ -167,14 +178,7 @@ main :: proc() {
 // `hb <file>`. Every failure here is fatal to the process; eval_source_file
 // below is the same work without the printing or the exiting.
 run_file :: proc(path_str: string, show_ast: bool, opts: Cli_Options) {
-  dirs, dir_err, dir_ok := open_root_dirs(opts.cache_dir, opts.named_dirs[:])
-  if !dir_ok {
-    fmt.eprintfln("error: %s", dir_err)
-    os.exit(1)
-  }
-  defer close_root_dirs(dirs)
-
-  formatted, err_msg, ok := eval_source_file(path_str, show_ast, dirs)
+  formatted, err_msg, ok := eval_source_file(path_str, show_ast, opts)
   if !ok {
     // An empty message means the parse errors were already printed as part
     // of the AST, which is the only way to make sense of them.
@@ -191,7 +195,7 @@ run_file :: proc(path_str: string, show_ast: bool, opts: Cli_Options) {
 // grants `io` by default (§9) - the same environment the REPL and the live
 // editor evaluate under. Split out of run_file so the examples can be run
 // end to end as tests (examples_test.odin).
-eval_source_file :: proc(path_str: string, show_ast: bool, dirs: Root_Dirs) -> (formatted: string, err_msg: string, ok: bool) {
+eval_source_file :: proc(path_str: string, show_ast: bool, opts: Cli_Options) -> (formatted: string, err_msg: string, ok: bool) {
   source, errno := load_source_file(path_str)
   if errno != .None {
     return "", fmt.tprintf("could not read %s (%v)", path_str, errno), false
@@ -209,6 +213,19 @@ eval_source_file :: proc(path_str: string, show_ast: bool, dirs: Root_Dirs) -> (
     if !show_ast do print_ast(&ast, src) // errors always need the tree to make sense of them
     return "", "", false
   }
+
+  // What the program says about its own inputs (§17), reconciled with what
+  // this run was told - refused outright if the two disagree and --override
+  // was not given.
+  inputs, inputs_err, inputs_ok := resolve_run_inputs(
+    ast.attributes, dir_of_source(path_str), opts.named_dirs[:], opts.cache_dir, opts.override,
+  )
+  if !inputs_ok do return "", inputs_err, false
+  defer run_inputs_destroy(inputs)
+
+  dirs, dir_err, dir_ok := open_root_dirs(inputs.cache_dir, inputs.named_dirs)
+  if !dir_ok do return "", dir_err, false
+  defer close_root_dirs(dirs)
 
   interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(dirs)}
   // eval_program, not eval: it also resolves a bare top-level `async` (§2)

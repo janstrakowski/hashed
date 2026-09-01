@@ -83,14 +83,8 @@ If a freshly built binary refuses to start with *"An Application Control policy 
 - **`./hb -a path/to/program.hb`** - print the full AST before evaluating. Works with `-e` too.
 - **`./hb --dir <name>=<path> ...`** - open `<path>` and hand it to the program as `ctx.dirs.<name>`. This is the *only* way a program reaches the filesystem: it can read and write inside the directories named here, by name, and cannot name anything else. Repeatable, so `--dir src=./src --dir out=/tmp/out` hands over two. A run with no `--dir` hands over nothing, and such a program cannot touch the filesystem at all. Any path the shell accepts works here - absolute, relative, `..` and all - because it is resolved before the program starts; the sub-paths a *program* writes may say none of that.
 
-  Every example that reads or writes carries the command line it needs on a `run:` line in its own header, so running one is a copy-and-paste:
-
-  ```sh
-  head -1 examples/option-picker.hb        # // run: hb --dir here=. option-picker.hb
-  cd examples && ../hb --dir here=. option-picker.hb
-  ```
-
-  The same flags go into a debug session's launch configuration, for the same reason: a program being debugged reaches exactly what it was given, and nothing else.
+  Most programs do not need this flag at all, because they say it themselves - see **Program attributes** below.
+- **`./hb --override ...`** - let the options above win over a program's own attributes. Without it, a program that declares its inputs refuses to be given different ones.
 - **`./hb --cache-dir <path> ...`** - override where `ctx.cache` writes to, and where `cached` keeps its entries (defaults to your XDG cache dir; `%LOCALAPPDATA%\hashedbuild` on Windows). Handy for a throwaway cache: point it somewhere temporary and `cached` starts from nothing.
 - **`hb dap`** - a debug adapter on stdin/stdout, for an editor to drive. Not something you run by hand; see [Debugging](#debugging) below.
 - **`./hb --help`**, **`./hb --version`** - usage and version.
@@ -127,6 +121,43 @@ The video's timing demo used a deliberately slow computation (a large lookup-hea
 Open `examples/async-basics.hb` in an editor - it reads two files with `async`, so both reads fire concurrently rather than one after the other, and each is only actually awaited once something (here, `concat`) needs its real value. `examples/async-table.hb` (concurrent entries in a `Table`) and `examples/async-branching.hb` (an untaken branch's `async` work still has to finish, per SPEC.md §2) are worth a look too.
 
 If you want to reproduce something closer to the video's *measured* 2-second comparison: `let t {0, 0, ..., 0}; t[1] + t[2] + ... + t[N]` (many bracket lookups into a large sequence-shaped table) gets slower roughly with `N²`; wrapping several of those in `async` and timing `hb` with and without it will show the same effect. Tune `N` for your machine.
+
+## Program attributes
+
+A program can declare how it is run, in a prologue before its expression
+(SPEC.md §17):
+
+```hashedbuild
+#Directory here .
+
+filetext (loadfile { .dir = ctx.dirs.here, .path = "notes.txt" })
+```
+
+`#Directory <name> <path>` opens a directory and hands it over as
+`ctx.dirs.<name>`; `#Cache-Dir <path>` says where `ctx.cache` and `cached`
+write. **Paths are relative to the source file**, so this runs from anywhere:
+
+```sh
+./hb examples/option-picker.hb      # no flags, from any directory
+```
+
+They are syntax rather than a comment convention, so a misspelling is a parse
+error rather than a line that quietly does nothing. And since `#arg` is a
+program in its own right, an attribute's name is capitalised and an implicit
+name's is not.
+
+A program that declares its inputs will not be handed different ones by
+accident:
+
+```sh
+./hb --dir here=/tmp prog.hb              # error: the two disagree
+./hb --override --dir here=/tmp prog.hb   # attributes, then this on top
+./hb --override --dir here= prog.hb       # an empty path removes one
+```
+
+The same is true of a debug session: a launch configuration that sets `dirs`
+for a program that declares its own is refused unless it also sets
+`overrideAttributes`.
 
 ## Debugging
 
@@ -206,14 +237,21 @@ in a fresh clone. For your own project:
   "type": "hashedbuild",
   "request": "launch",
   "name": "Run this file",
-  "program": "${file}",
-  "dirs": { "here": "${fileDirname}" }
+  "program": "${file}"
 }
 ```
 
-`dirs` is `--dir` written down: each entry becomes `ctx.dirs.<name>`, and it is
-the whole of what the program may read or write. Omit it and the program cannot
-touch the filesystem at all.
+That is the whole of it for a program that declares its own directories (§17).
+For one that does not, `dirs` is `--dir` written down - each entry becomes
+`ctx.dirs.<name>`, and it is the whole of what the program may read or write:
+
+```json
+  "dirs": { "here": "${fileDirname}" }
+```
+
+Setting it for a program that *does* declare its own is refused, exactly as on
+the command line, unless the configuration also sets
+`"overrideAttributes": true`.
 
 ### What the adapter supports
 

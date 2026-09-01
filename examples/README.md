@@ -75,20 +75,21 @@ the async examples; `link-to-optiona` is a symlink `files-symlink.hb` reads;
 
 ## Running one
 
-A program reaches only the directories the command line names (SPEC.md
-§9/§16), so an example that reads or writes carries its own command line on a
-`run:` line in its header - **as run from this directory**:
-
 ```sh
-cd examples
-head -1 files-sandboxed.hb          # // run: hb --dir here=. files-sandboxed.hb
-../hb --dir here=. files-sandboxed.hb
+./hb examples/files-sandboxed.hb    # from anywhere, with no flags
 ```
 
-The suite runs each example through that same line, and fails an example that
-touches the filesystem without one, or whose line names a different file - so
-what you copy is what is tested. Examples that compute without reading anything
-(most of them) need no line and no flags: `../hb guard-chain.hb`.
+An example that reads or writes declares the directories it uses in its own
+prologue (SPEC.md §17), and those paths are relative to the file - which is why
+no flags and no particular working directory are needed:
+
+```hashedbuild
+#Directory here .
+```
+
+The suite runs each example exactly that way, with no arguments at all, and
+fails an example that touches the filesystem without declaring anything. There
+is no second way to run one, so what is documented is what is tested.
 
 `async-branching.hb` writes `branch-*.marker` files into the directory its
 `run:` line hands it - this one, as evidence of which branches ran. `createfile`

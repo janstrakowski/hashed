@@ -430,3 +430,41 @@ Added 2026-08-27. A write-only, content-addressed blob store, its own type (dist
 - **Writing.** `createfile { .dir = ctx.cache, .content = <value> }` — note there's no `.path`; it wouldn't mean anything, since the name isn't caller-chosen. Writing content whose hash already has an entry on disk (from this run or an earlier one) **dedupes**: the existing entry is reused as-is, silently, rather than failing like an ordinary exclusive `createfile` or writing a redundant duplicate — this is what makes it a cache across runs, not just a one-shot content dump.
 - **The returned `File` is real, and displays like any other.** `createfile`'s result here is an ordinary `File` (§3, not the `ctx.cache` type itself) — per §3's general display rule, printing it (e.g. in the REPL or a debugger's variables pane) shows its actual absolute path on disk, same as any non-magic `File`. But there's still no builtin that lets HashedBuild source read that path back out as a `Utf8` value. The program can hold the handle and pass it around, but it never learns *where* its data physically landed; only a human inspecting the program's output does.
 - **Not searchable.** There's no `loadfile`/`symlink`/`readlink` counterpart for the cache - `.dir = ctx.cache` is only ever accepted by `createfile`. A program can't ask "is this content already cached?" directly; it can only write and let the store's own dedup decide. §15's `cached` does read entries back out of the same directory, but not through `ctx.cache`: it is its own syntax with its own keys, and shares nothing with this type beyond the directory the two write into.
+
+## 17. Program attributes
+
+Added 2026-09-01. A program is a function of an explicit argument and an implicit context (§2), and until now the context's *directories* (§9) came from whoever started it. That put a program's inputs in the command line rather than in the program, so the same file meant different things depending on how it was run, and nothing in it said what it needed.
+
+An **attribute** is a directive in a prologue, before the program's expression:
+
+```
+#Directory here .
+#Directory src ../src
+#Cache-Dir ./.hbcache
+
+let choice loadfile { .dir = ctx.dirs.here, .path = "choice.txt" } |> filetext;
+  …
+```
+
+**Grammar.** `#`, a name, then space-separated arguments, ending at a line break or a `;` — so two directives may share a line. The prologue is over at the first thing that is not a directive; comments may sit anywhere within it. Attributes are **syntax**, not a comment convention: an unknown name or a wrong argument count is a parse error, at that line, and the program does not run. A directive that quietly did nothing would be worse than none.
+
+**Why the name is capitalised.** `#` already introduces §9's implicit names, and `#arg` is a complete program. A lower-case `#name` is therefore always an expression and a capitalised one always an attribute; the two can never be confused, by the lexer or by a reader.
+
+**The attributes.**
+
+- **`#Directory <name> <path>`** — opens `<path>` and hands it to the program as `ctx.dirs.<name>` (§9/§16). Repeatable.
+- **`#Cache-Dir <path>`** — where `ctx.cache` and §15's `cached` keep entries.
+
+**Paths are relative to the source file**, not to whoever invoked it — which is what lets `hb examples/hashing.hb` work from any directory. This is the one place a path is resolved against something other than a handle, and it is resolved before the program starts, by the runtime rather than by the language: §16's rule that a program's own sub-paths may not say `.`, `..` or a root is untouched.
+
+**When the command line says something too.** A program that declares attributes has stated its inputs, so a run that also states them is refused — not merged, and not silently resolved either way:
+
+```
+hb prog.hb                        the attributes apply
+hb --dir out=/tmp prog.hb         error: the two disagree about who decides
+hb --override --dir out=/tmp ...  the attributes are read, then this on top
+```
+
+The refusal is deliberately not per-name. Two sources of truth for what a program may reach is the thing worth catching; which names happen to collide is beside the point.
+
+Under `--override` the command line is applied over the attributes, name by name: a name it sets replaces the file's, a name it does not is left as the file declared it, and **an empty path (`--dir here=`) removes one**. Without `--override` an empty path has nothing to remove and is ignored. A debug adapter's launch configuration is the same thing in JSON, with `overrideAttributes` for the flag (§16's tooling notes).

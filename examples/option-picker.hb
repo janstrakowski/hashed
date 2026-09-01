@@ -1,5 +1,5 @@
-// run: hb --dir here=. option-picker.hb
-//
+#Directory here .
+
 // Reads choice.txt out of `ctx.dirs.here` - the directory the run named with
 // `--dir here=.`, since a program reaches nothing it was not handed (§9/§16) -
 // then branches on its exact content: "option A" writes the result

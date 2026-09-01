@@ -1,5 +1,5 @@
-// run: hb --dir here=. cached.hb
-//
+#Directory here .
+
 // `cached` (SPEC.md §15): evaluate an expression once, and read the answer
 // back on every later run. Like `sha256`, `func` and `async`, it is a bare
 // keyword prefix taking one trailing expression - no parentheses of its own.

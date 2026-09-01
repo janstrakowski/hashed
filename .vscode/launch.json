@@ -5,15 +5,13 @@
       "type": "hashedbuild",
       "request": "launch",
       "name": "Run the open .hb file",
-      "program": "${file}",
-      "dirs": { "here": "${fileDirname}" }
+      "program": "${file}"
     },
     {
       "type": "hashedbuild",
       "request": "launch",
       "name": "Run examples/option-picker.hb",
-      "program": "${workspaceFolder}/examples/option-picker.hb",
-      "dirs": { "here": "${workspaceFolder}/examples" }
+      "program": "${workspaceFolder}/examples/option-picker.hb"
     }
   ]
 }

@@ -102,9 +102,13 @@ test_parse_args_rejects_a_malformed_or_repeated_dir :: proc(t: ^testing.T) {
   testing.expect(t, !empty_name_ok, "a --dir needs a name")
   testing.expect(t, strings.contains(empty_name_err, "empty name"))
 
-  _, empty_path_err, empty_path_ok := parse_args([]string{"--dir", "src="})
-  testing.expect(t, !empty_path_ok, "a --dir needs a path")
-  testing.expect(t, strings.contains(empty_path_err, "empty path"))
+  // An empty path is not malformed: with --override it removes a directory
+  // the program's own attributes declared (SPEC.md §17), and without one it
+  // is ignored.
+  empty_path, _, empty_path_ok := parse_args([]string{"--dir", "src=", "prog.hb"})
+  testing.expect(t, empty_path_ok, "--dir src= is how an attribute is removed")
+  testing.expect_value(t, len(empty_path.named_dirs), 1)
+  testing.expect_value(t, empty_path.named_dirs[0].path, "")
 
   // Two handles under one name would leave which one wins to table_find.
   _, dup_err, dup_ok := parse_args([]string{"--dir", "src=./a", "--dir", "src=./b"})

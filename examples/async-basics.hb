@@ -1,5 +1,5 @@
-// run: hb --dir here=. async-basics.hb
-//
+#Directory here .
+
 // The simplest possible `async` (SPEC.md §2): two independent reads fire
 // concurrently rather than one after the other, each resolved (awaited)
 // automatically the moment `concat` actually needs a concrete value from it -

@@ -222,6 +222,12 @@ dap_handle_request :: proc(s: ^Dap_Session, msg: json.Object) {
 // and they are the command line's: `program`, plus `dirs` naming what the
 // program may reach (§9/§16) and an optional `cacheDir`. A launch config is a
 // written-down `hb --dir name=path program.hb`.
+//
+// A program that declares its own inputs (§17) needs none of that: `program`
+// alone is a complete configuration. Saying both is the same conflict the
+// command line has, and refused the same way unless the config also sets
+// `overrideAttributes` - the debugger is not a way around what a file says
+// about itself.
 @(private = "file")
 dap_launch :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
   program := strings.clone(jv_str(args, "program"), context.temp_allocator)
@@ -245,13 +251,6 @@ dap_launch :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
       append(&named, Named_Dir{name = strings.clone(name), path = strings.clone(string(path))})
     }
   }
-  dirs, dir_err, dir_ok := open_root_dirs(jv_str(args, "cacheDir"), named[:])
-  if !dir_ok {
-    dap_error(seq, "launch", dir_err)
-    return
-  }
-  s.dirs = dirs
-
   source, errno := load_source_file(program)
   if errno != .None {
     dap_error(seq, "launch", fmt.tprintf("could not read %s (%v)", program, errno))
@@ -259,6 +258,28 @@ dap_launch :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
   }
   src := strings.clone(string(source.data[:source.n_bytes]))
   free_source_file(source)
+
+  attrs := scan_attributes(src)
+  defer attributes_destroy(&attrs)
+  if len(attrs.errors) > 0 {
+    dap_error(seq, "launch", fmt.tprintf("%s: %s", program, attrs.errors[0].message))
+    return
+  }
+  inputs, inputs_err, inputs_ok := resolve_run_inputs(
+    attrs, dir_of_source(program), named[:], jv_str(args, "cacheDir"), jv_bool(args, "overrideAttributes"),
+  )
+  if !inputs_ok {
+    dap_error(seq, "launch", inputs_err)
+    return
+  }
+  defer run_inputs_destroy(inputs)
+
+  dirs, dir_err, dir_ok := open_root_dirs(inputs.cache_dir, inputs.named_dirs)
+  if !dir_ok {
+    dap_error(seq, "launch", dir_err)
+    return
+  }
+  s.dirs = dirs
 
   s.run = start_debugger_run(program, src, dirs)
   if s.run == nil {

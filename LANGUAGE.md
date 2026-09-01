@@ -370,18 +370,32 @@ directory hands over none, and such a program cannot touch the filesystem at
 all.**
 
 ```sh
-hb --dir here=examples examples/option-picker.hb   # ctx.dirs.here
+hb examples/option-picker.hb                       # it declares its own (§17)
 hb --dir src=./src --dir out=/tmp/out prog.hb      # repeatable
-hb prog.hb                                         # reaches nothing
+hb prog.hb                                         # declares none: reaches nothing
 ```
 
-That makes a program's inputs visible in how it is run, which is why every
-example here that touches the filesystem carries its own command line on a
-`run:` line in its header — the flags are part of the example:
+Better still, a program can declare its own directories, and then it needs no
+flags at all. A **program attribute** (§17) is a directive in a prologue before
+the expression:
 
 ```hashedbuild
-// run: hb --dir here=. option-picker.hb
+#Directory here .
+#Directory src ../src
+
+loadfile { .dir = ctx.dirs.here, .path = "notes.txt" }
 ```
+
+Paths there are relative to **the source file**, so `hb examples/hashing.hb`
+works from anywhere. Attributes are syntax, not a comment convention: a
+misspelled one is a parse error rather than a directive nobody applied. And
+because `#arg` is a perfectly good program, an attribute's name is capitalised
+and an implicit name's is not — the two can never be confused.
+
+A program that declares its inputs refuses to be given different ones: if the
+command line also sets directories, that is an error, and `--override` is how
+you insist (the attributes are read, then the command line is applied on top,
+name by name; `--dir here=` removes one).
 
 A directory `File` — from `ctx.dirs.<name>`, or from a `loadfile` that returned
 one — doubles as a handle for the next call down, so a tree is traversed by

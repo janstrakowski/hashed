@@ -1,5 +1,5 @@
-// run: hb --dir here=. hashing-directories.hb
-//
+#Directory here .
+
 // A directory `File`'s hash (SPEC.md §3). A directory is a value like any
 // other, so `sha256` answers for one - but its children are on the disk rather
 // than in the value, which makes this the one digest that reads.

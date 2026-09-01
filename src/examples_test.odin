@@ -21,23 +21,18 @@ import "core:testing"
 // compile time from the source location - `odin test` promises no particular
 // working directory, and CI checks out somewhere else entirely.
 
-// An example's directories come from its own `run:` line (run_line.odin), the
-// same line a reader copies - so the suite cannot run an example in a way the
-// file does not document, and an example whose line is wrong fails here rather
-// than working by luck. An example with no `run:` line gets no directories at
-// all, which is exactly what `hb <file>` would give it (§9/§16).
+// Exactly `hb <file>`: no arguments at all, so an example's directories come
+// from its own `#Directory` attributes (§17) and nothing else. That is the
+// point of them - the suite cannot run an example in a way the file does not
+// itself describe, because there is no other way to run it.
+//
+// `--cache-dir` is the one thing supplied here, since a test must not write
+// into the developer's real cache; a program that declares `#Cache-Dir` would
+// conflict with that, and none of the examples does.
 @(private = "file")
 run_example :: proc(path: string, cache: string) -> (formatted: string, err_msg: string, ok: bool) {
-  source, errno := load_source_file(path)
-  if errno != .None do return "", fmt.tprintf("could not read %s (%v)", path, errno), false
-  run := parse_run_line(string(source.data[:source.n_bytes]), dir_of_source(path))
-  free_source_file(source)
-  defer run_line_destroy(run)
-
-  dirs, dir_err, dir_ok := open_root_dirs(cache, run.named_dirs)
-  if !dir_ok do return "", dir_err, false
-  defer close_root_dirs(dirs)
-  return eval_source_file(path, false, dirs)
+  opts := Cli_Options{cache_dir = cache, override = true}
+  return eval_source_file(path, false, opts)
 }
 
 @(private = "file")
@@ -184,13 +179,11 @@ test_example_files_sandboxed_displays_real_paths :: proc(t: ^testing.T) {
   testing.expect_value(t, formatted, expected)
 }
 
-// An example that reads or writes needs its directories named on its own
-// `run:` line, since a program is handed nothing otherwise (§9/§16) - and the
-// line has to name the file it sits in, which is what catches one copied from
-// a neighbour and not edited. Both are mechanical: an example that forgets
-// either fails here rather than at the moment someone tries to run it.
+// An example that reads or writes has to declare the directories it uses
+// (§17), since a program is handed nothing otherwise (§9/§16). Mechanical, so
+// that forgetting fails here rather than at the moment someone runs it.
 @(test)
-test_every_filesystem_example_carries_its_run_line :: proc(t: ^testing.T) {
+test_every_filesystem_example_declares_its_directories :: proc(t: ^testing.T) {
   checked := 0
   for name in read_dir_names(fmt.tprintf("%s/examples", repo_root())) {
     if !strings.has_suffix(name, ".hb") do continue
@@ -200,17 +193,24 @@ test_every_filesystem_example_carries_its_run_line :: proc(t: ^testing.T) {
     defer free_source_file(source)
     src := string(source.data[:source.n_bytes])
 
-    run := parse_run_line(src, dir_of_source(path))
-    defer run_line_destroy(run)
-
     // `.dir =` rather than the builtins' own names: hashing-functions.hb
     // mentions `loadfile` as a *value* (`sha256 loadfile`) without ever
     // calling it, and reads nothing.
     if !strings.contains(src, ".dir =") do continue
     checked += 1
-    if !testing.expect(t, run.found, fmt.tprintf("examples/%s reads or writes but has no `// run:` line", name)) do continue
-    testing.expect_value(t, run.file, name)
-    testing.expect(t, len(run.named_dirs) > 0, fmt.tprintf("examples/%s names no directory to run against", name))
+
+    attrs := scan_attributes(src)
+    defer attributes_destroy(&attrs)
+    dirs := attribute_dirs(attrs, dir_of_source(path))
+    defer {
+      for d in dirs {
+        delete(d.name)
+        delete(d.path)
+      }
+      delete(dirs)
+    }
+    testing.expect(t, len(dirs) > 0,
+      fmt.tprintf("examples/%s reads or writes but declares no #Directory", name))
   }
   testing.expect(t, checked >= 8, "found fewer filesystem examples than there are - is the scan working?")
 }

@@ -85,7 +85,13 @@ open_root_dirs :: proc(cache_dir: string, named: []Named_Dir) -> (dirs: Root_Dir
         close_root_dirs(Root_Dirs{named = handles[:i]})
         return {}, fmt.tprintf("could not open %s as ctx.dirs.%s (%v)", nd.path, nd.name, err), false
       }
-      handles[i] = Named_Handle{name = nd.name, handle = handle}
+      // Cloned, not borrowed. A handle lives as long as the run does, while
+      // the name it came from belongs to whatever parsed it - a request that
+      // has already been answered, in the debug adapter's case. Borrowing it
+      // once left ctx.dirs keyed on freed memory, which showed up as a
+      // garbled name and a lookup that failed only sometimes; keeping the
+      // copy here means no caller can make that mistake again.
+      handles[i] = Named_Handle{name = strings.clone(nd.name), handle = handle}
     }
     dirs.named = handles
   }
@@ -95,7 +101,11 @@ open_root_dirs :: proc(cache_dir: string, named: []Named_Dir) -> (dirs: Root_Dir
 // Releases what open_root_dirs opened, at the end of a run rather than per
 // evaluation - see Root_Dirs on why these last as long as the process.
 close_root_dirs :: proc(dirs: Root_Dirs) {
-  for n in dirs.named do fs_close(n.handle.dir_fd)
+  for n in dirs.named {
+    fs_close(n.handle.dir_fd)
+    delete(n.name)
+  }
+  delete(dirs.named)
 }
 
 // A directory File for a path the *runtime* was handed (§9's ctx.dirs, one
