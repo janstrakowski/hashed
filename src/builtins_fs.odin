@@ -132,6 +132,15 @@ ctx_allows_io :: proc(interp: ^Interpreter) -> bool {
   return ctx_has_permission(interp, "io")
 }
 
+// A copy of `ctx` with `anypath` dropped and `workdir` granted - i.e. one
+// whose handle-less paths are contained to ctx.dir. Built out of the same
+// chperm machinery a program would use, so there is nothing a host can reach
+// here that a HashedBuild expression could not do to itself.
+ctx_contained_to_workdir :: proc(ctx: Value) -> Value {
+  narrowed := apply_chperm_pair(ctx, "anypath", false)
+  return apply_chperm_pair(narrowed, "workdir", true)
+}
+
 // §9's permissions are a Table used as a set: granted iff the key is *present*,
 // whatever its (always-`nothing`) value. Read live off the call site, never
 // captured - that is what lets a wrapping `withctx`/`chctx` restrict a builtin
@@ -765,9 +774,12 @@ apply_chperm :: proc(interp: ^Interpreter, closure: Value, old_ctx: Value) -> (V
   closure_t, _ := closure.(^Table_Value)
   name_val, _ := table_find(closure_t, "name")
   enabled_val, _ := table_find(closure_t, "enabled")
-  name_str := name_val.(string)
-  enabled := enabled_val.(bool)
+  return apply_chperm_pair(old_ctx, name_val.(string), enabled_val.(bool)), true
+}
 
+// The edit itself, without the Function wrapper - so a host (main.odin's
+// Run_Options) can make the same change directly.
+apply_chperm_pair :: proc(old_ctx: Value, name_str: string, enabled: bool) -> Value {
   old_t, old_is_table := old_ctx.(^Table_Value)
   old_perms: ^Table_Value
   if old_is_table {
@@ -795,5 +807,5 @@ apply_chperm :: proc(interp: ^Interpreter, closure: Value, old_ctx: Value) -> (V
     }
   }
   append(&new_ctx.entries, Table_Entry_Value{key = "permissions", value = new_perms})
-  return new_ctx, true
+  return new_ctx
 }

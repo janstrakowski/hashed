@@ -71,6 +71,16 @@ File_Value :: struct {
   // it is then - which is how a build observes a change.)
   dir_digest:         Value_Digest,
   dir_digest_known:   bool,
+
+  // Regular only, and **not part of any hash** - exactly as Fs_Dir_Entry's
+  // field of the same name isn't (§3 carries no permission bit, and hash.odin
+  // says why). It is here for the same reason cache_store.odin already puts
+  // the bit back when it copies a tree: a build step that produced a program
+  // and got back something that could no longer be run would be a poor trade.
+  // `exec` sets it on the outputs it collects, and honours it on the inputs it
+  // materialises, which is what lets one step's linked binary be the next
+  // step's command.
+  is_executable:      bool,
 }
 
 // SPEC.md §9's ctx.cache: a write-only, content-addressed blob store rooted

@@ -284,6 +284,18 @@ builtin_exec :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, bool
     }
   }
 
+  // A .cmd naming a path ("./cjson-demo") means "in the directory this run
+  // happens in" - which is the only directory the program can see anyway. It
+  // has to be made absolute here: the exec-family lookup checks the name
+  // against the *parent's* working directory, before the child ever changes
+  // into the scratch, so a relative one would be looked for in the wrong
+  // place. A bare name ("clang") is left alone and found on PATH as usual.
+  if strings.index_byte(cmd, '/') >= 0 && !is_absolute_path(cmd) {
+    trimmed := cmd
+    if strings.has_prefix(trimmed, "./") do trimmed = trimmed[2:]
+    command[0] = strings.concatenate({scratch_path, "/", trimmed}, context.temp_allocator)
+  }
+
   desc := os.Process_Desc{working_dir = scratch_path, command = command[:]}
 
   // .stdin is handed over as a real file inside the scratch rather than a
@@ -343,6 +355,7 @@ builtin_exec :: proc(interp: ^Interpreter, _: Value, arg: Value) -> (Value, bool
 }
 
 EXEC_STDIN_NAME :: ".hb-exec-stdin"
+
 
 // A program's output is whatever bytes it chose to write, which need not be
 // text at all. Utf8 is the only shape the language has for it, so invalid

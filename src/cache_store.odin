@@ -186,7 +186,22 @@ open_as_file_value :: proc(dir_fd: Fs_Fd, name: string, is_dir: bool, display: s
   if read_err != .None do return nil, fmt.tprintf("could not read %s (%v)", name, read_err)
   fv.kind = .Regular
   fv.content = content
+  fv.is_executable = is_executable_at(dir_fd, name)
   return fv, ""
+}
+
+// Whether a name in an open directory is executable. Read off the directory
+// listing, which is the one place the fs layer reports the bit (Fs_Dir_Entry);
+// there is no single-name stat for it. §3 hashes no permission bit, so this
+// changes no digest - it is carried so that a program does not stop being one
+// by passing through the cache, or through `exec`'s scratch directory.
+is_executable_at :: proc(dir_fd: Fs_Fd, name: string) -> bool {
+  entries, err := fs_list_entries_at(dir_fd, context.temp_allocator)
+  if err != .None do return false
+  for entry in entries {
+    if entry.name == name do return entry.is_executable
+  }
+  return false
 }
 
 // ---- store ------------------------------------------------------------------
@@ -335,7 +350,7 @@ collect_files :: proc(v: Value, out: ^[dynamic]^File_Value, seen: ^map[^Table_Va
 // round-tripping identically through a build step and through the cache.
 
 write_file_value :: proc(dir_fd: Fs_Fd, name: string, fv: ^File_Value) -> string {
-  if fv.kind == .Regular do return write_bytes(dir_fd, name, fv.content, false)
+  if fv.kind == .Regular do return write_bytes(dir_fd, name, fv.content, fv.is_executable)
 
   if err := fs_mkdir_at(dir_fd, name); err != .None {
     return fmt.tprintf("could not create %s (%v)", name, err)

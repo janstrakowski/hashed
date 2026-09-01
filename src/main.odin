@@ -152,10 +152,32 @@ run_file :: proc(path_str: string, show_ast: bool, cache_dir: string) {
 // grants `io` by default (§9) - the same environment the REPL and the live
 // editor evaluate under. Split out of run_file so the examples can be run
 // end to end as tests (examples_test.odin).
-eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) -> (formatted: string, err_msg: string, ok: bool) {
+// How a run of a source file is set up, beyond the path itself. Split out so
+// hashmake (tools/hashmake) can ask for the same evaluation under a narrowed
+// context without duplicating any of the plumbing below.
+Run_Options :: struct {
+  show_ast:  bool,
+  cache_dir: string, // "" resolves the XDG default (SPEC.md §9/§16)
+  // Drop `anypath` and grant `workdir`, so handle-less paths in the program
+  // are contained to ctx.dir - the source file's own directory. What hashmake
+  // uses so a build description cannot read outside its project.
+  contain_to_workdir: bool,
+}
+
+// What to do with the value a source file evaluated to, while the AST and the
+// interpreter that produced it are still alive. A callback rather than a
+// return, because a Function value points into the AST (Function_Value.body is
+// a Node_Idx) - handing one back past ast_destroy would hand back a dangling
+// reference, and hashmake's whole job is calling functions out of the graph it
+// just evaluated.
+Source_Value_Proc :: proc(interp: ^Interpreter, value: Value, userdata: rawptr) -> bool
+
+// Runs a source file and hands the result to `on_value`. Everything
+// eval_source_file used to do inline, so the two cannot drift.
+eval_source_file_run :: proc(path_str: string, opts: Run_Options, on_value: Source_Value_Proc, userdata: rawptr) -> (err_msg: string, ok: bool) {
   source, errno := load_source_file(path_str)
   if errno != .None {
-    return "", fmt.tprintf("could not read %s (%v)", path_str, errno), false
+    return fmt.tprintf("could not read %s (%v)", path_str, errno), false
   }
   defer free_source_file(source)
 
@@ -163,15 +185,15 @@ eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) ->
   ast := parse(source, ast_t{})
   defer ast_destroy(&ast)
 
-  if show_ast {
+  if opts.show_ast {
     print_ast(&ast, src)
   }
   if len(ast.errors) > 0 {
-    if !show_ast do print_ast(&ast, src) // errors always need the tree to make sense of them
-    return "", "", false
+    if !opts.show_ast do print_ast(&ast, src) // errors always need the tree to make sense of them
+    return "", false
   }
 
-  interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(cache_dir)}
+  interp := Interpreter{ast = &ast, src = src, current_ctx = make_root_context(opts.cache_dir)}
   // Unsandboxed loadfile/createfile calls (no .dir given) resolve relative
   // paths against the source file's own directory, not the process's cwd -
   // filepath.dir returns "" (not ".") for a bare filename with no directory
@@ -190,14 +212,37 @@ eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) ->
   }
   defer if dir_errno == .None do fs_close(dir_fd)
 
+  if opts.contain_to_workdir {
+    interp.current_ctx = ctx_contained_to_workdir(interp.current_ctx)
+  }
+
   // eval_program, not eval: it also resolves a bare top-level `async` (§2)
   // and waits for any task nothing awaited, so the program can't exit with
   // work half-done (eval_async.odin).
   val, eval_ok := eval_program(&interp, ast.root, make_global_env())
   if !eval_ok {
-    return "", strings.clone(interp.error_message), false
+    return strings.clone(interp.error_message), false
   }
-  return format_value(val), "", true
+  if !on_value(&interp, val, userdata) do return "", false
+  return "", true
+}
+
+@(private = "file")
+Format_Result :: struct { out: string }
+
+@(private = "file")
+format_the_value :: proc(interp: ^Interpreter, value: Value, userdata: rawptr) -> bool {
+  (^Format_Result)(userdata).out = format_value(value)
+  return true
+}
+
+// Runs a source file and returns its value already formatted. Exists so the
+// examples can be run end to end as tests.
+eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) -> (formatted: string, err_msg: string, ok: bool) {
+  result := Format_Result{}
+  err_msg, ok = eval_source_file_run(path_str, Run_Options{show_ast = show_ast, cache_dir = cache_dir}, format_the_value, &result)
+  if !ok do return "", err_msg, false
+  return result.out, "", true
 }
 
 // A real read-eval-print loop: accumulates lines into a snippet, evaluates it
