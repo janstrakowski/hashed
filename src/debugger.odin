@@ -260,6 +260,11 @@ stop_reason_locked :: proc(
 
   if len(dbg.breakpoints) > 0 && breakpoint_fires(dbg, interp, phase, node) do return "breakpoint", true
 
+  // Everything below is a *step*, and a step only stops somewhere worth
+  // looking at (is_step_stop). A breakpoint and a failure, above, stop
+  // wherever they are.
+  if !is_step_stop(dbg, node) do return "", false
+
   switch dbg.mode {
   case .Running:
     return "", false
@@ -326,6 +331,55 @@ breakpoint_fires :: proc(dbg: ^Debugger_Run, interp: ^Interpreter, phase: Debug_
 
   append(&interp.bp_open, Bp_Open{line = line, node = node})
   return true
+}
+
+// Whether a *step* stops here. Both of these are nodes the evaluator really
+// does run - a breakpoint on one still fires, and so does a failure - but
+// stepping through them says nothing:
+//
+//   - **Root**, which wraps the program's single expression and has exactly
+//     its span. Stopping at both means pressing F11 twice to see the same
+//     text, which reads as the debugger having missed a step.
+//   - **A literal.** `7 => 7` is not news: the value of a literal is what it
+//     is written as, which is already on the screen. `7 / 2` is one step, as
+//     "literal / literal" ought to be.
+//
+// The exception is a program that *is* a literal - `hb -e 7`. Skipping both
+// Root and the literal would leave such a run with nowhere to stop at all, so
+// the top-level expression always stops, whatever it is.
+@(private = "file")
+is_step_stop :: proc(dbg: ^Debugger_Run, node: Node_Idx) -> bool {
+  if node == dbg.ast.root do return false
+  #partial switch dbg.ast.nodes[node].kind {
+  case .Number_Literal, .String_Literal, .Nothing_Literal:
+    return node == top_expression(dbg)
+  case .Unary_Expr:
+    // `-2` is how a negative literal is written, so it says no more than `2`
+    // does. `-x` is a different matter and still stops.
+    if operand_is_literal(dbg, node) do return node == top_expression(dbg)
+  }
+  return true
+}
+
+@(private = "file")
+operand_is_literal :: proc(dbg: ^Debugger_Run, node: Node_Idx) -> bool {
+  n := dbg.ast.nodes[node]
+  if n.children_count < 2 do return false
+  // [op_leaf, operand]
+  operand := dbg.ast.extra_children[n.children_start + 1]
+  #partial switch dbg.ast.nodes[operand].kind {
+  case .Number_Literal, .String_Literal, .Nothing_Literal:
+    return true
+  }
+  return false
+}
+
+// Root's only child: the expression the program actually is.
+@(private = "file")
+top_expression :: proc(dbg: ^Debugger_Run) -> Node_Idx {
+  root := dbg.ast.nodes[dbg.ast.root]
+  if root.children_count == 0 do return dbg.ast.root
+  return dbg.ast.extra_children[root.children_start]
 }
 
 // The line an expression starts on. A node that spans several lines belongs

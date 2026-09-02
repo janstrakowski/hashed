@@ -272,32 +272,58 @@ describe("hb dap", function () {
     assert.strictEqual(frame.line, 7, "line 7 of arith.hb, not line 9 of the other file");
   });
 
-  // A Table entry is a step of its own: `eval` never runs on one, but someone
-  // walking a Table literal expects to pass through `.int_div = 7 / 2` before
-  // its value, and to see what the entry came to on the way out.
-  it("steps through a Table entry, not straight into its value", async () => {
+  // What a step lands on, in order. Two things are being pinned here at once:
+  // a Table entry is a step of its own - `eval` never runs on one, but someone
+  // walking a Table expects to pass through `.int_div = 7 / 2` on the way to
+  // its value - and a literal is not, because `7 => 7` says nothing that
+  // reading the line does not. So `7 / 2` is one step, as "literal divided by
+  // literal" ought to be.
+  it("steps through entries and expressions, and not through literals", async () => {
     await session(dc, { program: fixture("multiline.hb"), breakpoints: [9] });
     const stopped = await dc.waitForEvent("stopped");
     assert.strictEqual(stopped.body.description, "-> .int_div = 7 / 2");
 
-    // Into the entry's value, then out of it, then out of the entry itself.
     const seen = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 5; i++) {
       await dc.stepInRequest({ threadId: 1 });
       seen.push((await dc.waitForEvent("stopped")).body.description);
     }
     assert.deepStrictEqual(seen, [
       "-> 7 / 2",
-      "-> 7",
-      "7 => 7",
-      "-> 2",
-      "2 => 2",
       "7 / 2 => 3",
+      ".int_div = 7 / 2 => 3",
+      "-> .doubled = 4 + 4",
+      "-> 4 + 4",
     ]);
+  });
+
+  // Root wraps the program's one expression and has exactly its span, so
+  // stopping at both is pressing F11 twice to see the same text. And a
+  // program that *is* a literal still has to stop somewhere: skipping both
+  // would leave `stopOnEntry` with nowhere to go.
+  it("does not stop twice on the program's own expression", async () => {
+    await session(dc, { program: fixture("multiline.hb"), stopOnEntry: true });
+    const first = await dc.waitForEvent("stopped");
+    assert.match(first.body.description, /^-> \{ \.int_div/);
 
     await dc.stepInRequest({ threadId: 1 });
-    const out = await dc.waitForEvent("stopped");
-    assert.strictEqual(out.body.description, ".int_div = 7 / 2 => 3");
+    const second = await dc.waitForEvent("stopped");
+    assert.strictEqual(second.body.description, "-> .int_div = 7 / 2", "the next step is inside it");
+  });
+
+  // A frame is a *range*, and a client that gets only one end of it guesses
+  // at the other: VS Code highlighted `7` for a run stopped on `7 / 2`, and
+  // the whole Table for one stopped on the `{`.
+  it("locates a frame at both ends of the expression", async () => {
+    await session(dc, { program: fixture("multiline.hb"), breakpoints: [9] });
+    await dc.waitForEvent("stopped");
+
+    const { frame } = await whereIsIt(dc);
+    assert.strictEqual(frame.line, 9);
+    assert.strictEqual(frame.endLine, 9);
+    // `  .int_div = 7 / 2,` - the entry runs from column 3 to just past the 2.
+    assert.strictEqual(frame.column, 3);
+    assert.strictEqual(frame.endColumn, 19);
   });
 
   // Two clients, two orders. VS Code launches first and configures after;

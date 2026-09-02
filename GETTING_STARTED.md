@@ -208,12 +208,23 @@ a descent and then a commentary:
 
 ```
 -> loadfile { .dir = ctx.dirs.here, .path = "choice.txt" }
+-> loadfile
+   loadfile => <function>
+-> { .dir = ctx.dirs.here, .path = "choice.txt" }
+-> .dir = ctx.dirs.here
 -> ctx.dirs.here
 -> ctx.dirs
--> ctx
-   ctx => {permissions: {io: nothing}, cache: <cache>, dirs: {here: <directory: ...>}}
-   ctx.dirs => {here: <directory: ...>}
+   ...
 ```
+
+It stops at everything the evaluator runs, with two exceptions that would only
+be noise. **A literal is not a step**: `7 => 7` says no more than reading the
+line does, so `7 / 2` is one step, as "literal divided by literal" should be
+(and so is `-2`, which is just how a negative literal is written). And the
+node wrapping a program's single expression is not a step either, since it
+covers exactly the same text - stopping at both would be pressing F11 twice to
+see the same thing. A program that *is* a literal still stops, or there would
+be nowhere for `stopOnEntry` to stop.
 
 Step Over is the other one worth knowing, and it is measured in expressions
 rather than in function calls: from `-> 2 + 3 * 4` it runs the whole thing and

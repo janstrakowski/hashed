@@ -626,6 +626,10 @@ dap_write_frame :: proc(w: ^Json_Writer, s: ^Dap_Session, id: int, name: string,
   jw_kint(w, "line", dap_line_out(s, line))
   jw_kint(w, "column", dap_column_out(s, column_of_offset(s.run.src, s.run.lines, span.start)))
   jw_kint(w, "endLine", dap_line_out(s, line_of_offset(s.run.lines, span.end)))
+  // Both ends, or a client has half a range and guesses at the rest: without
+  // this VS Code highlighted `7` where the run had stopped on `7 / 2`, and the
+  // whole Table where it had stopped on the `{`.
+  jw_kint(w, "endColumn", dap_column_out(s, column_of_offset(s.run.src, s.run.lines, span.end)))
   jw_obj_end(w)
 }
 
