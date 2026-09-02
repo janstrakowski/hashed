@@ -10,6 +10,13 @@
     {
       "type": "hashedbuild",
       "request": "launch",
+      "name": "Step through the open .hb file",
+      "program": "${file}",
+      "stopOnEntry": true
+    },
+    {
+      "type": "hashedbuild",
+      "request": "launch",
       "name": "Run examples/option-picker.hb",
       "program": "${workspaceFolder}/examples/option-picker.hb"
     }

@@ -183,7 +183,28 @@ language is:
   filesystem at all.
 
 `async` (§2) tasks are real OS threads, so they appear as threads — the program
-is thread 1 — and they stop together.
+is thread 1 — and they stop together. They also run *concurrently*, so stepping
+through a program with `async` in it walks both tasks at once: the line jumps
+back and forth between them, because that is what the program is really doing.
+
+### Walking a whole program
+
+**Continue** (F5) runs to the next breakpoint, so a program with no breakpoint
+left to hit finishes on the first click. To see every step instead, launch with
+`"stopOnEntry": true` — this repository's *Step through the open .hb file*
+configuration does — and use the step buttons from there:
+
+| | | |
+| --- | --- | --- |
+| **Step Into** | F11 | the next expression to finish, wherever it is - the one to hold down to see everything |
+| **Step Over** | F10 | the next expression to finish *outside* any call this one makes |
+| **Step Out** | Shift+F11 | run until the call you are inside of returns |
+
+Remember that a stop is *after* an expression, so stepping reads as a running
+commentary of what each piece came to: `ctx.dirs.here => <directory: ...>`, then
+the Table it goes into, then the `loadfile` that Table was for. The status line
+at the top of the Call Stack view shows it, and the **Result** scope holds the
+value.
 
 ### nvim-dap
 
