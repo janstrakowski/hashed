@@ -65,10 +65,7 @@
               },
               "dirs": {
                 "type": "object",
-                "description": "name -> path; becomes ctx.dirs. Not needed for a program that declares its own #Directory attributes - and refused alongside them unless overrideAttributes is set.",
-                "default": {
-                  "here": "${fileDirname}"
-                }
+                "description": "name -> path; becomes ctx.dirs. Not needed for a program that declares its own #Directory attributes - and refused alongside them unless overrideAttributes is set."
               },
               "cacheDir": {
                 "type": "string",
@@ -92,9 +89,31 @@
             "type": "hashedbuild",
             "request": "launch",
             "name": "Run this file",
-            "program": "${file}",
-            "dirs": {
-              "here": "${fileDirname}"
+            "program": "${file}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "HashedBuild: run a file",
+            "description": "For a program that declares its own directories (SPEC.md \u00a717).",
+            "body": {
+              "type": "hashedbuild",
+              "request": "launch",
+              "name": "Run this file",
+              "program": "^\"\\${file}\""
+            }
+          },
+          {
+            "label": "HashedBuild: run a file, naming its directories",
+            "description": "For a program that declares none: each entry becomes ctx.dirs.<name>.",
+            "body": {
+              "type": "hashedbuild",
+              "request": "launch",
+              "name": "Run this file",
+              "program": "^\"\\${file}\"",
+              "dirs": {
+                "here": "^\"\\${fileDirname}\""
+              }
             }
           }
         ]

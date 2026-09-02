@@ -227,8 +227,15 @@ odin build src -out:hb.exe                     # or -out:hb on Linux
 python3 scripts/install_vscode_debug.py        # pass a path to use another binary
 ```
 
-Restart VS Code, open a `.hb` file and press **F5**. Re-run the script after
-moving the repository or building the binary somewhere else.
+Restart VS Code, **open a folder** (File -> Open Folder), open a `.hb` file in
+it and press **F5**. Re-run the script after moving the repository or building
+the binary somewhere else.
+
+The folder matters: F5 reads `.vscode/launch.json`, which belongs to a folder,
+so a lone file opened on its own gets *Select and Start Debug Configuration*
+instead of a run. Picking **HashedBuild** there works too - it runs the active
+file with no directories, which is all a program that declares its own (§17)
+needs.
 
 This repository's own `.vscode/launch.json` already has two configurations -
 the open file, and `examples/option-picker.hb` - and neither names a directory,
