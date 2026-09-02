@@ -143,6 +143,27 @@ describe("hb dap", function () {
     assert.strictEqual(byId[set.body.breakpoints[1].id].verified, false, "line 1 is a comment");
   });
 
+  // Two clients, two orders. VS Code launches first and configures after;
+  // DAP's own recommended order - and nvim-dap - sends `configurationDone`
+  // before `launch`. The run is parked either way, so whichever of the two
+  // arrives second is what lets it go; getting that wrong means a client that
+  // waits forever for a `stopped` nothing will ever send.
+  it("starts the run when configurationDone arrives before launch", async () => {
+    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
+    await dc.waitForEvent("initialized");
+    await dc.setBreakpointsRequest({
+      source: { path: fixture("arith.hb") },
+      breakpoints: [{ line: 7 }],
+    });
+    await dc.configurationDoneRequest();
+    await dc.launchRequest({ program: fixture("arith.hb") });
+
+    const stopped = await dc.waitForEvent("stopped");
+    assert.strictEqual(stopped.body.reason, "breakpoint");
+    await dc.continueRequest({ threadId: 1 });
+    await dc.waitForEvent("terminated");
+  });
+
   // A line holds many expressions here, and an enclosing one finishes long
   // after the line it starts on - so a breakpoint fires once, on the widest
   // expression contained in the line, and `continue` reaches the end.

@@ -66,12 +66,27 @@ Dap_Session :: struct {
   // its breakpoints, and `configurationDone` is what lets it go.
   stop_on_entry: bool,
   launched:      bool,
+
+  // `configurationDone` may arrive **before** `launch`: DAP's own recommended
+  // order puts it there, and nvim-dap sends it that way. There is no run to
+  // release at that point, so the fact is remembered and the run is released
+  // by `launch` instead. Without this the program never starts and the client
+  // waits for a `stopped` that cannot come.
+  config_done: bool,
 }
 
 // The entry point `hb dap` runs (main.odin). Blocks reading stdin until the
 // client disconnects or stdin closes.
 run_dap_server :: proc(opts: Cli_Options) {
-  dap_log_open(opts.dap_log)
+  // A client spawns the adapter itself, so `--log` is only reachable by
+  // editing that client's configuration - which is exactly what you cannot
+  // easily do when the question is *why the client is not spawning it right*.
+  // HB_DAP_LOG turns the same trace on from outside, without touching it.
+  log_path := opts.dap_log
+  if log_path == "" {
+    if from_env, has := os.lookup_env("HB_DAP_LOG", context.temp_allocator); has do log_path = from_env
+  }
+  dap_log_open(log_path)
   defer dap_log_close()
 
   s := Dap_Session{lines_start_at_1 = true, columns_start_at_1 = true}
@@ -158,19 +173,8 @@ dap_handle_request :: proc(s: ^Dap_Session, msg: json.Object) {
     // `stopOnEntry` asks for - or it goes, and the next thing anyone hears
     // about is a breakpoint, a failure, or the end.
     dap_respond_empty(seq, command)
-    if s.run != nil {
-      switch {
-      case s.stop_on_entry:
-        dap_report_state(s)
-      case debugger_stopped_at_breakpoint(s.run):
-        // The run is parked exactly where a breakpoint was just set, and
-        // that node will not be evaluated again - so this *is* the hit.
-        debugger_relabel_stop(s.run, "breakpoint")
-        dap_report_state(s)
-      case:
-        dap_go(s, .Running)
-      }
-    }
+    s.config_done = true
+    if s.run != nil do dap_release_run(s)
 
   case "threads":
     dap_threads(s, seq)
@@ -289,10 +293,29 @@ dap_launch :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
   s.launched = true
   dap_respond_empty(seq, "launch")
   dap_apply_breakpoints(s)
-  // Nothing is reported yet, and the run stays parked: the client has not
-  // sent its breakpoints at this point (VS Code sends them next, then
-  // `configurationDone`), and reporting a stop it did not ask for would leave
-  // it paused on a name lookup.
+  // Ordinarily nothing is reported yet and the run stays parked: VS Code
+  // sends its breakpoints next, then `configurationDone`, and reporting a
+  // stop it did not ask for would leave it paused on a name lookup. A client
+  // that sent `configurationDone` first has already said it is finished, so
+  // there is nothing left to wait for.
+  if s.config_done do dap_release_run(s)
+}
+
+// Lets the parked run go, once the client has both launched it and finished
+// configuring it - in whichever order those two arrived.
+@(private = "file")
+dap_release_run :: proc(s: ^Dap_Session) {
+  switch {
+  case s.stop_on_entry:
+    dap_report_state(s)
+  case debugger_stopped_at_breakpoint(s.run):
+    // The run is parked exactly where a breakpoint was just set, and that
+    // node will not be evaluated again - so this *is* the hit.
+    debugger_relabel_stop(s.run, "breakpoint")
+    dap_report_state(s)
+  case:
+    dap_go(s, .Running)
+  }
 }
 
 // Applies the breakpoints the client set before there was a run to set them

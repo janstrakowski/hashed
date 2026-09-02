@@ -49,8 +49,10 @@ Optional, and per-user - it writes under `HKCU\Software\Classes`, needs no
 administrator, and undoes itself:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scriptsegister_hb_windows.ps1
-powershell -ExecutionPolicy Bypass -File scriptsegister_hb_windows.ps1 -Unregister
+powershell -ExecutionPolicy Bypass -File scripts
+egister_hb_windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts
+egister_hb_windows.ps1 -Unregister
 ```
 
 Explorer then calls a `.hb` file a *HashedBuild program*, shows it with the
@@ -229,8 +231,8 @@ Restart VS Code, open a `.hb` file and press **F5**. Re-run the script after
 moving the repository or building the binary somewhere else.
 
 This repository's own `.vscode/launch.json` already has two configurations -
-the open file, and `examples/option-picker.hb` with its directory - so F5 works
-in a fresh clone. For your own project:
+the open file, and `examples/option-picker.hb` - and neither names a directory,
+because every example declares its own (§17). So F5 works in a fresh clone. For your own project:
 
 ```json
 {
@@ -266,6 +268,24 @@ unverified, so a client can grey it out rather than pretend.
 
 `dap-tests/` drives all of this with the protocol's own reference client — see
 CLAUDE.md for why that one directory has a `package.json`.
+
+Clients disagree about the order they send `launch` and `configurationDone` in:
+VS Code launches first and configures after, while the protocol's own
+recommended order - and nvim-dap - is the other way round. Both work; the run
+is parked until whichever arrives second.
+
+### When a session does nothing
+
+The client spawns the adapter, so there is no terminal to watch and a failed
+launch can look like nothing happening at all. Set `HB_DAP_LOG` before starting
+the editor and every message either way is appended to that file:
+
+```sh
+HB_DAP_LOG=/tmp/hb-dap.log code .     # or set it however your editor is started
+```
+
+`hb dap --log <path>` does the same thing for a client whose configuration you
+can add arguments to.
 
 ## Where to go next
 
