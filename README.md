@@ -1,102 +1,64 @@
-This project is still being developed, even without the core features.
-The "README" below is a faked proof-of-concept, meant only to show what I'm heading for approximately.
+# WIP
+**This project in not yet ready to use. Only a couple of core features are implemented.**
 
 ---
 
 # About
 
-*HashedBuild* helps you describe and instantiate Linux operating systems (and more) with code. It features:
- - output reproducibility (one specific input results in one specific output),
- - incremental updates (a small change should take shorter to build, a big change - longer),
- - standard compliance (what is used here is used also in many other projects),
- - an extensible design (anyone interested is able to write himself/herself any extra features),
- - a standard library (the most common operations are already bulit-in).
-
-See also [NixOS](https://nixos.org/) and [Guix](https://guix.gnu.org/).
-
-# Progress
-
-![A short tour of what's working today: the parser, the evaluator, real concurrency, the pausable debugger, and the live terminal editor, each demonstrated for real.](docs/media/showcase.gif)
-
-(Looping preview above - for the full-quality, pausable version, [download the mp4](https://raw.githubusercontent.com/janstrakowski/hashedbuild/main/docs/media/showcase.mp4).)
-
-Want to try it without installing anything? **[Open the terminal in your browser](https://janstrakowski.github.io/hashedbuild/playground.html)** - it is this CLI compiled to WebAssembly, with this repository as its filesystem:
-
-```
-$ ls                                the repo: src/, examples/, SPEC.md, ...
-$ hb examples/guard-chain.hb        run a program
-$ hb -e '1 + 2 * 3'                 evaluate an expression
-$ hb                                the REPL
-$ hb -i                             the live editor, panes and all
-```
-
-The REPL is the interpreter's own loop reading what you type, `async` runs on real threads (Web Workers sharing one WebAssembly memory), and files you create persist in your browser between visits. There is no server: nothing you type leaves the tab.
-
-Prefer it locally? **[GETTING_STARTED.md](GETTING_STARTED.md)** walks through setting up, running, and experimenting with everything shown above.
-
-A real parser and tree-walking evaluator exist now (`src/`, with a full test suite), covering the core expression language - functions, pattern matching, guard chains, real concurrency (`async`, running on actual OS threads) - plus a small set of filesystem builtins with capability-scoped permissions and a live, self-hosted terminal editor with a genuinely pausable/resumable debugger. Unlike the aspirational examples further down, the program below actually runs:
-
-```hashedbuild
-// examples/option-picker.hb - reads choice.txt (relative to this file, not
-// to wherever `hb` was invoked from), then branches on its exact content.
-// "option A" writes an entry starting with "Option A:" followed by
-// optiona.txt's content; "option B" does the analogous thing with
-// optionb.txt; anything else is an unrecoverable runtime error. The result
-// goes into ctx.cache, which names it by its own content hash.
-let choice loadfile "choice.txt" |> filetext;
-  choice == "option A" then
-    createfile {
-      .dir = ctx.cache,
-      .content = "Option A:\n" concat filetext (loadfile "optiona.txt"),
-    }
-  else choice == "option B" then
-    createfile {
-      .dir = ctx.cache,
-      .content = "Option B:\n" concat filetext (loadfile "optionb.txt"),
-    }
-  else
-    error "choice.txt must contain exactly \"option A\" or \"option B\""
-```
-
-Run it with `./hb examples/option-picker.hb` (from anywhere - its paths resolve relative to the script itself, not your shell's current directory), or explore it live with `./hb -i` - a two-to-four-pane terminal editor with a built-in examples picker, a live AST view, and a step-by-step evaluation trace. This one example touches a few of the language's actual design points: files are ordinary values (`loadfile`/`createfile`), branching is built from general composable operators rather than bespoke syntax (`then`/`else` chains into an if/else-if/else), and `error` is a genuinely unrecoverable failure - unlike a failed `then`, no enclosing `else` catches it.
-
-**[LANGUAGE.md](LANGUAGE.md)** is the tour of everything that works today, feature by feature, with a runnable snippet for each and an explicit list of what isn't built yet. **[examples/](examples/)** has a runnable file per feature - all of them executed by the test suite, so they can't drift from the implementation. `SPEC.md` is the full design, including the parts that don't run yet.
+*HashedBuild* is a functional programming language targetted at build systems and automation. 
+It is designed to be relatively easy to use, and not much technical. 
+It's purpose is to set up automation for repetetive task or that which need reproducibility
+when a functional paradime is better suited.
+It aims to be cross-platform (Windows, Linux, MacOS), and currently Windows and Linux are
+under the development.
+It supports incremental evaluation though caching like [Nix](nixos.org) or [Guix](guix.gnu.org),
+and it was inspired by them.
 
 # Examples
-
-The examples below are still aspirational - illustrative of where this is heading, not runnable in the language as it exists today.
-
-## `XZ Utils 5.8.3`
-```hashedbuild
-gnulinux.containerbuild {
-    archive = {
-        downloadurl = "https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.gz",
-        sha256 = "CTtEvdGgLSf0FZ86UMI0jbd4rRzCPh9FFAdu8ix3Eyg=",
-    },
-    packages = { gnulinux.stdpkgs.{ autoconf, automake, gettext, libtool } },
-    builder = gnulinux.configuremakeinstall {},
+## Build Script in a Codebase (Make-style)
+This assumes a harness that expects a graph of dependencies as the output.
+```
+// build.hb (in the codebase's root directory)
+is { ..., dir, ccomp};
+// "<expression> is <pattern>; <expression>" is normally pattern-maching for the first expression but when in an expression
+// something is omitted (for example instead of `1+2`, `+2`) then it becomes a function (f(x) = x + 2).
+// So is { ..., dir} tells us that the whole program is a function that gives us a struct with a "dir" field.
+let srcdir = dirmember { dir, "src" };
+let c_filenames = (dirmembers srcdir) map (.name) map (extractfext ()) filter (== ".c");
+let c_tasks = c_filenames map {
+ name = #arg,
+ executor = func ccomp.compiletoobj (dirmember {srcdir, #arg2 /* the arg of the map function */}),
+ // Let's assume "complitetoobj" produces the object file in the directory of its argument.
+};
+let compile_task = {
+ name = "compile",
+ // No executor
+ dependencies = {
+   ...c_filenames,
+ },
+};
+let link_task = {
+ name = "link",
+ dependencies = {
+  compile_task.name,
+ },
+ executor = func ccomp.linkobjfiles {{ ... c_filenames map stripfext () map concat ".o" }, outfile = ensure_dirs "/bin/program" },
+ // "ensure_dirs" is a builtin that creates the parent directories for the argument path.
+};
+{
+ ...c_tasks, // All the c_tasks are included in the structure as a separate entries
+ compile_task,
+ link_task,
 }
 ```
 
-## "Hello, World!" on [Arduino](https://www.arduino.cc/)
-```hashedbuild
-let
-    programtext = """
-        void setup() {
-          pinMode(LED_BUILTIN, OUTPUT);
-        }
+# Current State
+The language specification is not complete.
+An evalutor is implemented for a subset of the language.
+The subset covers asynchronous runtime.
+A [DAP](https://microsoft.github.io/debug-adapter-protocol/) server is implemented for the subset.
 
-        void loop() {
-          digitalWrite(LED_BUILTIN, HIGH);
-          delay(1000);
-          digitalWrite(LED_BUILTIN, LOW);
-          delay(1000);
-        }
-    """
-: arduino.deployment {
-    inofiles = { fileFromText programtext },
-}
-```
+All mentioned above are very buggy.
 
 # Donate
 You can support me by a donation via: [a bank transfer](https://janstrakowski.github.io/jansdonations/) or [BuyMeACoffie](https://buymeacoffee.com/janstrakowski).
