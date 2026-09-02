@@ -240,6 +240,66 @@ describe("hb dap", function () {
     await dc.waitForEvent("terminated");
   });
 
+  // A client sends one setBreakpoints per file it holds breakpoints in - not
+  // one for the file being debugged. A breakpoint left in some other file
+  // therefore arrives here too, and must not touch this run: it used to
+  // replace the running program's breakpoints outright, so a session with a
+  // stale breakpoint on line 10 of another file stopped on line 10 of *this*
+  // one, wherever that landed.
+  it("ignores breakpoints belonging to another file", async () => {
+    const program = fixture("arith.hb");
+    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
+    await dc.waitForEvent("initialized");
+    await dc.launchRequest({ program });
+
+    await dc.setBreakpointsRequest({
+      source: { path: program },
+      breakpoints: [{ line: 7 }],
+    });
+    const elsewhere = await dc.setBreakpointsRequest({
+      source: { path: fixture("multiline.hb") },
+      breakpoints: [{ line: 9 }],
+    });
+    assert.strictEqual(
+      elsewhere.body.breakpoints[0].verified, false,
+      "a breakpoint in a file this session is not running can never be hit",
+    );
+
+    await dc.configurationDoneRequest();
+    const stopped = await dc.waitForEvent("stopped");
+    assert.strictEqual(stopped.body.reason, "breakpoint");
+    const { frame } = await whereIsIt(dc);
+    assert.strictEqual(frame.line, 7, "line 7 of arith.hb, not line 9 of the other file");
+  });
+
+  // A Table entry is a step of its own: `eval` never runs on one, but someone
+  // walking a Table literal expects to pass through `.int_div = 7 / 2` before
+  // its value, and to see what the entry came to on the way out.
+  it("steps through a Table entry, not straight into its value", async () => {
+    await session(dc, { program: fixture("multiline.hb"), breakpoints: [9] });
+    const stopped = await dc.waitForEvent("stopped");
+    assert.strictEqual(stopped.body.description, "-> .int_div = 7 / 2");
+
+    // Into the entry's value, then out of it, then out of the entry itself.
+    const seen = [];
+    for (let i = 0; i < 6; i++) {
+      await dc.stepInRequest({ threadId: 1 });
+      seen.push((await dc.waitForEvent("stopped")).body.description);
+    }
+    assert.deepStrictEqual(seen, [
+      "-> 7 / 2",
+      "-> 7",
+      "7 => 7",
+      "-> 2",
+      "2 => 2",
+      "7 / 2 => 3",
+    ]);
+
+    await dc.stepInRequest({ threadId: 1 });
+    const out = await dc.waitForEvent("stopped");
+    assert.strictEqual(out.body.description, ".int_div = 7 / 2 => 3");
+  });
+
   // Two clients, two orders. VS Code launches first and configures after;
   // DAP's own recommended order - and nvim-dap - sends `configurationDone`
   // before `launch`. The run is parked either way, so whichever of the two

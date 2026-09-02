@@ -309,7 +309,9 @@ Breakpoints are verified per line: a line no expression starts on - a comment,
 a blank line, a closing brace - comes back unverified, so a client can grey it
 out rather than pretend. A line that opens a multi-line expression is a
 breakpoint on that whole expression, and fires once when the run reaches it,
-not once per expression nested inside it.
+not once per expression nested inside it. Breakpoints in files this session is
+not running come back unverified too: a session debugs one program, and a
+breakpoint you left in another file is not a breakpoint in this one.
 
 `dap-tests/` drives all of this with the protocol's own reference client — see
 CLAUDE.md for why that one directory has a `package.json`.

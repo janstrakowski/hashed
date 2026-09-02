@@ -799,6 +799,22 @@ eval_table_construct :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) ->
     child_idx := interp.ast.extra_children[start + i]
     child := interp.ast.nodes[child_idx]
     if child.kind == .Table_Entry {
+      // An entry is a node, and someone stepping through a Table expects to
+      // pass through `.int_div = 7 / 2` on the way to `7 / 2`. `eval` is
+      // never called on one - the key is read rather than evaluated, so there
+      // is nothing for a dispatch case to do - which is why its two debugger
+      // stops are made here by hand. The extra evaluation depth is what keeps
+      // Step Over meaningful: from the Table it skips whole entries, and from
+      // an entry it skips that entry's key and value.
+      if interp.debugger != nil {
+        interp.nest_depth += 1
+        if !debugger_gate_enter(interp, child_idx, env) {
+          interp.nest_depth -= 1
+          return nil, false
+        }
+      }
+      defer if interp.debugger != nil do interp.nest_depth -= 1
+
       key_idx := interp.ast.extra_children[child.children_start]
       value_idx := interp.ast.extra_children[child.children_start + 1]
       key_node := interp.ast.nodes[key_idx]
@@ -814,6 +830,11 @@ eval_table_construct :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) ->
       }
       val, vok := eval_slot(interp, value_idx, env)
       if !vok do return nil, false
+      if interp.debugger != nil {
+        entry_ok := true
+        debugger_gate(interp, child_idx, env, &val, &entry_ok)
+        if !entry_ok do return nil, false
+      }
       append(&pending, Table_Entry_Value{key = key, value = val})
     } else {
       val, vok := eval_slot(interp, child_idx, env)

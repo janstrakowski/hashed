@@ -35,6 +35,14 @@ import "core:strings"
 // Result scope, because only the second has a result - a client showing an
 // empty "Result" would be saying it came to nothing rather than not yet.
 
+// One file's breakpoints, as a client last sent them.
+@(private = "file")
+Bp_Source :: struct {
+  path:  string, // owned, spelled as the client spelled it
+  lines: [dynamic]int,
+  ids:   [dynamic]int,
+}
+
 @(private = "file")
 Dap_Session :: struct {
   run:   ^Debugger_Run,
@@ -50,15 +58,23 @@ Dap_Session :: struct {
   no_debug: bool,
   terminated: bool,
 
-  // Breakpoints as the client last set them. Kept here and not only in the
-  // run, because a client may send them **before** `launch` - VS Code does,
-  // as soon as it gets `initialized` - and there is nothing to apply them to
-  // at that point. Applying them at launch instead, and correcting the
-  // client's gutter with a `breakpoint` event, is what makes the ordinary VS
-  // Code sequence work.
-  bp_lines:   [dynamic]int,
-  bp_ids:     [dynamic]int,
+  // Breakpoints as the client last set them, **per source file**. A client
+  // sends one `setBreakpoints` per file it has any in, not one for the file
+  // being debugged, so a breakpoint left in another file arrives here too -
+  // and a single set of lines let one of those silently replace the running
+  // program's, which then stopped on whatever that line number happened to
+  // hold. Only the set belonging to the launched program is ever applied;
+  // every other file's is answered unverified, which is the truth: a
+  // breakpoint in a file this session is not running cannot be hit.
+  //
+  // Kept here and not only in the run, because a client may send them
+  // **before** `launch` - VS Code does, as soon as it gets `initialized` -
+  // and there is nothing to apply them to at that point. Applying them at
+  // launch instead, and correcting the client's gutter with a `breakpoint`
+  // event, is what makes the ordinary VS Code sequence work.
+  bp_sources: [dynamic]Bp_Source,
   next_bp_id: int,
+  program:    string, // owned - the file this session is debugging
 
   // `stopOnEntry` in the launch configuration. Off by default, because the
   // first node a program finishes is a name lookup or a literal - `loadfile`,
@@ -92,11 +108,17 @@ run_dap_server :: proc(opts: Cli_Options) {
 
   s := Dap_Session{lines_start_at_1 = true, columns_start_at_1 = true}
   s.var_refs = make([dynamic]Value, 0, 16)
-  s.bp_lines = make([dynamic]int, 0, 8)
-  s.bp_ids = make([dynamic]int, 0, 8)
+  s.bp_sources = make([dynamic]Bp_Source, 0, 2)
   defer delete(s.var_refs)
-  defer delete(s.bp_lines)
-  defer delete(s.bp_ids)
+  defer {
+    for src in s.bp_sources {
+      delete(src.path)
+      delete(src.lines)
+      delete(src.ids)
+    }
+    delete(s.bp_sources)
+    delete(s.program)
+  }
   defer if s.run != nil do stop_debugger_run(s.run)
 
   reader := dap_reader_make()
@@ -292,6 +314,8 @@ dap_launch :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
     return
   }
   s.launched = true
+  delete(s.program)
+  s.program = strings.clone(program)
   dap_respond_empty(seq, "launch")
   dap_apply_breakpoints(s)
   // Ordinarily nothing is reported yet and the run stays parked: VS Code
@@ -324,12 +348,14 @@ dap_release_run :: proc(s: ^Dap_Session) {
 // showing every one of them as unverified.
 @(private = "file")
 dap_apply_breakpoints :: proc(s: ^Dap_Session) {
-  if s.run == nil || len(s.bp_lines) == 0 do return
-  verified := debugger_set_breakpoints(s.run, s.bp_lines[:], context.temp_allocator)
+  if s.run == nil do return
+  set := dap_bp_source_for(s, s.program, false)
+  if set == nil || len(set.lines) == 0 do return
+  verified := debugger_set_breakpoints(s.run, set.lines[:], context.temp_allocator)
 
   Ctx :: struct { s: ^Dap_Session, id: int, line: int, verified: bool }
-  for line, i in s.bp_lines {
-    c := Ctx{s = s, id = s.bp_ids[i], line = line, verified = verified[i]}
+  for line, i in set.lines {
+    c := Ctx{s = s, id = set.ids[i], line = line, verified = verified[i]}
     dap_event("breakpoint", proc(w: ^Json_Writer, ctx: rawptr) {
       c := (^Ctx)(ctx)
       jw_obj_begin(w)
@@ -339,7 +365,7 @@ dap_apply_breakpoints :: proc(s: ^Dap_Session) {
       jw_kint(w, "id", c.id)
       jw_kbool(w, "verified", c.verified)
       jw_kint(w, "line", dap_line_out(c.s, c.line))
-      if !c.verified do jw_kstr(w, "message", "no expression begins and ends on this line")
+      if !c.verified do jw_kstr(w, "message", "no expression starts on this line")
       jw_obj_end(w)
       jw_obj_end(w)
     }, &c)
@@ -347,6 +373,41 @@ dap_apply_breakpoints :: proc(s: ^Dap_Session) {
 }
 
 // ---- breakpoints ---------------------------------------------------------------------
+
+// This session's record of one file's breakpoints, created on demand when
+// `create` is set and nil otherwise.
+@(private = "file")
+dap_bp_source_for :: proc(s: ^Dap_Session, path: string, create: bool) -> ^Bp_Source {
+  for &src in s.bp_sources {
+    if dap_same_file(src.path, path) do return &src
+  }
+  if !create do return nil
+  append(&s.bp_sources, Bp_Source{
+    path  = strings.clone(path),
+    lines = make([dynamic]int, 0, 4),
+    ids   = make([dynamic]int, 0, 4),
+  })
+  return &s.bp_sources[len(s.bp_sources) - 1]
+}
+
+// Whether two paths name the same file, as far as a client's spelling goes.
+// VS Code sends `c:\Users\...` where the launch configuration said
+// `C:\Users\...`, so on Windows this is separator- and case-insensitive; on
+// Linux a name differing in case is a different file, and case-folding here
+// would silently apply one file's breakpoints to another.
+@(private = "file")
+dap_same_file :: proc(a: string, b: string) -> bool {
+  // A client that sends no path at all means the program being debugged;
+  // that is the only source a single-file session has.
+  if a == "" || b == "" do return true
+  x := strings.replace_all(a, "\\", "/", context.temp_allocator) or_else a
+  y := strings.replace_all(b, "\\", "/", context.temp_allocator) or_else b
+  when ODIN_OS == .Windows {
+    return strings.equal_fold(x, y)
+  } else {
+    return x == y
+  }
+}
 
 @(private = "file")
 dap_set_breakpoints :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
@@ -361,27 +422,35 @@ dap_set_breakpoints :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
     }
   }
 
+  // Which file these are for. A client sends one request per file, so this is
+  // the difference between a breakpoint in the program being debugged and one
+  // left behind in a file that has nothing to do with this run.
+  path := ""
+  if src, has := jv_obj(args, "source"); has do path = jv_str(src, "path")
+
   // Remembered either way: before `launch` there is nothing to apply them to,
   // and a client does not send them again (dap_apply_breakpoints does it).
-  clear(&s.bp_lines)
-  clear(&s.bp_ids)
+  set := dap_bp_source_for(s, path, true)
+  clear(&set.lines)
+  clear(&set.ids)
   for line in lines {
     s.next_bp_id += 1
-    append(&s.bp_lines, line)
-    append(&s.bp_ids, s.next_bp_id)
+    append(&set.lines, line)
+    append(&set.ids, s.next_bp_id)
   }
 
   verified: []bool
-  if s.run != nil {
+  if s.run != nil && dap_same_file(path, s.program) {
     verified = debugger_set_breakpoints(s.run, lines[:], context.temp_allocator)
   } else {
-    // Unverified for now, and corrected by a `breakpoint` event once the run
-    // exists and its source can actually be asked.
+    // Unverified: either there is no run yet - corrected by a `breakpoint`
+    // event once there is one - or these belong to another file, and a
+    // breakpoint in a file this session is not running never will be hit.
     verified = make([]bool, len(lines), context.temp_allocator)
   }
 
-  Ctx :: struct { s: ^Dap_Session, lines: []int, verified: []bool }
-  c := Ctx{s = s, lines = lines[:], verified = verified}
+  Ctx :: struct { s: ^Dap_Session, lines: []int, ids: []int, verified: []bool, ours: bool }
+  c := Ctx{s = s, lines = lines[:], ids = set.ids[:], verified = verified, ours = dap_same_file(path, s.program)}
   dap_respond(seq, "setBreakpoints", proc(w: ^Json_Writer, ctx: rawptr) {
     c := (^Ctx)(ctx)
     jw_obj_begin(w)
@@ -389,11 +458,11 @@ dap_set_breakpoints :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
     jw_arr_begin(w)
     for line, i in c.lines {
       jw_obj_begin(w)
-      jw_kint(w, "id", c.s.bp_ids[i])
+      jw_kint(w, "id", c.ids[i])
       jw_kbool(w, "verified", c.verified[i])
       jw_kint(w, "line", dap_line_out(c.s, line))
       if !c.verified[i] && c.s.run != nil {
-        jw_kstr(w, "message", "no expression begins and ends on this line")
+        jw_kstr(w, "message", "no expression starts on this line" if c.ours else "this session is not running this file")
       }
       jw_obj_end(w)
     }
