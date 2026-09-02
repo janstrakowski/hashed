@@ -29,10 +29,11 @@ import "core:strings"
 //   variable   a name bound to a value, rendered by format_value (§3), so a
 //              File shows its path and a Table its entries.
 //
-// **A stop is after a node, not before it** (see debugger.odin's header): a
-// `stopped` event means "this expression just produced this value". That is
-// what makes the Result scope the interesting one, and it is the one place a
-// person used to statement-oriented debuggers has to adjust.
+// **A stop is on one side of a node or the other** (see debugger.odin's
+// header). A `stopped` event says which, in its description: `-> expr` is
+// about to be evaluated, `expr => value` has been. Only the second has a
+// Result scope, because only the second has a result - a client showing an
+// empty "Result" would be saying it came to nothing rather than not yet.
 
 @(private = "file")
 Dap_Session :: struct {
@@ -410,15 +411,18 @@ dap_go :: proc(s: ^Dap_Session, mode: Debug_Mode) {
   if s.run == nil do return
   clear(&s.var_refs) // every handle a client holds refers to the stop we are leaving
 
-  target, thread := 0, 0
+  frames, nest, thread := 0, 0, 0
   if mode == .Step_Over || mode == .Step_Out {
-    // Both are defined against the stopped task's own call depth.
-    target = len(s.run.stop_info.frames)
+    // Both are defined against the stopped task's own depths: Step_Out
+    // against its call frames, Step_Over against its evaluation depth, which
+    // is what lets it skip a whole sub-expression rather than only a call.
+    frames = len(s.run.stop_info.frames)
+    nest = s.run.stop_info.nest_depth
     thread = s.run.stop_info.thread_id
   }
   effective := mode
   if s.no_debug do effective = .Running
-  debugger_resume(s.run, effective, target, thread)
+  debugger_resume(s.run, effective, frames, nest, thread)
   debugger_wait_until_settled(s.run)
   dap_report_state(s)
 }
@@ -469,6 +473,8 @@ dap_report_state :: proc(s: ^Dap_Session) {
 dap_stop_description :: proc(s: ^Dap_Session) -> string {
   info := s.run.stop_info
   text := node_source_text(s.run, info.node)
+  // The two phases read as what they are: about to happen, and happened.
+  if info.phase == .Enter do return fmt.tprintf("-> %s", text)
   if !info.ok do return fmt.tprintf("%s failed", text)
   formatted := format_value(info.value)
   defer delete(formatted)
@@ -565,19 +571,25 @@ dap_scopes :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
     dap_error(seq, "scopes", "the program is not stopped")
     return
   }
-  result_ref := dap_ref_for(s, s.run.stop_info.value)
-  Ctx :: struct { result_ref: int, locals_ref: int }
-  c := Ctx{result_ref = result_ref, locals_ref = DAP_LOCALS_REF}
+  // No Result scope at an Enter stop: the node has not run, so there is no
+  // result, and an empty pane called "Result" would read as "it came to
+  // nothing" rather than "not yet".
+  entering := s.run.stop_info.phase == .Enter
+  result_ref := 0 if entering else dap_ref_for(s, s.run.stop_info.value)
+  Ctx :: struct { result_ref: int, locals_ref: int, entering: bool }
+  c := Ctx{result_ref = result_ref, locals_ref = DAP_LOCALS_REF, entering = entering}
   dap_respond(seq, "scopes", proc(w: ^Json_Writer, ctx: rawptr) {
     c := (^Ctx)(ctx)
     jw_obj_begin(w)
     jw_key(w, "scopes")
     jw_arr_begin(w)
-    jw_obj_begin(w)
-    jw_kstr(w, "name", "Result")
-    jw_kint(w, "variablesReference", c.result_ref)
-    jw_kbool(w, "expensive", false)
-    jw_obj_end(w)
+    if !c.entering {
+      jw_obj_begin(w)
+      jw_kstr(w, "name", "Result")
+      jw_kint(w, "variablesReference", c.result_ref)
+      jw_kbool(w, "expensive", false)
+      jw_obj_end(w)
+    }
     jw_obj_begin(w)
     jw_kstr(w, "name", "Locals")
     jw_kint(w, "variablesReference", c.locals_ref)
@@ -737,9 +749,30 @@ dap_evaluate :: proc(s: ^Dap_Session, seq: int, args: json.Object) {
 node_source_text :: proc(run: ^Debugger_Run, node: Node_Idx) -> string {
   span := run.ast.nodes[node].span
   if int(span.end) > len(run.src) do return ""
-  text := strings.trim_space(run.src[span.start:span.end])
+  text := collapse_whitespace(strings.trim_space(run.src[span.start:span.end]))
   if len(text) > 60 do return fmt.tprintf("%s...", text[:57])
   return text
+}
+
+// A stop description is one line in a client's UI, and a node's source often
+// is not - a Table literal spans as many lines as it has entries. Runs of
+// whitespace become one space so the line stays a line.
+@(private = "file")
+collapse_whitespace :: proc(text: string) -> string {
+  if strings.index_any(text, "\n\r\t") < 0 do return text
+  b := strings.builder_make(context.temp_allocator)
+  in_space := false
+  for i in 0 ..< len(text) {
+    c := text[i]
+    if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+      if !in_space do strings.write_byte(&b, ' ')
+      in_space = true
+      continue
+    }
+    in_space = false
+    strings.write_byte(&b, c)
+  }
+  return strings.to_string(b)
 }
 
 // DAP counts lines from 1 unless the client said otherwise at `initialize`;

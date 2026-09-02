@@ -172,11 +172,14 @@ come from an editor you already know how to use.
 Two things about it are specific to this language, and both follow from what the
 language is:
 
-- **A stop happens *after* an expression, not before it.** HashedBuild has no
-  statements: a program is one expression, and the interesting thing about
-  reaching a sub-expression is what it evaluated to. So "stopped at line 7"
-  means line 7's expression *just produced this value*, and the **Result** scope
-  holds it. The **Locals** scope holds the `let` bindings in scope there.
+- **Every expression has two stops: before it, and after it.** HashedBuild has
+  no statements - a program is one expression - so a stop says either `-> 2 + 3
+  * 4`, meaning that is about to be evaluated, or `2 + 3 * 4 => 14`, meaning it
+  has been. Only the second has a **Result** scope, because only the second has
+  a result; the **Locals** scope holds the `let` bindings in scope, and is there
+  either way. A **breakpoint stops before**, which is what a breakpoint means
+  everywhere else and the only point at which what the line does can still be
+  headed off.
 - **A session reaches only the directories its launch configuration names**,
   exactly as a command line does (SPEC.md §9/§16). `dirs` in the configuration
   is `--dir` on the command line; a session with no `dirs` cannot touch the
@@ -196,15 +199,26 @@ configuration does — and use the step buttons from there:
 
 | | | |
 | --- | --- | --- |
-| **Step Into** | F11 | the next expression to finish, wherever it is - the one to hold down to see everything |
-| **Step Over** | F10 | the next expression to finish *outside* any call this one makes |
+| **Step Into** | F11 | the next stop of any kind - hold it down to watch the whole program |
+| **Step Over** | F10 | run this whole expression and stop on its way out, where its value is |
 | **Step Out** | Shift+F11 | run until the call you are inside of returns |
 
-Remember that a stop is *after* an expression, so stepping reads as a running
-commentary of what each piece came to: `ctx.dirs.here => <directory: ...>`, then
-the Table it goes into, then the `loadfile` that Table was for. The status line
-at the top of the Call Stack view shows it, and the **Result** scope holds the
-value.
+Step Into walks down into an expression and back out of it, so a line reads as
+a descent and then a commentary:
+
+```
+-> loadfile { .dir = ctx.dirs.here, .path = "choice.txt" }
+-> ctx.dirs.here
+-> ctx.dirs
+-> ctx
+   ctx => {permissions: {io: nothing}, cache: <cache>, dirs: {here: <directory: ...>}}
+   ctx.dirs => {here: <directory: ...>}
+```
+
+Step Over is the other one worth knowing, and it is measured in expressions
+rather than in function calls: from `-> 2 + 3 * 4` it runs the whole thing and
+stops at `2 + 3 * 4 => 14`. That is the answer to "I broke on this line, now
+what did it come to" — one F10.
 
 ### nvim-dap
 

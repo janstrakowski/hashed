@@ -11,13 +11,22 @@ import "core:strings"
 // eval.odin) as each node finishes, and stops there if this run's current
 // mode says to.
 //
-// **A stop is after a node, not before it.** The gate runs once a node's
-// value exists, so "stopped" always means "this sub-expression just produced
-// this value" rather than "this is about to run". That is the shape of a
-// language where everything is an expression: there is no statement whose
-// effect you would want to catch beforehand, and the interesting thing about
-// reaching a node is what it evaluated to. It does mean a breakpoint on a
-// line fires as that line's expression *completes*.
+// **Every node has two stop points, Enter and Exit.** The gate runs on the
+// way in to a node, before any of it has happened, and again on the way out,
+// once its value exists. So a stop is either "this is about to be evaluated"
+// or "this just produced this value", and a client can tell which.
+//
+// Both are needed, and neither on its own is enough. Exit is where the value
+// is: in a language with no statements and no intermediate variables, the
+// value of `filetext (loadfile ...)` has no name, and the only way to see it
+// without re-running the effect is to be stopped just after it. Enter is
+// where an effect can still be *stopped* - a `writefile` whose arguments are
+// all evaluated has nothing between it and the disk except its own Enter,
+// which is what makes "break here before it happens" expressible at all.
+//
+// A **breakpoint fires at Enter**, which is what every other debugger means
+// by stopping on a line. `Step_Over` from there runs the whole node and stops
+// at its Exit, so the value of the line you broke on is one keystroke away.
 //
 // **All threads stop together.** `async` (§2, eval_async.odin) gives a run
 // real OS threads, and a spawned task inherits the same `Debugger_Run`, so
@@ -31,6 +40,13 @@ import "core:strings"
 // still touch them.
 // What a paused run does when it is let go again. Set by the adapter before
 // each resume; read by every task's gate as it finishes a node.
+// Which side of a node a stop is on. See the header: Enter has no value yet,
+// Exit has one.
+Debug_Phase :: enum {
+  Enter,
+  Exit,
+}
+
 Debug_Mode :: enum {
   Stop_Next,  // stop at the very next node any task finishes - DAP's stepIn
   Step_Over,  // ... but not one inside a deeper call than `depth_target`
@@ -52,6 +68,8 @@ Debug_Frame :: struct {
 Debug_Stop :: struct {
   thread_id: int,
   node:      Node_Idx,
+  phase:     Debug_Phase, // Enter: nothing of this node has run yet, and `value` is nothing
+  nest_depth: int,        // this node's depth in the evaluation, for Step_Over
   value:     Value,
   ok:        bool,
   env:       ^Env,           // the environment that node finished in - the variables pane
@@ -83,7 +101,8 @@ Debugger_Run :: struct {
   // The current run mode and the call depth `Step_Over`/`Step_Out` measure
   // against - see Debug_Mode.
   mode:            Debug_Mode,
-  depth_target:    int,
+  depth_target:    int, // call frames: what Step_Out measures against
+  nest_target:     int, // evaluation depth: what Step_Over measures against, so it skips a whole subtree
   depth_thread:    int, // the task those depths are about; another task's depth means nothing to them
 
   // Breakpoint lines (1-based), as `setBreakpoints` last left them. A set
@@ -132,7 +151,23 @@ Debugger_Run :: struct {
 
 // Called from `eval`'s defer (see eval.odin), once per node, after that
 // node's result is already computed but before `eval` hands it back to its
-// caller. Decides whether this run stops here and, if so, blocks the calling
+// caller.
+debugger_gate :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env, ret_val: ^Value, ret_ok: ^bool) {
+  debugger_gate_at(interp, .Exit, node, env, ret_val, ret_ok)
+}
+
+// Called from `eval` on the way *in*, before the node has done anything at
+// all - which is the only moment an effect it is about to perform can still
+// be caught. Returns false when the run is being aborted, and the caller must
+// then fail without evaluating.
+debugger_gate_enter :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> bool {
+  val: Value = nil
+  ok := true
+  debugger_gate_at(interp, .Enter, node, env, &val, &ok)
+  return ok
+}
+
+// Decides whether this run stops at this point and, if so, blocks the calling
 // thread until the adapter resumes it.
 //
 // A task that does *not* itself decide to stop still parks whenever another
@@ -141,7 +176,10 @@ Debugger_Run :: struct {
 // the node's result is overwritten with a failure so the abort propagates
 // upward through the evaluator's existing recursive !ok short-circuiting,
 // exactly the way any other runtime error already does.
-debugger_gate :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env, ret_val: ^Value, ret_ok: ^bool) {
+@(private = "file")
+debugger_gate_at :: proc(
+  interp: ^Interpreter, phase: Debug_Phase, node: Node_Idx, env: ^Env, ret_val: ^Value, ret_ok: ^bool,
+) {
   dbg := interp.debugger
 
   sync.mutex_lock(&dbg.mu)
@@ -152,7 +190,7 @@ debugger_gate :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env, ret_val: 
     return
   }
 
-  reason, mine := stop_reason_locked(dbg, interp, node, ret_ok^)
+  reason, mine := stop_reason_locked(dbg, interp, phase, node, ret_ok^)
   if !mine && !dbg.is_stopped {
     sync.mutex_unlock(&dbg.mu) // nothing to stop for: straight through
     return
@@ -165,10 +203,12 @@ debugger_gate :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env, ret_val: 
     }
     dbg.is_stopped = true
     dbg.stop_info = Debug_Stop{
-      thread_id = interp.thread_id,
-      node      = node,
-      value     = ret_val^,
-      ok        = ret_ok^,
+      thread_id  = interp.thread_id,
+      node       = node,
+      phase      = phase,
+      nest_depth = interp.nest_depth,
+      value      = ret_val^,
+      ok         = ret_ok^,
       env       = env,
       frames    = slice_clone_frames(interp.frames[:]),
       reason    = reason,
@@ -198,16 +238,20 @@ debugger_gate :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env, ret_val: 
 // mid-step, and a step that has not reached its depth yet is not a stop at
 // all.
 @(private = "file")
-stop_reason_locked :: proc(dbg: ^Debugger_Run, interp: ^Interpreter, node: Node_Idx, ok: bool) -> (reason: string, stop: bool) {
+stop_reason_locked :: proc(
+  dbg: ^Debugger_Run, interp: ^Interpreter, phase: Debug_Phase, node: Node_Idx, ok: bool,
+) -> (reason: string, stop: bool) {
   // A node that failed is where a person wants to be looking, whatever mode
   // the run is in - the DAP equivalent of an uncaught exception, which in
-  // this language means any failure at all (§8: they are all fatal).
-  if !ok do return "exception", true
+  // this language means any failure at all (§8: they are all fatal). Only on
+  // the way out: on the way in nothing has happened yet, and `ok` there is
+  // not a result but the run's own abort flag.
+  if phase == .Exit && !ok do return "exception", true
 
-  // One node per breakpoint line answers both questions at once: how often to
-  // stop (once, when that node finishes) and which value to show (that node's,
-  // which is the whole line's).
-  if len(dbg.bp_nodes) > 0 {
+  // One node per breakpoint line, stopped at on the way *in*: "the program
+  // reached this line", which is what a breakpoint means everywhere else, and
+  // the only point at which whatever the line does can still be headed off.
+  if phase == .Enter && len(dbg.bp_nodes) > 0 {
     line, contained := node_line_if_contained(dbg, node)
     if contained {
       if target, has := dbg.bp_nodes[line]; has && target == node do return "breakpoint", true
@@ -220,12 +264,16 @@ stop_reason_locked :: proc(dbg: ^Debugger_Run, interp: ^Interpreter, node: Node_
   case .Stop_Next:
     return "step", true
   case .Step_Over:
-    // Only this task's own depth is meaningful: another task's stack has
-    // nothing to do with the call we are stepping over.
+    // Only this task's own depths are meaningful: another task's stack has
+    // nothing to do with the expression we are stepping over.
     if interp.thread_id != dbg.depth_thread do return "", false
-    if len(interp.frames) > dbg.depth_target do return "", false
+    // Measured in evaluation depth rather than call frames, so this skips a
+    // whole sub-expression and not merely a whole call: from a node's Enter
+    // it lands on that same node's Exit, having run everything in between.
+    if interp.nest_depth > dbg.nest_target do return "", false
     return "step", true
   case .Step_Out:
+    // Call frames, because this one is DAP's "run until the function returns".
     if interp.thread_id != dbg.depth_thread do return "", false
     if len(interp.frames) >= dbg.depth_target do return "", false
     return "step", true
@@ -380,6 +428,9 @@ debugger_stopped_at_breakpoint :: proc(dbg: ^Debugger_Run) -> bool {
   sync.mutex_lock(&dbg.mu)
   defer sync.mutex_unlock(&dbg.mu)
   if !dbg.is_stopped do return false
+  // Enter only: a breakpoint fires on the way in, so a run parked on that
+  // node's Exit is already past it.
+  if dbg.stop_info.phase != .Enter do return false
   target, has := dbg.bp_nodes[line_of_offset(dbg.lines, dbg.ast.nodes[dbg.stop_info.node].span.start)]
   return has && target == dbg.stop_info.node
 }
@@ -395,13 +446,16 @@ debugger_relabel_stop :: proc(dbg: ^Debugger_Run, reason: string) {
 // Lets a stopped run go again in `mode`. `depth_target`/`depth_thread` matter
 // only for Step_Over and Step_Out, which are defined against one task's call
 // depth (see stop_reason_locked). Safe to call on a run that has finished.
-debugger_resume :: proc(dbg: ^Debugger_Run, mode: Debug_Mode, depth_target := 0, depth_thread := 0) {
+debugger_resume :: proc(
+  dbg: ^Debugger_Run, mode: Debug_Mode, depth_target := 0, nest_target := 0, depth_thread := 0,
+) {
   if dbg == nil do return
   sync.mutex_lock(&dbg.mu)
   free_stop_info(&dbg.stop_info)
   dbg.is_stopped = false
   dbg.mode = mode
   dbg.depth_target = depth_target
+  dbg.nest_target = nest_target
   dbg.depth_thread = depth_thread
   dbg.resume_generation += 1
   sync.mutex_unlock(&dbg.mu)

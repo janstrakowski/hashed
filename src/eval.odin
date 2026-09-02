@@ -353,6 +353,13 @@ eval :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (ret_val: Value
       interp.current_node = outer_node
     }
   }
+  // The way in, before any of this node has happened - the only point at
+  // which an effect it is about to perform can still be stopped (see
+  // debugger.odin's header). A false here means the run is being aborted.
+  if interp.debugger != nil && !debugger_gate_enter(interp, node, env) {
+    return nil, false
+  }
+
   n := interp.ast.nodes[node]
   #partial switch n.kind {
   case .Root:

@@ -107,18 +107,38 @@ describe("hb dap", function () {
     assert.strictEqual(stopped.body.allThreadsStopped, true);
   });
 
-  // A breakpoint reports the *whole line's* value, not the first fragment of
-  // it to finish. Line 7 of arith.hb is `2 + 3 * 4`, and stopping there should
-  // say 14 - stopping on the `2` would be true and useless.
-  it("reports what the whole line came to", async () => {
+  // A breakpoint stops on the way *in*: the line has been reached and nothing
+  // of it has run, which is what a breakpoint means everywhere else and the
+  // only point at which what the line does can still be headed off. There is
+  // no value yet, so there is no Result scope to show one in.
+  it("stops before the line it breaks on", async () => {
     await session(dc, { program: fixture("arith.hb"), breakpoints: [7] });
     const stopped = await dc.waitForEvent("stopped");
     assert.strictEqual(stopped.body.reason, "breakpoint");
+    assert.match(stopped.body.description, /^-> 2 \+ 3 \* 4$/);
+
+    const { frame, scopes } = await whereIsIt(dc);
+    assert.strictEqual(frame.line, 7);
+    assert.deepStrictEqual(scopes.map((s) => s.name), ["Locals"]);
+  });
+
+  // ... and one Step Over runs the whole expression and stops on its way out,
+  // which is where the value is. It is the *whole line's* value: line 7 of
+  // arith.hb is `2 + 3 * 4`, and stopping on the `2` would be true and
+  // useless. Step Over is measured in evaluation depth, not call frames, so
+  // it skips the sub-expression rather than merely a call.
+  it("steps over the line it broke on, and lands on its value", async () => {
+    await session(dc, { program: fixture("arith.hb"), breakpoints: [7] });
+    await dc.waitForEvent("stopped");
+
+    await dc.nextRequest({ threadId: 1 });
+    const stopped = await dc.waitForEvent("stopped");
     assert.match(stopped.body.description, /2 \+ 3 \* 4 => 14/);
 
     const { frame, scopes } = await whereIsIt(dc);
     assert.strictEqual(frame.line, 7);
-    assert.ok(scopes.find((s) => s.name === "Result"), "a Result scope holds the value");
+    const result = scopes.find((s) => s.name === "Result");
+    assert.ok(result, "a Result scope holds the value once there is one");
   });
 
   // Breakpoints arrive before there is a run to put them on - that is when a
@@ -203,6 +223,9 @@ describe("hb dap", function () {
   // in scope and never what anyone is looking for.
   it("shows the result and the local bindings", async () => {
     await session(dc, { program: fixture("locals.hb"), breakpoints: [6] });
+    await dc.waitForEvent("stopped");
+    // Past the breakpoint's own Enter stop, to where the value is.
+    await dc.nextRequest({ threadId: 1 });
     await dc.waitForEvent("stopped");
 
     const { scopes } = await whereIsIt(dc);
