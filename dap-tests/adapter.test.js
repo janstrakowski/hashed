@@ -163,6 +163,83 @@ describe("hb dap", function () {
     assert.strictEqual(byId[set.body.breakpoints[1].id].verified, false, "line 1 is a comment");
   });
 
+  // The rule that keeps a breakpoint honest: if the adapter says a line is
+  // verified, breaking on it must actually stop. Every line of a multi-line
+  // expression, one session each - which is how the Table_Entry case was
+  // found. `.int_div = 7 / 2` is a node, the widest one on its line, and
+  // `eval` is never called on one: the old rule picked it, reported the
+  // breakpoint verified, and then never fired it.
+  it("stops on every line it says is verified", async () => {
+    const program = fixture("multiline.hb");
+    const total = require("fs").readFileSync(program, "utf8").split("\n").length;
+
+    for (let line = 1; line <= total; line++) {
+      const client = new DebugClient(HB, "dap", "hashedbuild");
+      await client.start();
+      try {
+        await client.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
+        await client.waitForEvent("initialized");
+        await client.launchRequest({ program });
+        const set = await client.setBreakpointsRequest({
+          source: { path: program },
+          breakpoints: [{ line }],
+        });
+        if (!set.body.breakpoints[0].verified) continue;
+
+        await client.configurationDoneRequest();
+        const stopped = await client.waitForEvent("stopped");
+        assert.strictEqual(
+          stopped.body.reason, "breakpoint",
+          `line ${line} verified but stopped for ${stopped.body.reason}`,
+        );
+      } finally {
+        await client.stop();
+      }
+    }
+  });
+
+  // Lines 8-11 of multiline.hb hold expressions; line 12 is a lone `}` and
+  // line 1 a comment. A breakpoint is a line, so what makes it verifiable is
+  // an expression *starting* there - line 8 is the `{` of a Table that ends
+  // four lines later, and breaking on it means breaking on the Table.
+  it("verifies the lines an expression starts on, and no others", async () => {
+    const program = fixture("multiline.hb");
+    await dc.initializeRequest({ adapterID: "hashedbuild", linesStartAt1: true });
+    await dc.waitForEvent("initialized");
+    await dc.launchRequest({ program });
+
+    const lines = [1, 8, 9, 10, 11, 12];
+    const set = await dc.setBreakpointsRequest({
+      source: { path: program },
+      breakpoints: lines.map((line) => ({ line })),
+    });
+    const verified = Object.fromEntries(
+      lines.map((line, i) => [line, set.body.breakpoints[i].verified]),
+    );
+    assert.deepStrictEqual(verified, {
+      1: false,  // a comment
+      8: true,   // the `{` - the Table starts here
+      9: true,
+      10: true,
+      11: true,
+      12: false, // a lone `}` - nothing starts here
+    });
+  });
+
+  // A breakpoint on the line an outer expression starts fires once, not once
+  // for the outer expression and again for each one nested inside it that
+  // happens to start on the same line.
+  it("fires once on a line that opens a multi-line expression", async () => {
+    await session(dc, { program: fixture("multiline.hb"), breakpoints: [8] });
+    const stopped = await dc.waitForEvent("stopped");
+    assert.strictEqual(stopped.body.reason, "breakpoint");
+
+    await dc.continueRequest({ threadId: 1 });
+    const output = await dc.waitForEvent("output");
+    assert.strictEqual(output.body.output.trim(), "{int_div: 3, doubled: 8, negation: -3}");
+    await dc.waitForEvent("terminated");
+  });
+
   // Two clients, two orders. VS Code launches first and configures after;
   // DAP's own recommended order - and nvim-dap - sends `configurationDone`
   // before `launch`. The run is parked either way, so whichever of the two

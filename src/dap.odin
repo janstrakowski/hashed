@@ -309,10 +309,9 @@ dap_release_run :: proc(s: ^Dap_Session) {
   switch {
   case s.stop_on_entry:
     dap_report_state(s)
-  case debugger_stopped_at_breakpoint(s.run):
+  case debugger_claim_breakpoint_stop(s.run):
     // The run is parked exactly where a breakpoint was just set, and that
     // node will not be evaluated again - so this *is* the hit.
-    debugger_relabel_stop(s.run, "breakpoint")
     dap_report_state(s)
   case:
     dap_go(s, .Running)

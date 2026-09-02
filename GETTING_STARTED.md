@@ -305,8 +305,11 @@ the command line, unless the configuration also sets
 scope the run stopped in — so a watch expression that calls a filesystem builtin
 touches the filesystem, exactly as it would in the program.
 
-Breakpoints are verified per line: a line no expression starts on comes back
-unverified, so a client can grey it out rather than pretend.
+Breakpoints are verified per line: a line no expression starts on - a comment,
+a blank line, a closing brace - comes back unverified, so a client can grey it
+out rather than pretend. A line that opens a multi-line expression is a
+breakpoint on that whole expression, and fires once when the run reaches it,
+not once per expression nested inside it.
 
 `dap-tests/` drives all of this with the protocol's own reference client — see
 CLAUDE.md for why that one directory has a `package.json`.

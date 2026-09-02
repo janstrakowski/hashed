@@ -56,6 +56,13 @@ Debug_Mode :: enum {
 
 // One user-level call on a task's stack, pushed by call_function (eval.odin).
 // The debugger reports these as DAP stack frames, innermost last.
+// One breakpoint line a task is currently inside, and the node that opened
+// it - see the breakpoint section below.
+Bp_Open :: struct {
+  line: int,
+  node: Node_Idx,
+}
+
 Debug_Frame :: struct {
   fn:        ^Function_Value,
   call_node: Node_Idx, // the expression the call was made from, for the caller's line
@@ -73,6 +80,7 @@ Debug_Stop :: struct {
   value:     Value,
   ok:        bool,
   env:       ^Env,           // the environment that node finished in - the variables pane
+  interp:    ^Interpreter,   // the stopped task itself, borrowed - it is parked, so its state holds still
   frames:    []Debug_Frame,  // a copy: the stopped thread's own stack keeps moving after it resumes
   reason:    string,         // DAP's stop reason: "step", "breakpoint", "entry", "exception"
   error_message: string,     // set when !ok, so an exception stop can say what failed
@@ -125,10 +133,11 @@ Debugger_Run :: struct {
   // outwards, since those are not the program's own names.
   global_env:      ^Env,
 
-  // Breakpoint line -> the one node whose completion fires it: the widest
-  // expression that begins and ends on that line. See debugger_set_breakpoints
-  // for why it is that one and not another.
-  bp_nodes: map[int]Node_Idx,
+  // Lines some evaluated expression begins on - the lines a breakpoint can be
+  // set on at all. Computed once, the first time anything asks
+  // (line_starts_an_expression).
+  bp_startable: map[int]bool,
+  bp_startable_built: bool,
 
   // Nodes the evaluator never runs - an operator token, a name in binding
   // position - computed once, the first time a breakpoint needs to know
@@ -207,6 +216,7 @@ debugger_gate_at :: proc(
       node       = node,
       phase      = phase,
       nest_depth = interp.nest_depth,
+      interp     = interp,
       value      = ret_val^,
       ok         = ret_ok^,
       env       = env,
@@ -248,15 +258,7 @@ stop_reason_locked :: proc(
   // not a result but the run's own abort flag.
   if phase == .Exit && !ok do return "exception", true
 
-  // One node per breakpoint line, stopped at on the way *in*: "the program
-  // reached this line", which is what a breakpoint means everywhere else, and
-  // the only point at which whatever the line does can still be headed off.
-  if phase == .Enter && len(dbg.bp_nodes) > 0 {
-    line, contained := node_line_if_contained(dbg, node)
-    if contained {
-      if target, has := dbg.bp_nodes[line]; has && target == node do return "breakpoint", true
-    }
-  }
+  if len(dbg.breakpoints) > 0 && breakpoint_fires(dbg, interp, phase, node) do return "breakpoint", true
 
   switch dbg.mode {
   case .Running:
@@ -279,6 +281,75 @@ stop_reason_locked :: proc(
     return "step", true
   }
   return "", false
+}
+
+// ---- breakpoints ---------------------------------------------------------------
+//
+// A breakpoint is a *line*, and a line holds many expressions - `7 / 2` on a
+// line of a Table literal is inside an entry, inside the Table, inside the
+// program. Stopping at each would fire one breakpoint eight times.
+//
+// So a line fires once per visit: at the Enter of the first expression the
+// evaluator actually reaches that begins on that line, and not again until
+// that expression is done. Since Enter runs outermost-first, "the first one
+// reached" is the outermost - without anyone having to work out in advance
+// which node that is.
+//
+// That last part is the point, and it is why this does not simply pick a node
+// when the breakpoint is set. Which nodes the evaluator visits is a fact
+// about `eval`, not about the tree: a Table_Entry is a node, and `eval` is
+// never called on one - it reads the key and evaluates the value. A rule that
+// picked the widest node on the line picked the entry, reported the
+// breakpoint verified, and then never fired it. Reaching a node is the only
+// answer that cannot go stale as the evaluator changes.
+//
+// Nesting is tracked per task, in `interp.bp_open`: a breakpoint line inside
+// a function called from another breakpoint line has to open and close within
+// it, and two `async` tasks can be inside the same line at once.
+@(private = "file")
+breakpoint_fires :: proc(dbg: ^Debugger_Run, interp: ^Interpreter, phase: Debug_Phase, node: Node_Idx) -> bool {
+  if phase == .Exit {
+    // Closing whatever this node opened, so the next visit fires again.
+    n := len(interp.bp_open)
+    if n > 0 && interp.bp_open[n - 1].node == node do pop(&interp.bp_open)
+    return false
+  }
+
+  line := node_start_line(dbg, node)
+  if !(line in dbg.breakpoints) do return false
+  if !is_evaluated_node(dbg, node) do return false
+
+  // Already inside this line: an inner expression of a line that has already
+  // stopped is not a second visit.
+  n := len(interp.bp_open)
+  if n > 0 && interp.bp_open[n - 1].line == line do return false
+
+  append(&interp.bp_open, Bp_Open{line = line, node = node})
+  return true
+}
+
+// The line an expression starts on. A node that spans several lines belongs
+// to the first of them, so a breakpoint on the `{` of a Table literal is a
+// breakpoint on the Table.
+node_start_line :: proc(dbg: ^Debugger_Run, node: Node_Idx) -> int {
+  return line_of_offset(dbg.lines, dbg.ast.nodes[node].span.start)
+}
+
+// Whether a breakpoint on this line can ever fire: whether any expression the
+// evaluator runs begins there. A comment, a blank line or a lone `}` has none,
+// and the adapter reports those unverified rather than letting a client show a
+// breakpoint that will never happen.
+@(private = "file")
+line_starts_an_expression :: proc(dbg: ^Debugger_Run, line: int) -> bool {
+  if !dbg.bp_startable_built {
+    dbg.bp_startable_built = true
+    for _, i in dbg.ast.nodes {
+      idx := Node_Idx(i)
+      if !is_evaluated_node(dbg, idx) do continue
+      dbg.bp_startable[node_start_line(dbg, idx)] = true
+    }
+  }
+  return line in dbg.bp_startable
 }
 
 // The stopped task's frames, copied while it is parked. Its own `frames` keeps
@@ -423,25 +494,34 @@ debugger_wait_until_settled :: proc(dbg: ^Debugger_Run) {
 // the `2` - so a breakpoint on that line, set while the run was parked there,
 // would never fire: its gate has already run and will not run again. Reporting
 // it as a breakpoint hit instead is both true and what anyone would expect.
-debugger_stopped_at_breakpoint :: proc(dbg: ^Debugger_Run) -> bool {
+// A run parks at its first node the moment it launches, before a client has
+// sent any breakpoints - so if one then lands on the line that node begins,
+// the run is already exactly where it asked to stop, and that node will never
+// be reached again. This turns the stop it already made into that breakpoint's
+// hit, rather than reporting a step and stopping a second time.
+//
+// It *claims* the line as well as relabelling it: the parked task never went
+// through `breakpoint_fires` for this node, because there were no breakpoints
+// when it stopped, so without this every expression inside the node would fire
+// the same breakpoint over again.
+debugger_claim_breakpoint_stop :: proc(dbg: ^Debugger_Run) -> bool {
   if dbg == nil do return false
   sync.mutex_lock(&dbg.mu)
   defer sync.mutex_unlock(&dbg.mu)
   if !dbg.is_stopped do return false
-  // Enter only: a breakpoint fires on the way in, so a run parked on that
-  // node's Exit is already past it.
+  // Enter only: a breakpoint fires on the way in, so a run parked on a node's
+  // Exit is already past it.
   if dbg.stop_info.phase != .Enter do return false
-  target, has := dbg.bp_nodes[line_of_offset(dbg.lines, dbg.ast.nodes[dbg.stop_info.node].span.start)]
-  return has && target == dbg.stop_info.node
+  line := node_start_line(dbg, dbg.stop_info.node)
+  if !(line in dbg.breakpoints) do return false
+
+  dbg.stop_info.reason = "breakpoint"
+  if dbg.stop_info.interp != nil {
+    append(&dbg.stop_info.interp.bp_open, Bp_Open{line = line, node = dbg.stop_info.node})
+  }
+  return true
 }
 
-// Relabels why the run is stopped - see above, where a park turns out to be a
-// breakpoint hit after all.
-debugger_relabel_stop :: proc(dbg: ^Debugger_Run, reason: string) {
-  sync.mutex_lock(&dbg.mu)
-  dbg.stop_info.reason = reason
-  sync.mutex_unlock(&dbg.mu)
-}
 
 // Lets a stopped run go again in `mode`. `depth_target`/`depth_thread` matter
 // only for Step_Over and Step_Out, which are defined against one task's call
@@ -469,59 +549,24 @@ free_stop_info :: proc(info: ^Debug_Stop) {
   info^ = {}
 }
 
-// Replaces the breakpoint set, resolving each line to the single node that
-// fires it. Lines are 1-based, and the answer says which of them got one,
-// since DAP wants each breakpoint marked verified or not rather than silently
-// accepting a line nothing runs at.
+// Replaces the breakpoint set. Lines are 1-based, and the answer says which
+// of them can ever fire, since DAP wants each breakpoint marked verified or
+// not rather than silently accepting a line nothing runs at.
 //
-// **The widest expression that begins and ends on the line.** A line holds
-// many nodes, and the first of them to finish is the innermost and least
-// interesting: a breakpoint on line 13 of option-picker.hb reported `ctx`,
-// when what a person means by "line 13" is the whole of
-// `loadfile { ... } |> filetext` and what they want to see is what that came
-// to. The widest contained node is exactly that expression. Picking one node
-// also settles how often to stop - once, when it finishes - without the
-// bookkeeping an "and not again for this line" rule needs.
+// Which node a line fires on is not decided here - see `breakpoint_fires`,
+// which lets the run answer it by reaching one. All this needs to know is
+// whether any expression *starts* on the line at all: a comment, a blank line
+// and a closing brace have none.
 debugger_set_breakpoints :: proc(dbg: ^Debugger_Run, lines: []int, allocator := context.allocator) -> []bool {
   verified := make([]bool, len(lines), allocator)
   sync.mutex_lock(&dbg.mu)
   clear(&dbg.breakpoints)
-  clear(&dbg.bp_nodes)
   for line, i in lines {
     dbg.breakpoints[line] = true
-    node, found := widest_node_on_line(dbg, line)
-    if found do dbg.bp_nodes[line] = node
-    verified[i] = found
+    verified[i] = line_starts_an_expression(dbg, line)
   }
   sync.mutex_unlock(&dbg.mu)
   return verified
-}
-
-// A linear scan of the tree, which is fine: it runs once per setBreakpoints
-// request, not once per node evaluated.
-//
-// Only nodes `eval` actually visits are eligible, which is not all of them:
-// a name in binding position and an operator token are both nodes with spans,
-// and neither is ever evaluated. Choosing one silently disables the
-// breakpoint - it is reported verified and then never fires, which is worse
-// than refusing it. That is exactly what happened to
-// `let a 2; let b 3; let c 4;`, where every contained node is one token wide
-// and the tie went to a bind target.
-@(private = "file")
-widest_node_on_line :: proc(dbg: ^Debugger_Run, line: int) -> (best: Node_Idx, found: bool) {
-  widest := u32(0)
-  for _, i in dbg.ast.nodes {
-    idx := Node_Idx(i)
-    l, contained := node_line_if_contained(dbg, idx)
-    if !contained || l != line do continue
-    if !is_evaluated_node(dbg, idx) do continue
-    span := dbg.ast.nodes[i].span
-    width := span.end - span.start
-    if !found || width > widest {
-      best, widest, found = idx, width, true
-    }
-  }
-  return best, found
 }
 
 // Whether `eval` ever runs on this node, or whether it is only ever read as
@@ -552,25 +597,6 @@ is_evaluated_node :: proc(dbg: ^Debugger_Run, node: Node_Idx) -> bool {
   return !(node in dbg.syntax_only)
 }
 
-// The line a node belongs to, and whether it belongs to just the one.
-//
-// A breakpoint fires only for a node **contained within** its line, and this
-// is why. Stopping happens after a node completes (see this file'''s header),
-// and an enclosing node completes long after the line it starts on: in
-// `let a 2; let b 3;` the `let` spans everything that follows it, so it
-// finishes at the end of the program while still *starting* on line 1.
-// Counting it as an event on that line would fire the breakpoint a second
-// time, on the way out, which reads as "continue did nothing".
-//
-// So: a multi-line node is nobody'''s line event. What is left - the operands,
-// the calls, the literals - is exactly what "this line ran" means here.
-@(private = "file")
-node_line_if_contained :: proc(dbg: ^Debugger_Run, node: Node_Idx) -> (line: int, contained: bool) {
-  span := dbg.ast.nodes[node].span
-  start := line_of_offset(dbg.lines, span.start)
-  end := line_of_offset(dbg.lines, span.end)
-  return start, start == end
-}
 
 // Tells every task in a run to abort (if it hasn't finished already), waits
 // for all of their threads to actually exit, then frees everything the run
@@ -612,7 +638,7 @@ stop_debugger_run :: proc(dbg: ^Debugger_Run) {
 
   free_stop_info(&dbg.stop_info)
   delete(dbg.breakpoints)
-  delete(dbg.bp_nodes)
+  delete(dbg.bp_startable)
   delete(dbg.syntax_only)
   line_index_destroy(dbg.lines)
   ast_destroy(&dbg.ast)

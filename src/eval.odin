@@ -110,6 +110,11 @@ Interpreter :: struct {
   // inspect. Empty for every run without a debugger attached, which is what
   // keeps this free for the REPL, `hb <file>` and the tests.
   frames: [dynamic]Debug_Frame,
+  // The breakpoint lines this task is currently inside, innermost last -
+  // what keeps a breakpoint firing once per visit rather than once per
+  // expression on the line (debugger.odin, "breakpoints"). Per task, since
+  // two `async` tasks can be inside the same line at the same time.
+  bp_open: [dynamic]Bp_Open,
   // Which task this interpreter is, as DAP names threads: 1 for the program
   // itself, and one more per `async` task in spawn order
   // (register_debugger_task). Zero when no debugger is attached, which is
