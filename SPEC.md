@@ -1,412 +1,80 @@
-# HashedBuild Language Spec (draft)
-
-This is a **living draft**, not a finalized specification — mirrors the README's own framing of this project as a "faked proof-of-concept." Sections below capture design decisions as discussed so far. Anything unresolved is marked inline with `> TODO:`. Expect this document to keep growing and changing.
-
----
-
-## 1. Overview / philosophy
-
-HashedBuild is a **functional language for build systems**. Its central idea: filesystem entities (files, directories) are first-class values, on equal footing with integers, strings, and other primitives. Building something that touches the filesystem is just producing a result value that happens to incorporate `File` values — not a side-effecting action distinct from ordinary computation.
-
-Design goals (from the README): output reproducibility, incremental updates, standards compliance, extensibility, a standard library of common operations.
-
-## 2. Program / execution model
-
-A **program** is a function that accepts an explicit argument (from the CLI or an API) and an implicit context (composed of builtins and dependencies supplied by the runtime internals), and produces — again — an explicit result and an implicit context. This explicit-argument / implicit-context pairing is the calling convention for **every** function in the language, not just top-level programs (see [§7 Functions](#7-functions)).
-
-**Concurrency.** Execution is sequential by default, in the order established by operator precedence and control-flow structure. Concurrency is opt-in via an `async` directive wrapping an expression. There is no separate upfront pass to detect whether async work exists anywhere — detection is a side effect of the first real execution pass:
-
-- **Pass 1** walks the expression tree in evaluation order, actually executing every synchronous sub-expression as it goes. When it directly encounters an expression wrapped in `async`, it **starts that operation immediately** (fired off, running concurrently in the background) but does not wait for it — evaluation of the `async` expression itself is left for pass 2. An `async` nested further down inside otherwise-sync structure is still found without special-casing, since pass 1's ordinary recursion into sync sub-expressions reaches it regardless of depth.
-- If pass 1 finds no `async` anywhere, **pass 2 is skipped entirely.**
-- Otherwise, **pass 2** walks the same route again, awaiting every async operation encountered along the way, in order — each is likely already in flight (or done) by the time pass 2 reaches it, which is what makes the sequential in-order awaiting actually concurrent in practice. Once pass 2's walk reaches the end, the work is done.
-
-**Branching interacts with this specially.** Ordinarily a conditional (`then`, `else`, §8) only evaluates whichever branch is actually taken. When async is involved, this changes: *all* branches must still be walked, not just the taken one — because an async operation started inside an untaken branch still has to be awaited to completion; only its resulting *value* is discarded once it resolves. (The build-system framing in §1 suggests why: an async operation likely represents a real side effect — a download, a write — that can't be safely abandoned mid-flight just because its result turns out to be unneeded.)
-
-A condition (of `then`, `and`, `or`, `is`) can itself be, or contain, an async expression too — these are ordinary expressions, no special restriction. Combined with the rule above, this means pass 1 doesn't need a condition resolved to decide which branch to walk when async is present anywhere: it starts whatever async work exists in the condition and in every branch, and pass 2 resolves everything — condition included — before the correct branch's value is settled on.
-
-**Errors are not scoped per-branch.** If *any* async operation anywhere fails — including one in a branch whose value would have been discarded — the failure "poisons the whole well": the entire evaluation fails, not just the branch that errored.
-
-**No separate dependency graph exists between async operations, because none is needed.** All values are immutable (§6) and there's no mutable handle/promise/channel type in the language — the only way one expression can use another's result is by syntactically containing it. If some expression needs an async sub-expression's value, that sub-expression is, by construction, nested inside it, and since pass 2 walks the exact same route as pass 1 in the same order, it necessarily resolves an inner async value before evaluating anything outside it that consumes it. Ordinary nested-expression evaluation order *is* the dependency graph.
-
-**Implementation note (2026-08-27):** the evaluator (`src/eval_async.odin`) doesn't literally run two tree walks. `async <expr>` spawns `<expr>` on a real OS thread and returns an opaque handle immediately (that alone *is* "pass 1: start it"); a generic `await_value` resolves a handle (joining its thread, or propagating its failure) and is inserted at the small set of places that genuinely need a concrete value — arithmetic/comparison/concat/table-access operands, a call target, a ctx swap, a guard's condition, `Table`/`Variant` entries. Since `await_value` is a no-op for any other kind of `Value`, this reproduces "pass 2 is skipped entirely when there's no async" for free, at zero cost to programs that never use it. (Since 2026-08-31 those places call `concrete_value`, which is `await_value` plus §10's forward-reference resolution — the same idea at a different scale, a value that is not ready yet, which is why both resolve at exactly these points. Places that *store* a value rather than looking at it — `Table`/`Variant` entry construction — still call `await_value` alone, because storing a forward reference unread is what makes a cycle's back-edge.) `then`/`else` and `and`/`or` additionally do a purely structural scan (`contains_async_anywhere`, deliberately ignoring §7's hole-boundary rules) to decide whether their untaken side must still be force-evaluated-and-awaited for its side effects — ordinary (non-async) branching is completely unaffected. Firing several sibling `async`s before awaiting any of them (as `Table`/`Variant` construction does) is what makes them actually run concurrently with each other. Known simplifications: an `async` sub-evaluation doesn't participate in the step-trace or interactive-debugger mechanisms (its own `Interpreter` never sets either), and if a *sibling*, already-fired async is abandoned because another entry in the same `Table`/call fails synchronously first, its background thread is left to finish unjoined rather than being explicitly cleaned up — consistent with this evaluator's existing "runtime values are never freed" stance, not a new gap.
-
-## 3. Primitive types
-
-- **`Integer`** — 64-bit signed
-- **`Float`** — 64-bit floating point
-- **`Boolean`** — no additional notes
-- **`Utf8`** — UTF-8 encoded string, length-based internally (not null-terminated)
-- **`Bytes`** — raw binary data, length-based like `Utf8` (not null-terminated) but with no UTF-8 (or any other) validity constraint — arbitrary bytes. Hashing/equality/ordering are byte-wise, per §6's generic total order.
-- **`File`** — Immutable (from HashedBuild's side) handle to a filesystem entity — file or directory only. Symlink handling exists but is tied to the directories that hold the symlinks.
-- **`Nothing`** — a unit type with exactly one value, the literal `nothing`. A generic "no meaningful value" result — e.g. for a function whose point is its effect on the returned context (§2) rather than its explicit result. Participates in §6's value semantics like everything else (hashable, ordered, serializable) with no special-cased behavior. Also the payload the `absent` sugar carries — see [§5's "Optional values"](#5-complex-types).
-
-**Hashing / equality / ordering.** A `File`'s identity is **pure content, independent of path.** Where it was read from is how the value was obtained, not part of the value itself — two `File`s built from different paths are equal whenever their content matches. Ordering follows the same generic total-order mechanism as every other value (§6), keyed off this hash.
-
-- A **regular file**'s hash is just `hash(content_bytes)`. Its own permission bits are *not* part of its identity — and, as of 2026-08-31, not part of a directory entry's either (next point).
-- A **directory**'s hash is computed over its entries, sorted by name for determinism (independent of filesystem readdir order):
-  ```
-  dir_entry_hash(name, entry) =
-    hash(name, "file",    content_hash)       // no permission bits, of any kind
-    hash(name, "dir",     child_dir_hash)
-    hash(name, "symlink", target_path_string) // target is NOT followed/resolved
-  dir_hash = hash(sorted [dir_entry_hash(name, entry) for each entry])
-  ```
-  A symlink entry hashes the link itself (its target path string) rather than resolving through it — consistent with symlink handling being a property of the containing directory, not a standalone `File` value in its own right. An entry that is none of the three — a fifo, a socket, a device node — has no encoding here, and hashing a directory containing one fails rather than skipping it: a digest that ignored part of a tree would call two different trees the same value.
-
-  **When the entries are read (resolved 2026-08-31).** A directory `File`'s children live on the filesystem rather than in the value, so unlike every other digest this one performs I/O. It happens **at the first demand** — the first `sha256` or comparison that needs the digest — and is subject to `ctx.permissions.io` (§9) at that moment, exactly as `loadfile` is: a context that has revoked `io` cannot read a tree through a handle it was passed. The result is then part of the value and is never re-read, which is what `File` being an immutable handle (above) requires: a value whose digest changed under a program because someone touched the tree would not be one. Observing a change means loading the directory again, which produces a new value.
-
-  **No permission bits (resolved 2026-08-31, reversing an earlier resolution of the same day).** This section first kept an executable flag alongside a file entry's content — "executable flag only, not full POSIX mode" — and the directory hash was built that way, with the bit read where a target could see one and false elsewhere. It is gone. No permission bit of any kind is part of a value's identity.
-
-  The reason is that only Linux can report one. WASI's `filestat` carries no permission bits at all, and Windows has no POSIX execute bit; neither can be made to answer, and neither can be given a stand-in (an `.exe` extension is not the same question, and what a POSIX emulation layer guesses from a shebang is a guess). Hashing the bit therefore made **one tree two values depending on where it was checked out** — not hypothetically: git records exactly this one bit (`100644` vs `100755`) and, on Windows, sets `core.fileMode=false` so the bit round-trips through the repository without ever existing in the working tree. The same commit checks out executable on Linux and not on Windows. This repository has four such files, so its own `scripts/` directory would have hashed two ways.
-
-  The alternative would have been to *remember* the bit rather than re-derive it, which is what git does. That is not available here: a `File` is a handle onto a live directory, with no index alongside it to consult. Given a choice between a digest that disagrees across targets and one that ignores a bit two of the three cannot see, this takes the second. Two trees differing only in an executable bit are one value, and the platform a build runs on stops changing what its inputs hash to.
-
-  Implementations may still *preserve* the bit when copying a tree — §15's cache does, so that caching a build output does not silently strip it. That is fidelity in the store, not identity in the language.
-
-  What tipped it was looking at how git behaves rather than at what it records. The first resolution cited `core.filemode` as agreeing; it does the opposite, because git never re-derives the bit on a target that cannot report one — it carries the one from the index, which is a move this language has no equivalent of.
-
-**Display (resolved 2026-08-27).** A `File` displays **the path it was reached by**, made absolute and cleaned of `.`/`..` segments — recorded when the value is constructed, not resolved through the filesystem afterwards. Two consequences worth stating: a symlinked route displays as the route taken rather than the target it resolves to, and a file renamed after it was loaded still displays the path it was loaded from. This is what makes the rule implementable off Linux at all — WASI (and the portable `*at()` family) offer no way to turn an open descriptor back into a path.
-
-Printing/displaying a `File` — in the REPL, the live editor's result pane, or anywhere else a value gets shown to a human — shows its actual filesystem path. This holds for **every** `File` value, regardless of how it was obtained (`loadfile`, `createfile`, `symlink`'s containing directory, etc.), not just the ones `createfile` writes into `ctx.cache` (§16) — that case is simply the one where a path is otherwise unreachable, so it's the one worth calling out explicitly there. The only exception is `ctx.cache` itself: a distinct, "magic" pseudo-directory type (§16) that is *not* a `File` and has no path of its own to show. Path stays display-only either way — there is still no builtin that lets HashedBuild source read a `File`'s path back out as a `Utf8` value; this is purely about what a human sees when a value is printed, not a new capability for programs.
-
-> TODO: no permission bit is part of a value's identity at all as of 2026-08-31 (above), which resolves the old form of this question — "is the executable bit enough, or does some other mode bit need to round-trip" — by removing the one bit that was in. What is left open is whether a build ever genuinely needs a permission to be part of *identity* rather than merely preserved by the store; if one does, it needs an answer for the two targets that cannot see one, which is what sank the executable bit.
-
-**Numeric literals** (proposed 2026-08-26, loosely modeled on C but simplified — no type-width suffixes needed, since there's exactly one `Integer` width and one `Float` width):
-
-- **`Integer`**: decimal (`42`), hex (`0x2A`/`0X2a`), octal (`0o52` — an explicit prefix, unlike C's ambiguous bare-leading-zero form), binary (`0b101010`).
-- **`Float`**: decimal with a mandatory digit on both sides of the `.` (`0.5`, not `.5` — a readability choice, not a grammar necessity: dotted-suffix `Table` access, §5, doesn't actually collide, since an omitted operand there is blank, not spelled with a leading `.`), plus an optional decimal exponent (`1.5e10`, `1.5E-3`). No hex-float form (C99's `0x1.8p3`) — left out as unneeded for a build-system language, revisitable later.
-- **Digit separator**: `_`, freely between digits in either form, including within an exponent (`1_000_000`, `0xFF_FF_FF`, `1_000.5e1_0`) — not leading, trailing, doubled, or adjacent to a base prefix or the decimal point.
-- A literal is `Float` iff it contains a `.` or an exponent; otherwise it's `Integer` — no suffix needed to disambiguate.
-
-> TODO: Is there a conversion between `Bytes` and `Utf8` (encode/decode, presumably fallible one way since not all `Bytes` are valid UTF-8)? (The related question of whether §15's canonical byte encoding is itself conceptually a `Bytes` value went away with `serialize`'s removal on 2026-08-28 — that encoding is now purely internal, the thing the hash is computed over, and no builtin hands it back.)
-
-## 4. Operators
-
-- Standard arithmetic
-- Standard comparison
-- Standard logical — spelled `and`/`or` (words, not `&&`/`||`); see §8 for their scope-threading rules (`and` threads scope left-to-right, `or` doesn't)
-- **Concatenation** — an infix `concat` literal (i.e. written as a keyword between operands, e.g. `a concat b`)
-
-**Type coverage** (resolved 2026-08-26, revised same day to add `Table`): `concat` supports `Utf8`, `Bytes`, and `Table` (§5) — same-type only, no mixing `Utf8` with `Bytes` in one call. `Table concat Table` merges two tables, with the right-hand side's entries overriding the left's on key collision — this doubles as `Table`'s functional-update mechanism (§5). `File` doesn't support `concat`.
-
-**Unary minus** (resolved 2026-08-26): reads exactly as in ordinary mathematics. `-2-1` means "negate 2, then subtract 1" (`(-2) - 1 = -3`), binding tighter than any binary operator, applied to whatever primary/operand immediately follows it (a literal, a name, a parenthesized expression, ...). Consequently, a leading `-` at the start of an expression is **never** read as an omitted left operand of binary minus (§7) — that specific ambiguity resolves permanently in favor of unary minus, since "blank, then `-`" and "unary minus" are indistinguishable at that position and unary minus wins outright. There's still no bare-omission-section spelling for "subtract N from the omitted argument" as a result — `func #arg - 1` or `asfunc` remain the way to write that function explicitly.
-
-## 5. Complex types
-
-Revised 2026-08-26: `Map`, `Array`, and `Variant` are retired as separate types, unified into one Lua-style associative structure:
-
-- **`Table`** — maps arbitrary hashable keys (§6) to values. There's no structural distinction between "array-like" and "map-like" usage anymore — a sequence is just a `Table` whose keys happen to be sequential integers **starting at 1** (revised 2026-08-26: the language is 1-indexed, retroactively — a sequence's first element is `t[1]`/`t.1`, not `t[0]`/`t.0`).
-  - **Access**: `<table>[<expr>]` for an arbitrary key, or dotted-suffix sugar: `<table>.field` for an identifier-shaped suffix (sugar for `<table>["field"]`, an `Utf8` key), `<table>.5` for a numeral-shaped suffix (sugar for `<table>[5]`, an `Integer` key). One rule now covers what used to be two separate types' access sugar — the suffix's own shape (identifier vs. numeral) picks the key's type.
-  - **General dot sugar** (resolved 2026-08-26): `.<identifier>` is this exact same sugar — "the identifier's own spelling, as a `Utf8` string, substituted wherever a bracketed key/expression would go" — everywhere a dot-form like this appears in the language, not just plain access: the `:.`/`!.` variant forms (below) and `{.field}` pattern selectors (§8) are all the identical rule applied in different contexts, not separate mechanisms that happen to share a symbol.
-  - **Hashing**: `hash(Table) = hash(sorted [(key, value) for each entry])` — the same sort-then-hash pattern §3 already uses for `File` directory hashing, so that the digest does not depend on the order entries were written in. **Amended 2026-08-31** to say what the sort is actually keyed on: entries are ordered by their **key's digest**, not by §6's generic total order. The two would agree, but §6's cross-type ordering is not built, and a digest order is both deterministic and available without it. A cyclic `Table` (§10) has no digest at all — see §6.
-  - **Equality** is structural, not hash-derived: entries are matched by key and compared pairwise, so entry order never affects it. Only `File` compares *through* its digest, because §3 defines a `File`'s identity that way. Since 2026-08-31 the walk also terminates on a cyclic `Table` — see §6 for the algorithm.
-  - **`empty`** — a bare keyword that, in an ordinary expression context, constructs an empty `Table` (zero entries) — the first concrete answer to this section's "is there `Table` literal syntax" question, at least for the trivial case; a nonempty literal form is still unspecified. `empty` also doubles as a pattern (§8) matching a `Table` with zero entries.
-
-Subject to pattern matching via `is` (see [§8](#8-control-flow)).
-
-### Variants, as a `Table` convention
-
-There's no separate `Variant` type anymore — a "variant" is just the idiom of a **one-entry `Table`**, where the key is the tag and the value is the payload:
-
-- **Construct**: `::<key-expr> <value>` builds `{ <key-expr>: <value> }`, where `<key-expr>` is any expression computing the key. `:.<name> <value>` is the dot-sugar special case (above) for a static, literal tag: `:.<name> <value>` ≡ `::"<name>" <value>`. Both take the same trailing payload — the two forms differ only in how the key is spelled, not in arity. (This resolves the earlier open question here: it's hypothesis (a), a static/dynamic key distinction — not (b), a payload/no-payload one. Earlier examples in this doc that wrote a bare identifier straight after `::`, e.g. `::present <value>`, were technically imprecise — a literal tag like `present` should use the `:.` form: `:.present <value>`.)
-- **Check-or-throw**: `!:<expr>` / `!.<name>` — asserts the table has a matching entry and extracts its value, else raises a failure (§11). Same relationship: `!:<expr>` checks an arbitrary computed key, `!.<name>` is dot-sugar for `!:"<name>"`.
-
-### Optional values
-
-Revised 2026-08-26: `absent` is retired. A present optional is still a one-entry `Table`, but an absent one is now represented directly by `empty` (an empty `Table`, above) rather than a second tag (`::absent nothing`) — presence is signaled by whether the table has *any* entries at all, not by which of two tags it carries:
-
-- **`present <value>`** — sugar for `:.present <value>` (i.e. `::"present" <value>`), a `Table` tagged `present` carrying `<value>` as its payload.
-- **`ispresent <value>`** — `Boolean`, true iff `<value>` is a `present`-tagged `Table`. Unaffected by this revision — it only ever tested for the `present` tag specifically.
-- **`isnothing <value>`** — `Boolean`, true iff `<value> == nothing` (plain equality against the `Nothing` singleton, §3) — a separate, still-useful check unrelated to the `Table`-based optional idiom.
-- **`isthere <value>`** — one check spanning both optional representations: `ispresent <value>` if `<value>` is a `Table` at all, else `isnothing <value>`. Also unaffected — `ispresent(empty)` is already `false`, so an absent optional correctly reads as "not there" either way.
-
-**Table literals** (resolved 2026-08-26): two forms, sharing the outer `{ ... }` syntax already used for `empty` and for patterns (§8):
-
-- **Map-style**: `{ .field = value, [expr] = value, ... }` — explicit key/value pairs, reusing the same `.field`/`[expr]` key-selector syntax as access and patterns, now followed by `= value`.
-- **Sequence-style**: `{ value1, value2, ... }` — bare comma-separated values, implicitly keyed `1, 2, 3, ...` (§5's 1-indexing).
-
-Mixing the two forms in one literal is an error — not necessarily a *syntax*-level one; it could equally be something static analysis (§11) catches rather than the parser.
-
-**Functional update** (resolved 2026-08-26): achieved via `concat` (§4), not dedicated syntax — `original concat { .field = new_value }` produces an updated table, since `Table concat Table` already has the right override-on-collision semantics.
-
-## 6. Value semantics
-
-- All values are **hashable** and have some arbitrary total order defined by HashedBuild, such that any value can be compared with any other value. One exception exists as of 2026-08-31 — see cycles, below.
-- All values are **serializable** — a canonical byte encoding exists for every value, and is what §15's hash is computed over. It is internal: as of 2026-08-28 no builtin returns it (see §15 on `serialize`/`serialize_file`'s removal). §15's `sha256`/`cached` are what operationalize this.
-- All values are **immutable**.
-- Complex types **reference** their subtypes rather than copying them — cycles are possible. As of 2026-08-31 they are also *constructible*: `let rec` over a `Table` literal (§10) is how a value comes to reach itself.
-- There is **no type system** in the conventional sense (as in most other languages) — instead there is static analysis (§11).
-
-**What a cycle means for the three properties above (resolved 2026-08-31).** A cyclic value is a finite graph with back-edges, not an infinite object — every one is built by a `let rec` that finishes, so there are always finitely many nodes. That is what makes the first two properties answerable at all, and it is the reason `let rec` deliberately stops short of unbounded structures: those would have no finite representation, and equality between two of them would not be decidable by anything.
-
-- **Equality is bisimulation.** Two values are equal when no walk can tell them apart, which for a cycle means unrolling one against the other and finding no difference at any depth. Concretely: on first meeting a pair of `Table`s, *assume* they are equal and compare their entries under that assumption; a back-edge then arrives at a pair already assumed equal and stops. This keeps equality about content rather than identity — two rings of the same shape, built by separate bindings that share no node, are the same value — which is what the rest of this section already required of every other type. The implementation records assumptions in a union-find with path compression, so the cost stays near-linear rather than quadratic.
-- **Ordering** over cyclic values follows from whatever canonical form the hash below settles on, and is unspecified until then. §6's total order is not built for any type yet.
-- **Hashing a cyclic value is not yet defined.** §15's digest is a Merkle fold — a composite's digest is built from its children's — and a cycle has no bottom to start that fold from. A definition exists (decompose into strongly connected components, fold the acyclic part, and give each component a digest canonical under bisimulation, so it does not depend on which node the walk entered by), but §3 pins what a digest *encodes*, so choosing one is a decision to be made here rather than in an implementation. Until it is, `sha256` of a cyclic value fails, the same way a directory `File` or a `Function` does.
-
-## 7. Functions
-
-Per the program model (§2), every function threads an explicit argument and an implicit context in, and produces an explicit result and an implicit context out. There are three ways to write one:
-
-1. **Omission.** A *hole* — a blank left where a value is grammatically expected, anywhere in an expression, not just its leading operand — makes its enclosing expression a function; whatever value is ultimately supplied fills every hole in that expression via `#arg`. `(*3+4)` is a function: "multiply the (omitted) argument by 3, add 4."
-
-   Since HashedBuild functions map exactly one explicit argument to one explicit result (§2) — there are no positional parameters — multiple holes in the same expression don't create a multi-argument function. They just **duplicate the one argument**: `(* )` (a hole on each side of `*`) is `func (#arg * #arg)`, a squaring function.
-
-   **Hard boundaries.** A hole's function-ness bubbles outward through ordinary expression structure — operators, parens, unary prefixes — but stops at the edge of whichever grammatically distinct *slot* it sits inside. A slot is anywhere the grammar expects exactly one concrete value, or one function applied to some object, standing on its own: each individual function-call argument, each individual `Table` literal element, either side of a `let` bind-expression (§10), either side of `and`/`or`/`then`/`|>`/`withctx` (below, §8/§9), and `else`'s right side (§8) — `else`'s left side isn't a free slot at all, since it must be, syntactically, the `then` it's immediately attached to. A hole never crosses from one such slot into a sibling slot or out into whatever contains the whole construct — it only turns *that slot* into a function. So `(*1-2) or b`, written as one complete slot (a bare statement, one call argument, one array element, ...), bubbles across the entire `or` expression — `func (#arg*1-2 or b)` — because operators and parens aren't slot boundaries by themselves. But a hole written inside just the `happy_path` of a `then` doesn't turn the whole `|>`/`then`/`else` chain into a function, only `happy_path` itself does.
-2. **A bind-expression with its bound value omitted.** The binding form introduced in §10, `let [rec] <name> <expr>; <body>`, itself becomes a function when `<expr>` is omitted: `let my_arg; my_arg + 1` is a function that binds its (omitted) argument to `my_arg` and evaluates `my_arg + 1`. This is the primary way to declare a function with a named argument — it directly answers the earlier open question of how something like `containerbuild` (README) gets *defined*, not just called.
-
-   **Resolved 2026-08-28**, when the bind-expression went from the infix `<expr> as <name> <body>` to the prefix `let <name> <expr>;`: the omitted slot is now written as a *visible* blank — nothing between the name and the `;` — rather than as the invisible absence of anything before an `as`. Same mechanism, same rule 1 interaction (a bound value that merely *contains* a hole, `let x (*2); …`, is its own curried slot and does not escape); the terminator just makes the omission something a reader can see.
-3. **The explicit `func` directive.** `func <body>` wraps an expression as a function explicitly; the argument is accessed via `#arg` inside `<body>`, with no named binding. E.g. `func #arg + 1`.
-
-**Resolved 2026-08-26**: omission (1) and `func` (3) combine fine — `func *2+1` is valid, meaning exactly what the bare section `(*2+1)` already means. There's no real semantic difference between the two: `func` doesn't introduce any behavior the omission mechanism doesn't already have on its own. It's effectively an **obsolete wrapper** — just an alternate, explicit spelling (naming the argument `#arg` instead of leaving a blank) for the same underlying function-construction mechanism, not a separate concept.
-
-**The pipe operator, `|>`** (added 2026-08-26, replaces `consider`, §8): `<value> |> <function>` calls `<function>` with `<value>` as its argument — ordinary function application, spelled left-to-right for readability and chaining (`x |> f |> g` means `g(f(x))`). Since `|>`'s left side is an ordinary omittable operand like any other operator's, omitting it (`|> f`) makes the whole pipe expression a function of the omitted value, for free, via the general omission rule above — no special-casing needed. This is what lets a guard chain (§8) become "a function of the thing being tested" without a dedicated construct.
-
-**The context operator, `withctx`** (added 2026-08-26): `<expr> withctx <new_ctx>` evaluates `<expr>` with `<new_ctx>` as the current implicit context (`ctx`, §9) for everything inside it, restoring whatever context was active before once `<expr>` finishes. Precedence-wise it's the loosest operator in the language — looser even than `let`-bind. Its left side follows the same omission rules as `|>`'s (above): an entirely omitted `<expr>` (`withctx narrow_ctx`) makes the whole thing a function of the omitted value, evaluated under `<new_ctx>`.
-
-**Gotcha (found while implementing, worth knowing when writing this; restated 2026-08-28 for `let`):** "loosest operator" describes how `withctx` groups *within one already-complete expression*, not "wraps everything written to its left." Because a `let`-bind's body (§10) itself recurses through the full expression grammar (the same greedy-tail behavior as `present`/`:.`/`::`'s payload, §5), a trailing `withctx` gets absorbed into whatever's already parsing its body rather than reaching back to wrap the whole binding: `let a x; a + 1 withctx narrow_ctx` parses as `let a x; (a + 1 withctx narrow_ctx)` — the context change applies only to computing `a + 1`, not to `x`'s own evaluation, and `narrow_ctx` itself is read under the *outer* context either way (`eval_with_ctx` evaluates `<new_ctx>` before swapping). To make `withctx` wrap a whole binding, parenthesize it explicitly: `(let a x; a + 1) withctx narrow_ctx`.
-
-The *bound value* side no longer has this hazard, and that is what the `;` bought. Under the old `as`-bind the bound value parsed one level tighter than the context operators, so a `withctx` written there escaped the binding entirely — `9 withctx c as a a.p` grouped as `9 withctx (c as a a.p)`, which is not what anyone writing it meant. With a terminator to stop at, `<expr>` is a full expression: `let a 9 withctx c; a` needs no parens and means what it reads as.
-
-**`chctx`** (added 2026-08-26, sits at the same precedence as `withctx` and chains with it left-associatively — `x withctx c1 chctx c2` is `(x withctx c1) chctx c2`, and each's right side parses one level tighter than either keyword itself, so a further `withctx`/`chctx` there needs parens, same reasoning as the gotcha above): `<expr> chctx <function>` — like `withctx`, but instead of supplying the new context directly, supplies a `<function>` that computes it from the old one: `<expr> withctx (<function> ctx)`, as one operator. `<function>` is called with the context active *before* `<expr>` starts (§9's live-context rule for what a function sees applies here too - see "Context & permissions"). Exists mainly to make relative context edits (narrow/extend one field, leave the rest) reusable as ordinary function values instead of rebuilding the whole context inline every time — `chperm` (§16) is the first such function.
-
-`withctx` **replaces** the context wholesale — it doesn't merge with whatever context was already active. To narrow (or extend) just part of the current context while keeping the rest, build the new one from the old: `<expr> withctx (ctx concat { .permissions = empty })` denies everything inside `<expr>`, using `ctx` (§9) to read the outer context and `Table concat Table`'s (§4/§5) functional-update semantics to override just the one field.
-
-**Asserting function-ness.** `asfunc <expr>` and `asfuncstatic <expr>` don't *construct* a function — they *assert* that an arbitrary expression's already-computed value is one, mirroring the `check`/`static_check` duality (§11):
-
-- `asfunc <expr>` — verified statically when HashedBuild's static analysis can determine it; otherwise falls back to a runtime check, raising via the standard failure channel (§8/§11) if the value turns out not to be callable.
-- `asfuncstatic <expr>` — requires the static determination to succeed, with no runtime fallback: fails at that stage, describing why, if static analysis can't establish it.
-
-Both pass the wrapped value through unchanged when the assertion holds. This is how an expression that doesn't syntactically *look* like a function — e.g. a bare name bound to a function value elsewhere, rather than an inline omission section like `*1+3` — can still be treated as an unambiguous function by constructs that otherwise rely on syntactic obviousness (see §8's implicit function application).
-
-## 8. Control flow
-
-Revised 2026-08-26: the bespoke `if`/`andif`/`then` guarded-branch grammar is retired, replaced by composing more general, orthogonal primitives — boolean combinators with their own scope-threading rules, a pattern-test operator, a success-only conditional, and its dedicated failure-recovery counterpart. The old construct is still expressible, just as an ordinary composed expression rather than dedicated syntax:
-
-- **`and`** (spelled out, not `&&`): `<c1> and <c2>` — `Boolean` AND. `c2` is evaluated as a **child of `c1`'s scope**, inheriting any names `c1` bound (e.g. via `is`, below). This is how guard chains now accumulate bindings, replacing the old `andif`.
-- **`or`** (spelled out, not `||`): `<c1> or <c2>` — `Boolean` OR. `c1` and `c2` are independent: each inherits scope from `or`'s **own parent**, not from each other — since only one side of an `or` ever actually matters, there's no meaningful "other side's bindings" to share.
-- **`is`** (unchanged from the prior round): `<value> is <pattern>` — `Boolean`, true iff `<value>` matches `<pattern>`; false (not a failure) on a mismatch. A match additionally binds pattern names into scope for whatever inherits from it (via `and`, `then`, `else` — see below).
-- **`then`** (named `whentrue`, then `whenso`, now settled on `then`; no longer bundles its own `else`): `<condition> then <happy_path>` — if `<condition>` is `true`, evaluates and returns `<happy_path>`, which inherits `<condition>`'s scope the same way `and`'s right side does; if `false`, it **fails** — there's no bad path built in anymore.
-- **`else`**: `<conditional> else <expr2>` — catches a *failed conditional* specifically, not failures in general. `else` must appear **immediately** after the conditional it attaches to — today that means directly after a `then` (`<condition> then <happy_path> else <bad_path>`); it is not a free-floating operator you can append to an arbitrary expression. In particular, it does **not** catch a failed `check` (§11) or an `error` (§11) — those are not conditionals, and propagate as fatal failures regardless of any `else` elsewhere in the expression. `<expr2>` inherits the same scope `<happy_path>` would have (the condition's accumulated scope), since `else`'s left side is always, structurally, that same `then`.
-
-**`consider` is retired 2026-08-26**, replaced by the general pipe operator `|>` (§7): rather than a dedicated object-setting construct, the whole guard chain (`(guards) then happy else bad`) is just an ordinary expression that `|>` calls like any other function.
-
+# "Hashed" Specification
+## Example Program
+```hashed
+// build.hl (in the codebase's root directory)
+is { ..., dir, ccomp};
+// "<expression> is <pattern>; <expression>" is normally pattern-maching for the first expression but when in an expression
+// something is omitted (for example instead of `1+2`, `+2`) then it becomes a function (f(x) = x + 2).
+// So is { ..., dir} tells us that the whole program is a function that gives us a struct with a "dir" field.
+let srcdir = dirmember { dir, "src" };
+let c_filenames = (dirmembers srcdir) map (.name) map (extractfext ()) filter (== ".c");
+let c_tasks = c_filenames map {
+ name = #arg,
+ executor = func ccomp.compiletoobj (dirmember {srcdir, #arg2 /* the arg of the map function */}),
+ // Let's assume "complitetoobj" produces the object file in the directory of its argument.
+};
+let compile_task = {
+ name = "compile",
+ // No executor
+ dependencies = {
+   ...c_filenames,
+ },
+};
+let link_task = {
+ name = "link",
+ dependencies = {
+  compile_task.name,
+ },
+ executor = func ccomp.linkobjfiles {{ ... c_filenames map stripfext () map concat ".o" }, outfile = ensure_dirs "/bin/program" },
+ // "ensure_dirs" is a builtin that creates the parent directories for the argument path.
+};
+{
+ ...c_tasks, // All the c_tasks are included in the structure as a separate entries
+ compile_task,
+ link_task,
+}
 ```
-object |> (c1 and is p1 and c2) then happy else bad
+## Table of Contents
+0. [Example Program](#example-program)
+1. [Syntax](#syntax)
+2. [Data Types](#data-types)
+3. [Names](#names)
+4. [Execution Model](#execution-model)
+5. [Builtins](#builtins)
+6. [Program Attributes](#program-attributes)
+7. [CLI](#cli)
+8. [Conventions](#conventions)
+9. [Extending the Language](#extending-the-language)
+
+## Syntax
+### *Whitespaces* and *Comments*
+A ***whitespace*** is one or more [Unicode](unicode.org) whitespace characters.
+
+A ***comment*** can be either a *single-line comment* or a *multiple-line comment*. A ***single-line comment*** is denoted by 
+`//`, then zero or more of any [Unicode](unicode.org) characters, and it ends before any [Unicode](unicode.org) line break.
+A ***mulitple-line comment*** starts with `/*`, contains any [Unicode](unicode.org) characters and ends with `*/`.
+
+In this specification, unless stated otherwise, zero or more *whitespaces* or comments are allowed in between parts of an
+expression and in between adjacent expressions. I.e. informally, whitespaces and comments can be put anywhere in the language.
+
+### *Identifiers*
+An ***identifier*** is one `ID_START` class [Unicode](unicode.org) character, followed by zero or more `ID_CONTINUE` class characters.
+
+### Source Unit (File)
+The biggest piece of *Hashed* code; the root of the syntax tree.
+A file is a source unit but it can be really any piece of code that is passed to the *Hashed* parser (stdin, or CLI argument for example).
+
+#### *Root Expression*
+The source unit boils down to the *root expression*: a source unit is treated as a one (big or not) expression.
+For example
+```hashed
+1 + 2
 ```
-
-`c1` is tested, `is p1` runs as `c1`'s scope-child (binding pattern names), `c2` runs as `p1`'s scope-child — none of `and`/`is` can themselves fail, they just produce `Boolean`s. `then` is the one thing that can fail here: if the combined condition holds, it evaluates `happy` (a scope-child of the whole condition chain); if not, it fails, and the immediately-following `else` catches that and evaluates `bad`.
-
-### Implicit function application in a guard position
-
-Anywhere a `Boolean` is expected among these primitives' operands, an expression that reads as a function instead — via omission (§7, e.g. `is p1`'s omitted left operand, or a bare `*2>0`) or `asfunc`/`asfuncstatic` (§7) — is applied to the value most recently piped in via `|>`, rather than used as-is. Inside such a function, that value is `#arg` — an ordinary function call, no separate implicit name needed (the old `#object`, §9, is retired along with `consider`).
-
-**Resolved 2026-08-26**: `#arg` used directly inside a guard, `happy_path`, or `bad_path` does reach all the way out to the nearest enclosing `|>`'s value, regardless of intervening hard-boundary slots (§7) — see §9's general rule for exactly why: `#arg` lookup isn't confined by hard boundaries the way a hole is.
-
-### Failure semantics
-
-`then` (a false condition), a failed `check` (§11), and `error` (§11) are three distinct failure sources — but only `then`'s failure is recoverable in-line, and only by an `else` written immediately after it. A failed `check` or an `error` call is **fatal**: it isn't caught by any `else`, however close, and (per §2's async rules) can still poison a whole async evaluation.
-
-**Resolved 2026-08-26**: a failed `check`/`error` is unconditionally fatal — no recovery mechanism exists anywhere in the language, full stop.
-
-**Resolved 2026-08-27**: when an evaluation ends — normally or through any of the fatal failures below — it **waits for every `async` task it started** before the program exits. A task nobody ever awaited still runs to completion, and its value is still discarded; what changes is that the program can no longer exit while one is mid-flight. This is what keeps §2's "an untaken branch's async work still has to be started" from being able to leave a half-written file behind: a `createfile` that was begun is a `createfile` that finishes. It costs nothing when a program has no `async` in it, and it is not a recovery mechanism — the failure is still fatal, still uncatchable, and the waiting happens on the way out.
-
-**Resolved 2026-08-28**: **exhausting the evaluator's nesting budget** is a fifth failure source, fatal on the same terms as the rest and catchable by nothing. Recursion (§9's `#self`, §10's `let rec`) makes unbounded evaluation writable for the first time, and an interpreter that walks a tree on the host's own call stack has a finite amount of it; running that stack into the ground is a crash, not a language behaviour. So there is a limit, and reaching it ends the evaluation with an ordinary failure that says so.
-
-The budget is counted in *evaluation nesting*, not in HashedBuild-level calls. Native stack use is proportional to how deeply the evaluator is nested, whereas the stack cost of one call depends entirely on the shape of the body being evaluated — a call-depth limit safe for one program is a crash in another. Programs are therefore not owed any particular recursion depth: a simple function recurses several times deeper than one whose body nests heavily, and neither number is promised. The limit is an implementation quantity (`MAX_NEST_DEPTH`, `src/eval.odin`), sized against the smallest stack the evaluator runs on, and may be raised or lowered without that being a language change. What *is* specified: the failure is diagnosable, and it is fatal.
-
-**Resolved 2026-08-27**: a **failed builtin call** (§16) is a fourth failure source, and it is fatal on the same terms — a missing file, a containment violation, a denied `io` permission all end the evaluation, uncatchable. §16 previously described these as "catchable by an enclosing `then`/`else`, fatal if uncaught, same as `check`/`error`", which contradicted both this section and itself, `check`/`error` being precisely the uncatchable ones; §11's `error` entry carried the same stale phrasing. Both now match this section, which is the one the evaluator implements.
-
-**Resolved 2026-08-31**: a **circular definition** in a `let rec` (§10) is a sixth failure source, fatal on the same terms — an entry that needs another entry's value while that one is still being computed has no value to be given, and no `else` can catch that. It is distinct from the nesting budget above: this one is detected and names the entry it is about, rather than being noticed by running out of stack. A `let rec` that merely recurses without end still hits the budget instead, since nothing there is circular.
-
-Consequently the only recoverable failure in the language is a false `then` caught by its immediately-following `else`. "Try to read this file, fall back if it isn't there" is **not** currently expressible; a program must instead be structured so the read only happens where it must succeed. Whether to add a recoverable I/O channel is left open — it would be a new mechanism, not a re-reading of this one.
-
-**Resolved 2026-08-26**: `and`/`or` do short-circuit, the ordinary way — except under §2's async exception, where *all* operands still get walked/awaited regardless (only the discarded side's *value* goes unused), the same rule that already applies to `then`/`else` branches.
-
-The old "does omitting the leading object promote the whole construct to a function" question (previously an open TODO once `if`/`whentrue` were retired, then carried over as a question about `consider`) is now resolved by retiring `consider` itself: `|>`'s left side is an ordinary omittable operand (§7) like any other, so `|> (guards) then happy else bad` is already a function of the omitted value for free, no special exception ever needed.
-
-### Pattern syntax for `is`
-
-Resolved 2026-08-26:
-
-- **Binding**: any (sub-)pattern can be bound to a name via `<pattern> as <name>`. **Revised 2026-08-28:** this used to be described as reusing the ordinary bind-expression syntax; since the bind-expression is now `let` (§10), `as` survives *only* here, as the pattern binder. It is its own syntax now rather than a reuse of something else — a deliberate choice, since a pattern binder has no body to put after a `;` and `{ .field let f }` reads like nothing at all.
-- **`Table` destructuring**: `{ <selector>, <selector>, ... }` (comma-separated, trailing comma allowed) matches a `Table` having the given entries. Each selector:
-  - `.field` — requires an entry keyed `"field"` to exist; binds nothing by itself.
-  - `.field as f` — same requirement, plus binds that entry's value to `f`, per the general binding rule above.
-  - `[<expr>]` — requires an entry keyed by the (arbitrary) value of `<expr>`; combinable with `as` the same way.
-  - **Sequences**: a bare `{N}` nested directly inside the braces — e.g. `{{4}}` — asserts the table is an **exact** 1-indexed sequence of length `N` (entries at keys `1..N` present, key `N+1` absent — resolved 2026-08-26: exact, not a minimum/prefix check).
-  - **Sequences with elementwise selectors**: `{N}` can be followed by `:` and further selectors, combining the exact-length assertion with ordinary destructuring of specific elements — e.g. `{ {2}: .1 as first, [2] as second }` matches an exact 2-element sequence, binding its first entry to `first` and second to `second` (reusing the same `.field`/`[expr]`/`as` selector syntax above, since a sequence index is just an `Integer` key like any other).
-- **Variants** (§5): the construction syntax doubles as pattern syntax — `:.<name> <subpattern>` matches the literal tag `<name>` whose payload matches `<subpattern>`; `::<key-expr> <subpattern>` matches a dynamically computed tag key the same way.
-- **Optionals** (§5): `present [as <name>]` matches a `present`-tagged table, optionally binding its payload; `empty` matches a `Table` with zero entries, replacing the retired `absent`/`::absent nothing` pattern.
-
-## 9. Implicit names
-
-A system for deriving values from context instead of explicit names:
-
-- Per §7, a hole anywhere within a grammatical slot turns that slot into a function; the omitted value is that function's argument, and fills every hole in the slot (there's no such thing as a second, distinct positional argument).
-- `#arg` refers to the nearest enclosing function's argument; `#arg2`, `#arg3`, ... jump *n* levels further out (to enclosing/outer functions).
-- **`#self`** (added 2026-08-28) refers to the nearest enclosing function *itself* — the one currently executing — with `#self2`, `#self3`, ... jumping outward exactly as `#arg`'s numbering does. It is what makes an **anonymous** function recursive: `let rec` (§10) needs a name to recurse through, and an omission section or a `func` has none. `func (#arg == 0) then 1 else #arg * (#self (#arg - 1))` is a factorial with nothing named anywhere in it.
-
-  `#self` and `#arg` are separate stacks, and deliberately not the same depth: `|>` supplies an argument without entering a function, and a builtin (§16) is entered without supplying either — it evaluates no HashedBuild body, so neither name can be observed inside one. This is the per-kind addressing the last bullet of this section describes, not an inconsistency.
-- **Scope lookup (resolved 2026-08-26):** `#arg` is an ordinary lexical-scope lookup, a fundamentally different mechanism from §7's hard boundaries — a hard boundary governs where a *hole's* implicit function-ness stops propagating, but it doesn't limit how far an *explicit* `#arg` reference searches. `#arg` bubbles outward through guards, `and`/`or`/`then`/`else`, `Table` literal elements, call arguments, and any other hard-boundary slot, stopping only at the nearest enclosing thing that actually supplies an argument value: `|>` (§7/§8), an ordinary function call, or an explicit `func` (§7) declaration.
-- **`ctx`** (renamed from `#context`, 2026-08-26 — see below for why it dropped the sigil) refers to the **current** implicit context (§2): a `Table`, conventionally holding at least a `.permissions` field (see "Context & permissions" below). `<expr> withctx <new_ctx>` (§7) is the only way to change it, for the extent of `<expr>`.
-
-  **Why no sigil, and how that squares with `#arg`'s.** `#arg`/`#arg2`/... are `#`-prefixed specifically so they can never collide with an ordinary bound name — that's the whole point of the sigil. `ctx` drops it and is instead a context-sensitive reserved word (§10): reserved wherever a value is expected (so a bare `ctx` always means "the current context," never a variable lookup), but an ordinary spelling anywhere a *name* is expected (a field, a tag, a `let`-bind target) — so `let ctx x; ctx` is valid and binds an unrelated name called `ctx`, but the inner bare `ctx` inside that body still means the implicit context, not the just-bound value, since it's never looked up through the environment in the first place.
-
-  **Security boundary (unchanged in spirit from `#context`, restated precisely 2026-08-26):** a called function can only ever see its own context, never its caller's or definer's broader context chain. Concretely, this means `ctx` is **captured at closure-creation time**, the same way a function's lexical scope already is — *not* read live off whatever's currently active at the call site. Calling a function later, from inside a `withctx` that has since widened the ambient context, does not let that function suddenly see the wider context; it still only ever sees the context that was active when it was made. (Builtins like the filesystem operations below are the one exception, by necessity — see "Context & permissions.")
-- `#arg`/`#arg2`/... are unaffected by any of this — they're a completely separate mechanism (see above).
-
-So the numbered-jump pattern isn't one unified stack — it's per implicit-value *kind* (`#arg` for function arguments, `ctx` unnumbered since only the current one is ever reachable), each with its own addressing scheme.
-
-**Resolved 2026-08-28** (this section's former open question — whether `#arg` was the complete set of kinds, or whether other binding-introducing constructs wanted their own numbered implicit name): `#self` is the second kind, and it earns its place for a reason the question didn't anticipate. It isn't a convenience spelling for a binding a programmer could have written out; it names something that has **no** explicit spelling at all, since an anonymous function has no name to be given one. A `let`-binding, by contrast, already names its value — an implicit alias for it would be redundant, and none is added.
-
-> TODO: whether any *further* kind is wanted is now a question about which other unnameable things exist, not about which bindings deserve shorthand. None are known today.
-
-### Context & permissions
-
-Added 2026-08-26, alongside `ctx`/`withctx` above and the filesystem builtins (§16) that are `ctx`'s first real consumer.
-
-- **`ctx.permissions`** is a `Table` used as a *set*: it conventionally holds only `nothing` as every value, and a permission is granted iff its key is **present** (not iff its value is "truthy," since `Nothing` has no such notion) — e.g. `ctx.permissions.io` being present at all, regardless of its (always-`nothing`) value, means I/O is allowed. This works because, unlike Lua, a HashedBuild `Table` (§5/§6) genuinely distinguishes "key absent" from "key present with value `nothing`" — the exact distinction a set-of-flags idiom needs, and Lua's conflation of nil-valued and absent keys can't express.
-- **The root context** — active at the very start of a program, before any `withctx` — starts with `{ .permissions = { .io = nothing }, .cache = <the cache, below> }`: I/O is allowed by default. `withctx` is how you *narrow* permissions around a sub-computation (e.g. before calling `import`ed code, §13), not how you grant them from nothing. Since `withctx` replaces the context wholesale (§7), a program that narrows permissions via a hand-built `Table` rather than `ctx concat {...}` loses `.cache` too unless it explicitly carries it over.
-- **Builtins read `ctx` live, not captured — the one deliberate exception to the closure-capture rule above.** The capture rule protects a function *from* a caller trying to grant it more authority than it was made with; a builtin like `loadfile` (§16) needs the opposite property — it must see whatever `ctx` is *actually* active at its call site, so that wrapping a call in `... withctx (ctx concat { .permissions = empty })` genuinely denies it from the outside. If builtins captured `ctx` at (interpreter-startup) creation time instead, `withctx` could never restrict them at all.
-- **`ctx.cache`** (added 2026-08-27) is its own type, distinct from `File` — see §16 for the full write-up. It's "accepted as a directory" (usable as `createfile`'s `.dir`) without actually being one: it can't be read from, traversed, or passed to `loadfile`/`symlink`/`readlink`, only written to via `createfile`. **It does hash** (resolved 2026-08-31), as a domain-separated constant over an empty payload: it is write-only, unnamed and unlistable, so there is nothing about one cache that distinguishes it from another. This became necessary rather than optional once §15's cache key was defined to include the whole `ctx`, which contains it. Hashing it as its *directory path* was rejected for a concrete reason: the path would then be baked into every key, so moving or copying a cache directory would invalidate everything in it.
-
-## 10. Name scopes / bindings
-
-Name scopes are introduced by bindings, which occur in:
-
-1. **The bind-expression**: `let [rec] <name> <expr>; <body>` — evaluates `<expr>`, binds its result to `<name>`, and evaluates `<body>` with `<name>` in scope. When `<expr>` is omitted — nothing written between the name and the `;` — this becomes a function declaration (§7 rule 2). `rec` is covered below.
-2. **Function definitions** via the explicit `func` directive (§7) — argument accessed through `#arg`, no named binding.
-3. **Pattern matching** (the `is` operator, §8) — a successful `is <pattern>` binds names from the pattern into scope for whatever inherits from it via `and`/`then`/`else`; names are spelled out via `<sub-pattern> as <name>` (§8).
-
-Each scope establishes its own names. Child scopes overlay (shadow into) parent scopes.
-
-**Spelling, resolved 2026-08-28.** The bind-expression was `<expr> as <name> <body>` — an infix form, with the bound value written first and no terminator anywhere. (That itself replaced an earlier `let <name> = <expr>; <expr>` sketch, and an intermediate `=:` symbol that read oddly as "reversed `:=`".) It is now the prefix `let`, without an `=`: `let x 5; x + 1`. Three things moved with it, and one deliberately did not:
-
-- **The `;` is a hard terminator for `<expr>`**, which is why the bound value may now be a full expression. Under `as` it had to parse one level tighter than `withctx`/`chctx`, so a context operator written on that side escaped the binding altogether (`9 withctx c as a a.p` grouped as `9 withctx (c as a a.p)`). `let a 9 withctx c; a` has no such trap. The price is the mirror-image case: a `let` nested directly in another's *bound value* steals the outer `;` and needs parens — `let a (let b 1; b + 1); a`. A `let` in *body* position needs none, and that is the case that comes up: `let a 1; let b 2; a + b` chains without a paren in sight.
-- **The omitted bound value is now visible.** `as my_arg my_arg + 1` announced its hole by the absence of anything before a keyword; `let my_arg; my_arg + 1` announces it as a blank the `;` delimits. Same mechanism (§7), legible this time.
-- **`let` and `rec` are context-sensitive** like every other keyword (below). `rec` reads as the recursion marker only when a name follows it, so `let rec 5; …` still binds an ordinary name spelled `rec`.
-- **`as` stays where it is the *pattern* binder** (§8's `<pattern> as <name>`). A pattern binder has no body to terminate, and no `let`-shaped spelling of it reads as anything at all. §8 used to describe pattern binding as reusing this section's syntax; it is now its own, and says so.
-
-**`let rec`, added 2026-08-28, amended 2026-08-31.** A plain `let` evaluates `<expr>` in the *enclosing* scope — the name does not exist yet — so a function bound that way cannot call itself. `let rec` evaluates `<expr>` in the child scope the name is about to land in. Since a closure captures the scope it was made in rather than a snapshot of that scope's contents (§7/§9), the name is bound by the time anything calls the function, and the function recurses.
-
-That is the general rule, and it is the whole rule for every shape but one: a bound value written as a `Table` literal is evaluated differently, so that *data* can reach itself and not only functions — see "Cyclic data" below. Two consequences of the general rule are worth stating first:
-
-- **A self-reference that has to be read immediately, rather than captured and read later, still fails.** `let rec x x + 1; x` reports the ordinary "undefined name" — `x` is in scope but nothing has been stored there yet. That is the honest answer, not a special case: for every shape but the `Table` literal below, `rec` changes *which scope* the value is computed in, and nothing else.
-- **Mutual recursion goes through one `rec`, not several.** Two functions that call each other cannot be bound one after the other, since whichever came first would name one that did not exist. Binding a single `Table` of them recursively works: `let rec fns { .even = …fns.odd…, .odd = …fns.even… }; fns.even 8`. Whether to add a form that binds several names at once is left open; nothing needs it yet. (**Amended 2026-08-31**: this bullet used to explain the trick as "the entries are closures over the scope holding the name they reach each other through", which was true when only functions could do it. A `Table` literal under `rec` is now bound *before* its entries run and its entries are evaluated on demand, so the same spelling works for entries that are data rather than closures. The closure property is still why a *call* made later resolves; it is no longer what makes the binding work.)
-
-**Cyclic data, added 2026-08-31.** The two bullets above describe `let rec` serving *functions*: a closure captures the scope, so the name is bound by the time anything calls it. Data cannot wait that long — a `Table` entry reading `people.bob` needs that entry's value during construction — so a `let rec` whose bound value is written as a `Table` literal evaluates that literal differently:
-
-- The `Table` is created and **bound to the name before any entry runs**, so the name always resolves to the object being built.
-- Entries are evaluated **on demand, not in source order**. Reaching `people.bob` while `.alice` is mid-flight evaluates `.bob` there and then. This dissolves every dependency between entries that has a topological order at all, which is why mutual references between entries need nothing further — and why a form binding several names at once is still not needed.
-- What survives is the residual true cycle: `.bob` reaching back into `.alice`, which is already in progress and so has no value to give. That, and only that, yields a **forward reference** — a stand-in filled the moment `.alice` completes. It may be **stored** (inside a `Table`, a variant, a closure's environment), and that storing is what makes the back-edge. **Inspecting** one before it is filled — a field access, a call, arithmetic, a comparison — is a genuinely circular definition and fails. Since every entry completes before the `let rec` returns, no finished value ever contains an unfilled one, which is why this is not one of §3's types: it exists only during construction and is invisible afterwards.
-
-Entries keep the order they were written in whatever order they were evaluated in, per §5. Two consequences follow from the demand rule, and both are deliberate:
-
-- **Evaluation order within the literal is the dependency order, not the source order.** Where entries have effects — a `createfile`, a fired `async`, a failing `check` — that is the order they happen in, and which failure surfaces first can differ from the source reading.
-- **The shape is what enables this, so it is where it stops.** Only a `Table` literal written directly as the bound value has entries to reorder. `let rec p (build_it p);` has none and still fails with "undefined name", exactly as before; so does `let rec x x + 1;`, which the first bullet above already covered.
-
-`let rec` only serves a function that *has* a name. An anonymous one — an omission section, a `func` — recurses through `#self` instead (§9).
-
-**Context-sensitive keywords (written back 2026-08-26 — this was already true of the implementation, just never stated here):** reserved words (`then`, `else`, `as`, `let`, `rec`, `is`, `and`, `or`, `present`, `empty`, `nothing`, `ctx`, §9, and the rest) are reserved only in the specific grammatical position the language actually looks for them — anywhere a bare *name* is expected instead (a `Table` field, a variant tag, a `let`-bind's target), the identical spelling is just an ordinary name, no different from any other identifier. `:.present 1` (a tag literally named "present") and `let then x; 42` (binding a value to a name literally spelled "then") are both valid for exactly this reason. The converse still holds too, and is not new: a name so spelled cannot be read back as a bare primary, since that is a different grammatical slot — which is why the `let rec 5; …` example above never mentions `rec` in its body.
-
-## 11. Static analysis
-
-- `static_check(<expr>, [error_msg]) <expr>` — enforces a static check. If the check can be statically determined using HashedBuild's static-analysis methods, it's checked at that stage; otherwise it fails, describing why static analysis wasn't possible.
-- `check(<expr>, [error_msg]) <expr>` — checks the condition at runtime. If a full static check is available for the same condition, it's checked statically instead, and should never fail at runtime if the static check succeeded.
-- `error [msg]` — unconditionally throws a failure, with an optional message, into the same failure channel a failed `check` raises into: **fatal**, propagating out of the whole evaluation with no enclosing `else` able to catch it (§8's failure semantics; this sentence previously said it propagated to the nearest `else`, which the 2026-08-26 resolution overrode). Bare keyword-prefix form: no parens, since its one argument is optional rather than one-of-several — there's nothing for parens to disambiguate (§15).
-
-**Resolved 2026-08-26**: `msg` is required to be a `Utf8`.
-
-## 12. Documentation system
-
-A documentation system is planned, intended to be based on the static-analysis mechanism (§11) rather than a conventional type system. No implementation approach has been decided yet.
-
-## 13. Imports
-
-Any `Utf8` value or `File` can be imported, which turns it into a function. Syntax: `import <expr>`. Permissions for imported code are restricted through argument and context restriction — see §9's `#context` security boundary, which presumably underlies this: an imported function's context can only ever be its own, never reaching back into whatever imported it.
-
-**Resolved 2026-08-26**: a `Utf8` given to `import` is treated as inline HashedBuild source text. There's no additional, finer-grained permission restriction at the import site beyond §9's `#context` inaccessibility boundary — for both `Utf8` and `File`, that context boundary is the *only* restriction mechanism.
-
-## 14. Comments
-
-- Line comments: `//`
-- Block comments: `/* ... */`
-
-## 15. Hashing & caching
-
-Two builtins operationalizing §6's "every value is hashable" claim. Like `import` and `func`, each is a bare keyword prefix taking one trailing expression — no parentheses:
-
-- **`sha256 <expr>`** — hashes a value, returning the digest base64-encoded as `Utf8`. **Resolved 2026-08-26**: this *is* §6's "every value is hashable" mechanism — the same one, not a second cryptographic-specific hash living alongside it. **Amended 2026-08-31**: one kind of value has no digest to return, and it is this document's gap rather than an implementation's — a cyclic value (§10), because the Merkle construction below has no bottom to fold from and §6 has not yet settled what one encodes. `sha256` of one fails, saying so.
-- **`cached <expr>`** — caches a value, or loads it from cache if already present.
-
-(`check`/`static_check` (§11) are the odd ones out, needing parens — plausibly because they take two comma-separated arguments, one optional, and parens are what make multiple arguments unambiguous; a single trailing expression needs no such grouping. Not confirmed as a general rule, just the pattern so far.)
-
-**Removed 2026-08-28: `serialize` and `serialize_file`.** This section used to specify two more builtins — `serialize <expr>`, which base64-encoded a value's canonical binary representation as `Utf8`, and `serialize_file <expr>`, which wrote those raw bytes to a file and returned the resulting `File` (§3). Both are withdrawn from the language for now, hashing being the half kept. Withdrawn rather than left unimplemented so the surface stays honest: reserving the two keywords cost `serialize` and `serialize_file` as ordinary names in every program, in exchange for nothing that ran. Nothing about the value model changes — §6 still says every value is serializable, and a canonical byte encoding still exists as the thing the hash is computed over (below); what is gone is *exposing* that encoding as a value a program can hold. Reintroducing either is an ordinary design decision, not a resurrection: the shape above is a starting point, not a commitment.
-
-**Resolved 2026-08-26, amended 2026-08-28**: the hash is one consistent underlying system — one canonical byte encoding, one hash mechanism, shared with §6's general value-hash (used for ordering/equality everywhere, e.g. `Table`'s key-sorted hash and `File`'s directory hash, §3/§5). The encoding is a Merkle construction: a composite value hashes its children to fixed-width digests and mixes *those*, never inlining a child's own encoding. That is forced by §3, which pins a regular `File`'s hash to `hash(content_bytes)` with no tag or length of its own — so that `sha256 <file>` is the digest `sha256sum` reports for the same bytes — and an untagged, variable-length encoding cannot be inlined unambiguously. Leaves are otherwise domain-separated by a tag byte, so that values of different types with the same payload (`Integer` 5 and `Float` 5.0, which §6 does not equate) do not collide.
-
-**A `Function`'s encoding (resolved 2026-08-31).** `cached` below hashes an expression "as a function", which needs a closure to have an encoding; this is it. A closure is **the shape of its body, mixed with the values it captures** — the body's syntax tree node by node, each leaf including its own spelling, and then for every free name of that body the digest of the value that name stood for where the closure was made, mixed in under the name. A builtin (§16) has no body, so it encodes as its operation's name together with anything it was partially applied to. A closure that reads `ctx` (§9) mixes in the context it captured; one that does not, does not — ambient authority is part of what a closure is only where the closure can see it.
-
-Two things follow, and are the point rather than a limitation. Two closures hash alike exactly when they would compute the same thing, so a cache key survives an unrelated binding changing nearby — which is what makes `cached` hit at all. And the encoding is of the *program*, not of what the program means: renaming a local, or spelling a literal differently, is a different closure. Alpha-equivalence is not promised.
-
-**A cyclic value's encoding (resolved 2026-08-31).** §10's `let rec` can build a `Table` that reaches itself, and §6 says every value is hashable. A Merkle fold has no bottom to start from on a cycle, so a value that reaches itself is encoded differently: the graph is split into strongly connected components, everything outside a cycle is folded as usual, and each node **inside** one is encoded by a canonical form of the cycle reachable from it — the nodes reduced by bisimulation, then numbered in the order a deterministic walk from that node first meets them. Two consequences are the whole requirement: the digest does not depend on which node the walk entered by, and it does not depend on how the cycle was written. A one-node cycle and a two-node cycle that unroll to the same infinite tree are **equal** under §6, so they must — and do — hash alike. Anything weaker would give a content-addressed language two addresses for one value.
-
-**`ctx.cache`'s encoding (resolved 2026-08-31).** §9's cache is a value, so §6 makes it hashable; it encodes as a bare tag and nothing else, so all of them hash alike. It has no content to hash, and the one thing that would tell two apart — the directory it is rooted at — is precisely the path §9 spends its last paragraph keeping out of reach of programs. Hashing it to that path would hand the path back through a side door.
-
-**`cached`'s mechanism (resolved 2026-08-26):** the cached expression is treated *as a function* and hashed as one — the cache key is the hash (per the one system above) of that function representation, not a hash of its resolved output value. `cached` is not inherently async by itself; async-ness is controlled explicitly by *where* `async` (§2) is placed: `async cached <expr>` makes the cache lookup/store itself asynchronous, while `cached async <expr>` instead makes the underlying expression's own evaluation asynchronous, with the caching wrapper around it synchronous.
-
-**What a function hashes as (resolved 2026-08-31).** §6 said every value is hashable and this section relied on it, but the encoding of a closure was never given. It is three things mixed together:
-
-- **the code** — the expression's syntax tree, encoded structurally: node kinds, plus the source text of leaves only. Reformatting an expression, or writing a comment inside it, therefore does not change the key. How a literal is *spelled* does (`1_000` and `1000` are different text), which splits an entry rather than merging two, and is left that way deliberately.
-- **the captured `ctx`** (§9), whole.
-- **the values of the free names the code uses**, each paired with its name. Collection is deliberately conservative: a name the expression shadows locally is still included if a binding of that name exists outside. Over-collecting only splits one entry into two; under-collecting would return a wrong value.
-
-A native builtin hashes as the name it is bound to plus whatever it captured — a proc address is not stable between runs. A function that reaches itself (`let rec`) hashes its second occurrence as a back-reference, counted from the innermost enclosing one, so recursion terminates and two identically-written recursive functions still agree.
-
-**`#arg`/`#self` are covered separately (resolved 2026-08-31).** They are dynamic lookups into their own stacks (§9) and are captured by no closure, so the function hash above cannot see them — which would make `let f func (cached (#arg + 1))` one entry for every argument, answering `f 10` with `f 1`'s result. `cached` therefore mixes in the stack entries the expression can reach, on top of the function hash. How far it can reach is bounded statically by the largest `N` written anywhere in it (a bare `#arg` or an omitted operand counting as 1); that bound holds through functions the expression itself calls, since entering one pushes a frame. An expression mentioning no implicit name is unaffected.
-
-**Where the cache lives (resolved 2026-08-31, replacing this section's TODO).** On disk, in `ctx.cache`'s directory (§16 — `--cache-dir`, else `$XDG_CACHE_HOME/hashedbuild`, else the per-user fallback). Process-local in the sense that nothing coordinates between machines; shared in the sense that the directory is an ordinary one, and two processes on it are safe. One entry per key, in one of two shapes:
-
+may be a source unit on its own.
+
+### PADs (Program Attribute Directives)
+Before the *root expression*, there may be zero or more *program attribute directives* (PADs).
+They are a `#` succeeded by 
+```hashed
+#Attribute-Name val1 val2 valN ;
 ```
-<cache>/sha256-<key>                  the value is a File — stored as itself
-<cache>/sha256-<key>.hb/              anything else
-<cache>/sha256-<key>.hb/value.hb        the value, written as HashedBuild text
-<cache>/sha256-<key>.hb/sha256-<h>      each File inside that value
-```
-
-- **A `File` value is stored as a file, a directory value as a directory.** Not wrapped, not encoded: what a build produced stays something a person can open, `diff`, or copy out, which is most of the point of a content-addressed store. A directory is copied faithfully enough to hash as the original did (§3) — names, contents, and symlink targets stored without being followed — plus the executable bit where the target has one, which §3 does *not* hash but which a store has no reason to throw away.
-- **Anything else is written as text**, in a subset of HashedBuild's own syntax: literals, tables, and two names the language has no literal for (`true`/`false`, and `bytes "…"`). Since text cannot hold a file, each `File` inside the value is written out beside it, named by its own content hash (§3), and referred to from the text as `file "…"` or `dir "…"` — systematically, however deeply nested. Reading it back is a separate reader that accepts literals and nothing else, not `import`: a hand-edited entry is a parse failure rather than code that runs.
-- **A value that reaches itself** (§10) is written with a label: a Table occurring more than once is `node "N" { … }` at its first occurrence and `ref "N"` after that. A definition always precedes its references, since the label is assigned in the same walk that emits it, so nothing has to be patched up on the way back in — the reader creates each Table before reading its entries, exactly as §10's evaluation order does. Labels are given to a merely *shared* Table too; that is not needed for correctness, since §6 compares structurally, but it keeps a shared value from being written out exponentially. A restored cycle is bisimulation-equal to the stored one, which is what §6 requires of it.
-- **`<key>` is the cache key**, base64url without padding, since a lookup has nothing else to go on. The `-` separator distinguishes these from the `sha256_<content>` blobs `createfile { .dir = ctx.cache }` writes into the same directory (§16).
-- **Entries are committed by rename.** Each is built under a temporary name and renamed into place, so an interrupted run leaves a stray temporary rather than a truncated entry that a later run would read as a hit. The rename is also how two runs racing on one key settle it — the loser removes its temporary and reads the winner's entry, which holds the same value, since the key is the same. Nothing is overwritten and nothing is locked.
-- **A store reads its own entry back** rather than returning the value it just computed, so the first run and every later one return the same value — `File`s included, displaying the cache's paths (§3) rather than wherever that particular run built them.
-
-**Gating and failure.** `cached` requires `ctx.permissions.io` (§9), like §16's builtins and for the same reason: it reads and writes files. It also requires a `ctx` that still carries `.cache`, which a hand-built one need not. A value holding a `Function`, `ctx.cache`, or an un-awaited `async` handle has no written form and cannot be cached — a cyclic value *can* be, per the previous point. A present-but-unreadable entry is a failure, deliberately rather than a miss — silently recomputing over a corrupt cache would hide the corruption for as long as the cache lived. All of these are fatal (§8).
-
-## 16. Filesystem builtins
-
-Added 2026-08-26. Unlike everything in §7–§15, these are **not syntax** — no new grammar, no keyword-prefix parsing. They're ordinary `Function` values, pre-bound to names in the global scope before any program runs, called exactly like any other function (`loadfile some_path`, `f arg`). This is a deliberate, minimal way to grow the standard library without growing the grammar: a future addition here never needs a parser change.
-
-The four filesystem operations below are gated by [`ctx.permissions.io`](#9-implicit-names) (present ⇒ allowed) at the moment they're actually called — see "Context & permissions" (§9) for why builtins check `ctx` live rather than capturing it. Denied or failed calls raise into the ordinary failure channel (§8) — **fatal**, exactly like a failed `check`/`error` (§11), and not caught by any enclosing `else`. A missing file, a path that escapes its directory, a denied `io` permission: each of these ends the evaluation rather than yielding a recoverable value (see §8's failure semantics, which this sentence used to contradict by calling them catchable).
-
-- **`loadfile <path>`** — reads the file or directory at `<path>` (a `Utf8`), returning it as a `File` (§3). `<path>` is an ordinary filesystem path (relative to the process's working directory, or absolute) — this form does not sandbox to any directory, relying solely on the `io` permission check above.
-- **`loadfile { .dir = <handle>, .path = <sub_path> }`** — reads `<sub_path>` (`Utf8`) relative to `<handle>` (a `File` previously obtained from `loadfile`, naming a directory), returning a `File` the same way. **`<sub_path>` cannot resolve to anything outside `<handle>`'s directory** — not just literal `..` segments, but also via a symlink inside the directory that points outward. **Implementation note (revised 2026-08-26):** originally specified as enforced via Linux's `openat2`/`RESOLVE_BENEATH`; in practice that hit an environment-specific kernel bug during development (`openat` via a real directory fd failing unless `O_CREAT` is set, on at least one WSL2 build), so containment is instead done with a manual, component-by-component walk — every intermediate directory is opened with `O_NOFOLLOW`, rejecting *any* symlink encountered along the way (not just one that would resolve outward) — using only the long-portable `*at()` syscall family rather than the newer, less consistently supported `openat2`.
-- **Either form, given a directory, returns a `File` that can itself be used as `<handle>` in a further `loadfile`/`createfile`/`symlink`/`readlink` call** — this is how a directory gets traversed: open it once, then address everything inside it relative to that one handle, each access independently contained to it.
-- **`createfile { [.dir = <handle>], .path = <path>, .content = <value> }`** — creates a new file at `<path>` (contained to `<dir>` if given, exactly like `loadfile`'s two-argument form; an ordinary unsandboxed path if `.dir` is omitted) with `<content>` (`Utf8` or `Bytes`) as its bytes, returning the `File` it just created. **Exclusive for now**: fails if a file already exists at that path — no overwrite mode yet.
-- **`symlink { .dir = <handle>, .path = <path>, .target = <value> }`** — creates a symlink at `<path>` (contained to `<dir>`, same rule as above — `.dir` is *not* optional here, since a symlink is always an entry inside some directory, §3) whose target string is `<value>` (`Utf8`). The target is stored as-is, not validated or resolved — consistent with §3's directory-hash treatment of symlinks ("target is NOT followed/resolved"). Returns `nothing` — a symlink isn't a `File` value in its own right (§3).
-- **`readlink { .dir = <handle>, .path = <path> }`** — reads the target string of the symlink at `<path>` (contained to `<dir>`) without following it, returning it as `Utf8`.
-- **`filetext <file>`** (added 2026-08-27, partially resolving the TODO below) — the minimal fix for "there's no way to get content back out of a `File`": takes a `File` (a *regular* file — fails for a directory `File`) and returns its content as `Utf8`, failing if the bytes aren't valid UTF-8. Not gated by `io` — the actual read already happened when `loadfile` produced the `File`; this just views already-in-memory bytes as text. `Bytes` extraction (for content that isn't valid UTF-8) is still open, per the TODO below.
-
-> TODO: `filetext` only covers the `Utf8` half of "get content back out of a `File`" - a `Bytes`-returning counterpart is still unspecified, same underlying gap as §3's open `Bytes`↔`Utf8` conversion question. Also unspecified: what a directory `File`'s "listing" looks like as a value (so you can enumerate its entries, not just address a name you already know).
-
-**`chperm { .name = <tag>, .enabled = <bool> }`** (added 2026-08-26) — not gated by `io` itself (it doesn't touch the filesystem, just builds a value); returns a `ctx`-changing function (§7/§9's `chctx`) that, given a context, produces a copy of it with `.permissions.<name>` present (if `<enabled>` is true) or absent (if false), every other field unchanged. Meant to be used right into `chctx`: `<expr> chctx chperm { .name = "io", .enabled = false }` denies `io` for just `<expr>`. Exists specifically so a single-permission edit reads as a small, reusable, named function rather than a `ctx concat {...}` expression rebuilt inline every time.
-
-### `ctx.cache`
-
-Added 2026-08-27. A write-only, content-addressed blob store, its own type (distinct from `File`) even though `createfile`'s `.dir` accepts it exactly like a directory handle — reading, traversal, and `loadfile`/`symlink`/`readlink` all refuse it, since there's no meaningful name to look anything up by (see below). Gated by `io` like the other filesystem operations.
-
-- **Location.** Resolved once per program run, in order: the CLI's `--cache-dir <path>` if given; otherwise `$XDG_CACHE_HOME/hashedbuild`; otherwise `$HOME/.cache/hashedbuild`. The directory (and any missing ancestor) is created lazily, on the first actual write — a program that never touches `ctx.cache` never creates it.
-- **Naming.** Every entry is stored under `sha256_<content-hash, base64url, no padding>` — the name *is* the content's own hash, computed by the write itself. This is why "names of the children don't matter": whatever the caller might otherwise think to call an entry is irrelevant, since the store assigns the name, not the caller. The underscore is load-bearing as of 2026-08-31: §15's `cached` keeps its entries in the same directory, named `sha256-<key>` with a hyphen, and the separator is what tells a blob written here from a cache entry written there.
-- **Writing.** `createfile { .dir = ctx.cache, .content = <value> }` — note there's no `.path`; it wouldn't mean anything, since the name isn't caller-chosen. Writing content whose hash already has an entry on disk (from this run or an earlier one) **dedupes**: the existing entry is reused as-is, silently, rather than failing like an ordinary exclusive `createfile` or writing a redundant duplicate — this is what makes it a cache across runs, not just a one-shot content dump.
-- **The returned `File` is real, and displays like any other.** `createfile`'s result here is an ordinary `File` (§3, not the `ctx.cache` type itself) — per §3's general display rule, printing it (e.g. in the REPL or the live editor's result pane) shows its actual absolute path on disk, same as any non-magic `File`. But there's still no builtin that lets HashedBuild source read that path back out as a `Utf8` value. The program can hold the handle and pass it around, but it never learns *where* its data physically landed; only a human inspecting the program's output does.
-- **Not searchable.** There's no `loadfile`/`symlink`/`readlink` counterpart for the cache - `.dir = ctx.cache` is only ever accepted by `createfile`. A program can't ask "is this content already cached?" directly; it can only write and let the store's own dedup decide. §15's `cached` does read entries back out of the same directory, but not through `ctx.cache`: it is its own syntax with its own keys, and shares nothing with this type beyond the directory the two write into.
