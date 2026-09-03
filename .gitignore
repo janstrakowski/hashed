@@ -17,3 +17,4 @@ __pycache__/
 # the real site, and by scripts/ for a local one. Committing them coupled every
 # tracked file to a build product.
 docs/repo-files.json
+worktrees
