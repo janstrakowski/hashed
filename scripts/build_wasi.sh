@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds hb for WASI. Two flavours, because no single module suits both:
+# Builds hl for WASI. Two flavours, because no single module suits both:
 #
 #   portable (default)  runs anywhere preview1 does, including wasmtime.
 #                       `async` evaluates inline - see task.odin.
@@ -38,14 +38,14 @@ done
 COMMON=(-target:wasi_wasm32 -o:size)
 
 if [ "$THREADS" -eq 0 ]; then
-  odin build src "${COMMON[@]}" -out:"${OUT:-hb.wasm}"
+  odin build src "${COMMON[@]}" -out:"${OUT:-hl.wasm}"
   exit 0
 fi
 
 # The thread entry point has to set the new instance's __stack_pointer before
 # any Odin code runs, and Odin can't touch that global - so it is a few lines
 # of wasm assembly, compiled here and linked in alongside.
-STUB_OBJ=$(mktemp -t hb-thread-start-XXXXXX.o)
+STUB_OBJ=$(mktemp -t hl-thread-start-XXXXXX.o)
 trap 'rm -f "$STUB_OBJ"' EXIT
 clang --target=wasm32 -matomics -mbulk-memory -c src/thread_start.s -o "$STUB_OBJ"
 
@@ -61,7 +61,7 @@ if [ "$IMPORT_MEMORY" -eq 1 ]; then
 fi
 
 odin build src "${COMMON[@]}" \
-  -define:HB_WASI_THREADS=true \
+  -define:HL_WASI_THREADS=true \
   -target-features:atomics \
   -extra-linker-flags:"--shared-memory --max-memory=1073741824 $MEMORY_FLAGS --export=wasi_thread_start $STUB_OBJ" \
-  -out:"${OUT:-hb-threads.wasm}"
+  -out:"${OUT:-hl-threads.wasm}"

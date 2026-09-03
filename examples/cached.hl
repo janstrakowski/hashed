@@ -17,7 +17,7 @@
 // default), one per key, named `sha256-<key>`. A `File` value is stored as an
 // ordinary file and a directory value as an ordinary directory, so what a
 // build produced is still something you can open; anything else is written as
-// HashedBuild text in `sha256-<key>.hb/value.hb`, with any `File` it holds
+// Hashed text in `sha256-<key>.hl/value.hl`, with any `File` it holds
 // stored beside it and referred to by name.
 //
 // A value that reaches itself (§10) is written with a label on each repeated

@@ -1,5 +1,5 @@
 // Files as values (SPEC.md §3/§16). `loadfile <path>` reads a file or a
-// directory relative to *this source file*, not to wherever you ran `hb`
+// directory relative to *this source file*, not to wherever you ran `hl`
 // from. A directory File doubles as a handle, and the two-argument form
 //
 //   loadfile { .dir = <handle>, .path = <sub_path> }

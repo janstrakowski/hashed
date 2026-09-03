@@ -4,7 +4,7 @@
 // which is why "false" below is spelled `1 > 2`.
 //
 // `and` evaluates its right side in the left side's scope, which is what
-// lets a guard chain accumulate bindings (see guard-chain.hb); `or`'s two
+// lets a guard chain accumulate bindings (see guard-chain.hl); `or`'s two
 // sides are independent, since only one of them ever matters. Evaluates to
 // { ordered: true, both: true, either: true, mixed: false }.
 {

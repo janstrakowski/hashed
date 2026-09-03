@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 import "base:intrinsics"
 import "base:runtime"
@@ -21,14 +21,14 @@ import "base:runtime"
 // common, and so is every Value an async task builds. Wasm globals are not
 // shared, which is exactly why the stack has to be handed over per thread.
 //
-// The whole thing is behind HB_WASI_THREADS because it cannot be built
+// The whole thing is behind HL_WASI_THREADS because it cannot be built
 // unconditionally: the atomics intrinsics below refuse to compile without
 // -target-features:atomics, and a module importing wasi.thread-spawn is
 // rejected outright by hosts that don't implement the proposal - wasmtime
 // removed its support in June 2026. scripts/build_wasi.sh builds both
 // flavours; without this flag, task_spawn reports failure and eval_async
 // evaluates the body inline instead.
-HB_WASI_THREADS :: #config(HB_WASI_THREADS, false)
+HL_WASI_THREADS :: #config(HL_WASI_THREADS, false)
 
 // Passed to the host as an opaque pointer and read back by thread_start.s,
 // which takes the stack top from offset 0 - so stack_top must stay first.
@@ -44,9 +44,9 @@ Task :: ^Wasi_Task
 
 // Only the wasi-threads build can spawn. Anything that needs a thread - async
 // (§2), and the debugger's paused run - has to say so rather than pretend.
-TASKS_SUPPORTED :: HB_WASI_THREADS
+TASKS_SUPPORTED :: HL_WASI_THREADS
 
-when HB_WASI_THREADS {
+when HL_WASI_THREADS {
 
   foreign import wasi_threads "wasi"
 
@@ -64,7 +64,7 @@ when HB_WASI_THREADS {
   // Called by thread_start.s on the new instance, once its stack pointer
   // points somewhere that instance owns.
   @(export)
-  hb_thread_entry :: proc "c" (tid: i32, arg: rawptr) {
+  hl_thread_entry :: proc "c" (tid: i32, arg: rawptr) {
     context = runtime.default_context()
     task := (^Wasi_Task)(arg)
     task.fn(task.data)

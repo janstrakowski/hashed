@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 import "core:sync"
 import "core:thread"

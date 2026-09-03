@@ -13,7 +13,7 @@ same chords here, so the two targets cannot drift apart.
 where there is no pty to fork - see its header for why it injects key events
 rather than reaching for ConPTY.
 
-Usage: python3 scripts/editor_keys_test.py [path/to/hb]
+Usage: python3 scripts/editor_keys_test.py [path/to/hl]
 """
 
 import os
@@ -23,7 +23,7 @@ import select
 import sys
 import time
 
-HB = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "hb")
+HL = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "hl")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
 failures = 0
@@ -35,7 +35,7 @@ def run(keys, quit_key=b"\x11"):
     if pid == 0:
         os.environ["LINES"] = "24"
         os.environ["COLUMNS"] = "120"
-        os.execv(HB, ["hb", "-i"])
+        os.execv(HL, ["hl", "-i"])
 
     out = b""
 

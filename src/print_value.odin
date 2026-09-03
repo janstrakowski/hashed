@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 import "core:fmt"
 import "core:strings"

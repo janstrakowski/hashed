@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 // Recursive-descent parser covering the whole of SPEC.md's expression grammar
 // (CST/AST only - no evaluation). Read this file top-down: `parse_expr` is the

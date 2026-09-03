@@ -11,7 +11,7 @@
 // function runs. One `let rec` per function could not do it, since whichever
 // came first would name one that did not exist yet.
 //
-// There are no `true`/`false` literals (see context-permissions.hb), so the
+// There are no `true`/`false` literals (see context-permissions.hl), so the
 // parity pair answers with 1 and 0. Evaluates to
 // { fact: 3628800, fib: 55, even: 1, odd: 0 }.
 let rec fact (let n; (n == 0) then 1 else n * (fact (n - 1)));

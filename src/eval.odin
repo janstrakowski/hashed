@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 import "core:fmt"
 import "core:strconv"
@@ -25,7 +25,7 @@ import "core:strings"
 // How deep the evaluator may nest before a program is stopped with an ordinary
 // fatal failure (§8) instead of running the host stack into the ground. It
 // counts *native recursion steps* - one per `eval`, one more per user-level
-// call - rather than HashedBuild-level calls alone, because the stack cost of
+// call - rather than Hashed-level calls alone, because the stack cost of
 // one call depends entirely on the shape of the body being evaluated. That is
 // also why SPEC.md §8 promises programs no particular recursion depth, only
 // that exceeding it is diagnosable.
@@ -58,9 +58,9 @@ import "core:strings"
 // failure. The deepest example in examples/ needs about 60, so every target
 // keeps real headroom.
 when ODIN_OS == .Windows || ODIN_OS == .WASI {
-  MAX_NEST_DEPTH :: #config(HB_MAX_NEST_DEPTH, 200)
+  MAX_NEST_DEPTH :: #config(HL_MAX_NEST_DEPTH, 200)
 } else {
-  MAX_NEST_DEPTH :: #config(HB_MAX_NEST_DEPTH, 1800)
+  MAX_NEST_DEPTH :: #config(HL_MAX_NEST_DEPTH, 1800)
 }
 
 Interpreter :: struct {
@@ -90,7 +90,7 @@ Interpreter :: struct {
   // Base directory for the *unsandboxed* forms of loadfile/createfile (§16 -
   // no .dir given): relative paths there resolve against this directory
   // instead of the process's actual cwd, so a program's own relative paths
-  // stay correct regardless of where `hb` was invoked from. Zero value
+  // stay correct regardless of where `hl` was invoked from. Zero value
   // (has_base_dir == false) means "just use the process's cwd" (AT_FDCWD) -
   // what the REPL wants, since there's no source file to be relative to.
   base_dir_fd:  Fs_Fd,
@@ -937,7 +937,7 @@ eval_chctx :: proc(interp: ^Interpreter, node: Node_Idx, env: ^Env) -> (Value, b
 
 call_function :: proc(interp: ^Interpreter, fn: ^Function_Value, arg: Value) -> (Value, bool) {
   // Natives (§16's filesystem builtins) read `ctx` live off the call site -
-  // no arg_stack/self_stack push (they evaluate no HashedBuild body, so neither
+  // no arg_stack/self_stack push (they evaluate no Hashed body, so neither
   // #arg nor #self can be observed inside one) and no context swap (the whole
   // point is that a wrapping `withctx` can restrict what they do from
   // outside; see SPEC.md §9's "Context & permissions").

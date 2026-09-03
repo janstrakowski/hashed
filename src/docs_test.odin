@@ -1,25 +1,25 @@
 // Tests run natively, never in a WASI build: core:testing pulls in
 // core:log and core:terminal, neither of which compiles for wasm32.
 #+build linux, windows
-package hashedbuild
+package hashed
 
 import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
 
-// README.md shows examples/option-picker.hb inline as the "this actually
+// README.md shows examples/option-picker.hl inline as the "this actually
 // runs" sample. It had already drifted once (it still wrote to output.txt
 // after the example moved to ctx.cache), so the two are compared here rather
 // than trusted: the code lines must match, comments and prose aside.
 @(test)
 test_readme_sample_matches_the_example_it_quotes :: proc(t: ^testing.T) {
   readme := read_repo_file(t, "README.md")
-  example := read_repo_file(t, "examples/option-picker.hb")
+  example := read_repo_file(t, "examples/option-picker.hl")
   if readme == "" || example == "" do return
 
-  quoted, found := fenced_block(readme, "```hashedbuild\n// examples/option-picker.hb")
-  if !testing.expect(t, found, "README.md no longer quotes examples/option-picker.hb in a hashedbuild block") do return
+  quoted, found := fenced_block(readme, "```hashed\n// examples/option-picker.hl")
+  if !testing.expect(t, found, "README.md no longer quotes examples/option-picker.hl in a hashed block") do return
 
   testing.expect_value(t, code_lines(quoted), code_lines(example))
 }
@@ -41,7 +41,7 @@ test_language_doc_links_to_examples_that_exist :: proc(t: ^testing.T) {
     if end < 0 do break
     name := rest[:end]
     rest = rest[end:]
-    if !strings.has_suffix(name, ".hb") do continue // e.g. `examples/` itself
+    if !strings.has_suffix(name, ".hl") do continue // e.g. `examples/` itself
     checked += 1
     path := fmt.tprintf("%s/examples/%s", repo_root(), name)
     testing.expect(t, os.exists(path), fmt.tprintf("LANGUAGE.md points at examples/%s, which doesn't exist", name))
@@ -62,7 +62,7 @@ read_repo_file :: proc(t: ^testing.T, rel_path: string) -> string {
 fenced_block :: proc(text: string, opening: string) -> (body: string, found: bool) {
   start := strings.index(text, opening)
   if start < 0 do return "", false
-  after_fence := start + len("```hashedbuild\n")
+  after_fence := start + len("```hashed\n")
   rest := text[after_fence:]
   end := strings.index(rest, "\n```")
   if end < 0 do return "", false

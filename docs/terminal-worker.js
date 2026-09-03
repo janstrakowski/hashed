@@ -16,7 +16,7 @@
 
 import { FileSystem, WASI, RPC, serveRemoteCall } from "./wasi.js";
 
-const DB_NAME = "hashedbuild-playground";
+const DB_NAME = "hashed-playground";
 const STORE = "state";
 
 // Where ctx.cache (SPEC.md §9/§16) lands. resolve_cache_dir reads
@@ -83,7 +83,7 @@ function applyManifest(target, manifest) {
   }
   // ctx.cache's directory, so it is visible from the start rather than
   // appearing out of nowhere the first time a program writes into it.
-  target.mkdirp("/cache/hashedbuild");
+  target.mkdirp("/cache/hashed");
 }
 
 // A returning visitor keeps their filesystem, but the repository half of it
@@ -201,7 +201,7 @@ async function finishRun(code) {
 // spawned ones, which must be the same module to share the memory's layout.
 let compiled = null;
 
-async function runHb(args, tui) {
+async function runHl(args, tui) {
   const env = tui
     ? { ...ENV, COLUMNS: String(tui.columns), LINES: String(tui.rows), TERM: "xterm-256color" }
     : ENV;
@@ -210,7 +210,7 @@ async function runHb(args, tui) {
   // 1GB the build declares. Shared, so every instance sees the same heap.
   const memory = new WebAssembly.Memory({ initial: 18, maximum: 16384, shared: true });
   run = {
-    memory, module: compiled, args: ["hb", ...args], env,
+    memory, module: compiled, args: ["hl", ...args], env,
     channels: new Map(), nextTid: 1,
   };
   run.server = makeServer(memory);
@@ -248,18 +248,18 @@ self.onmessage = async (event) => {
       // compile, not compileStreaming: streaming refuses anything not served
       // as application/wasm, and a static server that gets the MIME type wrong
       // should cost a copy, not the whole terminal.
-      compiled = await WebAssembly.compile(await (await fetch("hb.wasm")).arrayBuffer());
+      compiled = await WebAssembly.compile(await (await fetch("hl.wasm")).arrayBuffer());
       const saved = await loadState();
       const { restored, refreshed } = await bootFilesystem(saved);
       if (refreshed) await saveState();
       post({ type: "ready", restored, refreshed, history: saved?.history ?? [] });
       return;
     }
-    case "hb":
+    case "hl":
       // The run reports its own completion (finishRun) once the program's
       // instance exits - it cannot be awaited here, because this worker has to
       // stay free to answer the RPC calls that instance is about to make.
-      await runHb(message.args, message.tui);
+      await runHl(message.args, message.tui);
       return;
     case "ls": post({ type: "listing", entries: listing(message.path) }); return;
     case "cat": post({ type: "cat", ...fileText(message.path) }); return;

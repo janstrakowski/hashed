@@ -3,7 +3,7 @@
 filesystem, so the terminal opens on what you would have after cloning.
 
 Everything git tracks goes in, minus what would only bloat the download
-without being anything to read: docs/media (1.4MB of video), docs/hb.wasm
+without being anything to read: docs/media (1.4MB of video), docs/hl.wasm
 (the interpreter, fetched separately), and docs/vendor (xterm.js, which the
 page loads when the editor opens). Source, docs, examples and scripts - the
 things someone would actually `cat` - all stay.
@@ -24,7 +24,7 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(REPO, "docs", "repo-files.json")
 SKIP = [re.compile(p) for p in (
-    r"^docs/media/", r"^docs/vendor/", r"^docs/hb\.wasm$", r"^docs/repo-files\.json$")]
+    r"^docs/media/", r"^docs/vendor/", r"^docs/hl\.wasm$", r"^docs/repo-files\.json$")]
 
 
 def tracked_paths():

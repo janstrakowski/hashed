@@ -322,7 +322,7 @@ class Browser:
 
     def __init__(self, executable, wait_ms=60000):
         self.wait_ms = wait_ms
-        self.profile = tempfile.mkdtemp(prefix="hb-playground-")
+        self.profile = tempfile.mkdtemp(prefix="hl-playground-")
         self.proc = subprocess.Popen(
             [executable, "--headless=new", "--remote-debugging-port=0",
              f"--user-data-dir={self.profile}", "--no-sandbox", "--disable-gpu",

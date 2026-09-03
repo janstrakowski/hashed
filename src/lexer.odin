@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 // Hand-written tokenizer covering the whole of SPEC.md's syntax. Several
 // keyword tokens reuse a *composite* Node_Kind directly (e.g. `func` lexes as

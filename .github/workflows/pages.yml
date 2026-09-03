@@ -1,7 +1,7 @@
 # Builds the site and deploys it, instead of serving files committed to the
 # repository.
 #
-# docs/hb.wasm and docs/repo-files.json are *generated* - the interpreter, and
+# docs/hl.wasm and docs/repo-files.json are *generated* - the interpreter, and
 # the repository as the playground's filesystem. Committing them meant every
 # edit to any tracked file could leave one stale, so a documentation change
 # could not be a documentation change: it needed a second commit regenerating
@@ -68,7 +68,7 @@ jobs:
       # spawned thread share one heap (see LANGUAGE.md).
       - name: Build the interpreter and the filesystem
         run: |
-          scripts/build_wasi.sh --threads-web -out:docs/hb.wasm
+          scripts/build_wasi.sh --threads-web -out:docs/hl.wasm
           python3 scripts/build_playground_files.py
 
       - uses: actions/upload-pages-artifact@v4

@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 // The one threading primitive §2's `async` needs: start a procedure on
 // another thread, and later wait for it. Named here, implemented per target

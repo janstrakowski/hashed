@@ -55,17 +55,17 @@ jobs:
       - run: odin version
 
       - name: Build
-        run: odin build src -out:hb
+        run: odin build src -out:hl
 
       - name: Test
-        run: odin test src -out:/tmp/hbtest
+        run: odin test src -out:/tmp/hltest
 
       # The terminal UI cannot be driven from `odin test`, but it can be driven
       # from a pty - and these keys have broken twice without anything noticing.
       - name: Editor keys
         run: |
-          odin build src -out:hb
-          python3 scripts/editor_keys_test.py ./hb
+          odin build src -out:hl
+          python3 scripts/editor_keys_test.py ./hl
 
   # The third backend. `odin test` builds natively, so this job is what
   # actually executes fs_windows.odin, task_native.odin's Windows half and
@@ -81,7 +81,7 @@ jobs:
       # symlink as one when core.symlinks is on, and on Windows that is off by
       # default because creating a symlink needs a privilege. Without this,
       # examples/link-to-optiona arrives as an ordinary file holding the target
-      # as text, and files-symlink.hb skips itself (examples_test.odin) instead
+      # as text, and files-symlink.hl skips itself (examples_test.odin) instead
       # of being covered. The runner has the privilege, so ask for the real thing.
       - name: Let git check out real symlinks
         run: git config --global core.symlinks true
@@ -128,10 +128,10 @@ jobs:
       - run: odin version
 
       - name: Build
-        run: odin build src -out:hb.exe
+        run: odin build src -out:hl.exe
 
       - name: Test
-        run: odin test src -out:hbtest.exe
+        run: odin test src -out:hltest.exe
 
       # The same keys the Linux job checks through a pty, checked here through a
       # real console instead - see the script's header for why not ConPTY. This
@@ -144,8 +144,8 @@ jobs:
       # will say so and exit non-zero rather than passing quietly.
       - name: Editor keys
         run: |
-          odin build src -out:hb.exe
-          python scripts/editor_keys_test_windows.py .\hb.exe
+          odin build src -out:hl.exe
+          python scripts/editor_keys_test_windows.py .\hl.exe
 
   # The Odin suite only ever builds natively, so nothing in it can execute
   # fs_wasi.odin. This job builds the WASI target and checks the examples
@@ -211,11 +211,11 @@ jobs:
       # -o:speed are all fine, and size is what a browser wants anyway.
       - name: Build native and portable WASI
         run: |
-          odin build src -out:hb
-          scripts/build_wasi.sh -out:hb.wasm
+          odin build src -out:hl
+          scripts/build_wasi.sh -out:hl.wasm
 
       - name: Examples agree on both targets
-        run: scripts/wasi_smoke.sh --no-threads ./hb ./hb.wasm "$(command -v wasmtime)"
+        run: scripts/wasi_smoke.sh --no-threads ./hl ./hl.wasm "$(command -v wasmtime)"
 
   # The threaded WASI build can't be exercised by the job above: it imports
   # wasi.thread-spawn, which wasmtime dropped in June 2026, so it needs an
@@ -283,13 +283,13 @@ jobs:
 
       - name: Build native and threaded WASI
         run: |
-          odin build src -out:hb
-          scripts/build_wasi.sh --threads -out:hb-threads.wasm
+          odin build src -out:hl
+          scripts/build_wasi.sh --threads -out:hl-threads.wasm
 
       # --stack-size: iwasm defaults to 64 KB of operand stack, which the
       # evaluator's recursion outgrows on the larger examples.
       - name: Examples agree with real threads
-        run: scripts/wasi_smoke.sh ./hb ./hb-threads.wasm "$HOME/iwasm/iwasm" --stack-size=4194304 --max-threads=8
+        run: scripts/wasi_smoke.sh ./hl ./hl-threads.wasm "$HOME/iwasm/iwasm" --stack-size=4194304 --max-threads=8
 
   # The playground is the interpreter running in a browser, so it can break in
   # ways neither the Odin suite nor the wasm smoke tests can see: the WASI shim
@@ -335,15 +335,15 @@ jobs:
 
       # The shim half of the playground test compares the wasm against the
       # native build, example by example - the two have to agree.
-      - name: Build native hb
-        run: odin build src -out:hb
+      - name: Build native hl
+        run: odin build src -out:hl
 
       # Both are generated, not committed - the same two commands the Pages
       # workflow runs. Building them here is what makes the test below test the
       # artifacts the site will actually serve.
       - name: Build the interpreter and the filesystem
         run: |
-          scripts/build_wasi.sh --threads-web -out:docs/hb.wasm
+          scripts/build_wasi.sh --threads-web -out:docs/hl.wasm
           python3 scripts/build_playground_files.py
 
       # One test, two halves: the WASI shim in a page, then the terminal around

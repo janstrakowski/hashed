@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 import "core:encoding/base64"
 import "core:fmt"
@@ -13,13 +13,13 @@ import "core:strings"
 // ---- the layout -------------------------------------------------------------
 //
 // One entry per key, in the same directory ctx.cache writes its blobs to (§16
-// - `--cache-dir`, else $XDG_CACHE_HOME/hashedbuild, else the per-user
+// - `--cache-dir`, else $XDG_CACHE_HOME/hashed, else the per-user
 // fallback). Two shapes, decided by what the cached value *is*:
 //
 //   <cache>/sha256-<key>              the value is a File - stored as itself
-//   <cache>/sha256-<key>.hb/          anything else - a directory holding
-//   <cache>/sha256-<key>.hb/value.hb    the value, written as HashedBuild text
-//   <cache>/sha256-<key>.hb/sha256-<h>  one entry per File inside that value
+//   <cache>/sha256-<key>.hl/          anything else - a directory holding
+//   <cache>/sha256-<key>.hl/value.hl    the value, written as Hashed text
+//   <cache>/sha256-<key>.hl/sha256-<h>  one entry per File inside that value
 //
 // A File value is kept as a file, and a directory value as a directory, so
 // that what a build produced is still a thing you can open, `cat`, `diff` or
@@ -60,9 +60,9 @@ import "core:strings"
 @(private = "file")
 ENTRY_PREFIX :: "sha256-"
 @(private = "file")
-VALUE_FILE :: "value.hb"
+VALUE_FILE :: "value.hl"
 @(private = "file")
-HB_SUFFIX :: ".hb"
+HL_SUFFIX :: ".hl"
 
 cache_entry_name_for :: proc(d: Value_Digest) -> string {
   d := d
@@ -88,7 +88,7 @@ cache_lookup :: proc(cache: ^Cache_Value, key_name: string) -> (val: Value, foun
     return v, ok, msg
   }
 
-  text_name := strings.concatenate({key_name, HB_SUFFIX}, context.temp_allocator)
+  text_name := strings.concatenate({key_name, HL_SUFFIX}, context.temp_allocator)
   if is_dir, stat_err := fs_stat_is_dir_at(cache.dir_fd, text_name, true); stat_err != .None || !is_dir {
     return nil, false, "" // a miss
   }
@@ -204,7 +204,7 @@ cache_store :: proc(cache: ^Cache_Value, key_name: string, v: Value, interp: ^In
 
   final_name := key_name
   if _, is_file := v.(^File_Value); !is_file {
-    final_name = strings.concatenate({key_name, HB_SUFFIX})
+    final_name = strings.concatenate({key_name, HL_SUFFIX})
   }
 
   temp_name, temp_ok := make_temp_dir(cache.dir_fd, final_name)

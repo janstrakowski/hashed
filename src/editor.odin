@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 import "core:fmt"
 import "core:os"
@@ -125,7 +125,7 @@ rotate_panels_right :: proc(e: ^Editor) {
   e.panel_order[0] = last
 }
 
-// A search-and-select popup listing `examples/*.hb`. `items` is the full,
+// A search-and-select popup listing `examples/*.hl`. `items` is the full,
 // alphabetized listing; `filtered` holds indices into `items` matching
 // `search` (recomputed on every keystroke); `selected` indexes into
 // `filtered`, not `items`, since the set of matches changes as you type.
@@ -506,7 +506,7 @@ run_live_editor :: proc(cache_dir: string) {
   }
 }
 
-// Lists `examples/*.hb` fresh every time the menu opens (cheap, and picks up
+// Lists `examples/*.hl` fresh every time the menu opens (cheap, and picks up
 // files added/removed since the editor started).
 @(private = "file")
 open_example_menu :: proc(e: ^Editor) {
@@ -526,7 +526,7 @@ open_example_menu :: proc(e: ^Editor) {
     for entry in entries {
       defer delete(entry.name, context.allocator)
       if entry.is_dir do continue
-      if strings.has_suffix(entry.name, ".hb") do append(&m.items, strings.clone(entry.name))
+      if strings.has_suffix(entry.name, ".hl") do append(&m.items, strings.clone(entry.name))
     }
   }
   slice.sort(m.items[:])
@@ -987,7 +987,7 @@ redraw_example_menu :: proc(e: ^Editor) {
   defer strings.builder_destroy(&b)
 
   strings.write_string(&b, "\x1b[H\x1b[2J")
-  title := "HashedBuild live parser - select an example"
+  title := "Hashed live parser - select an example"
   strings.write_string(&b, clip_to_cols(title, max(cols - 1, 0)))
   strings.write_string(&b, "\r\n")
   fmt.sbprintf(&b, "Search: %s\r\n", string(m.search[:]))
@@ -1155,7 +1155,7 @@ redraw_panels :: proc(e: ^Editor) {
   defer strings.builder_destroy(&b)
 
   strings.write_string(&b, "\x1b[H\x1b[2J") // cursor home, clear screen
-  title := "HashedBuild live parser"
+  title := "Hashed live parser"
   strings.write_string(&b, clip_to_cols(title, max(cols - 1, 0)))
   strings.write_string(&b, "\r\n")
 

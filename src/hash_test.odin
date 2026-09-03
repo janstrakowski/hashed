@@ -1,6 +1,6 @@
 // Tests run natively, never in a WASI build - see eval_test.odin.
 #+build linux, windows
-package hashedbuild
+package hashed
 
 import "core:log"
 import "core:os"
@@ -316,7 +316,7 @@ test_a_directory_digest_is_read_once :: proc(t: ^testing.T) {
 // neither target exists, and a link is never confused with what it points at.
 //
 // Skipped where a symlink cannot be created: on Windows that needs Developer
-// Mode or an elevated shell, the same privilege examples/files-symlink.hb
+// Mode or an elevated shell, the same privilege examples/files-symlink.hl
 // wants (see examples_test.odin).
 @(test)
 test_symlink_entries_hash_as_their_target :: proc(t: ^testing.T) {

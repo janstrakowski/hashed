@@ -6,7 +6,7 @@
 # the suite can execute either.
 #
 # Usage:
-#   scripts/wasi_smoke.sh [--no-threads] <native-hb> <hb.wasm> <runtime> [runtime-args...]
+#   scripts/wasi_smoke.sh [--no-threads] <native-hl> <hl.wasm> <runtime> [runtime-args...]
 #
 # --no-threads says the wasm build has no thread support, so the async
 # examples are expected to *fail* with a message saying so, rather than to
@@ -15,8 +15,8 @@
 # concurrently.
 #
 # Examples:
-#   scripts/wasi_smoke.sh --no-threads ./hb hb.wasm wasmtime
-#   scripts/wasi_smoke.sh ./hb hb-threads.wasm iwasm --stack-size=4194304 --max-threads=8
+#   scripts/wasi_smoke.sh --no-threads ./hl hl.wasm wasmtime
+#   scripts/wasi_smoke.sh ./hl hl-threads.wasm iwasm --stack-size=4194304 --max-threads=8
 set -euo pipefail
 
 NO_THREADS=0
@@ -25,7 +25,7 @@ if [ "${1:-}" = "--no-threads" ]; then
   shift
 fi
 
-NATIVE=${1:?usage: wasi_smoke.sh [--no-threads] <native-hb> <hb.wasm> <runtime> [runtime-args...]}
+NATIVE=${1:?usage: wasi_smoke.sh [--no-threads] <native-hl> <hl.wasm> <runtime> [runtime-args...]}
 WASM=${2:?}
 RUNTIME=${3:?}
 shift 3
@@ -38,13 +38,13 @@ cd "$REPO"
 #   files-sandboxed, option-picker
 #       display real paths, which differ by construction: native shows the
 #       checkout, WASI shows the path inside its preopen.
-SKIP="files-sandboxed.hb option-picker.hb"
-ASYNC="async-basics.hb async-branching.hb async-table.hb"
+SKIP="files-sandboxed.hl option-picker.hl"
+ASYNC="async-basics.hl async-branching.hl async-table.hl"
 
 failures=0
 checked=0
 async_checked=0
-for path in examples/*.hb; do
+for path in examples/*.hl; do
   name=$(basename "$path")
   case " $SKIP " in *" $name "*) continue;; esac
 

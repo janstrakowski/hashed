@@ -5,7 +5,7 @@
 
 # About
 
-*HashedBuild* is a functional programming language targetted at build systems and automation. 
+*Hashed* is a functional programming language targetted at build systems and automation. 
 It is designed to be relatively easy to use, and not much technical. 
 It's purpose is to set up automation for repetetive task or that which need reproducibility
 when a functional paradime is better suited.
@@ -18,7 +18,7 @@ and it was inspired by them.
 ## Build Script in a Codebase (Make-style)
 This assumes a harness that expects a graph of dependencies as the output.
 ```
-// build.hb (in the codebase's root directory)
+// build.hl (in the codebase's root directory)
 is { ..., dir, ccomp};
 // "<expression> is <pattern>; <expression>" is normally pattern-maching for the first expression but when in an expression
 // something is omitted (for example instead of `1+2`, `+2`) then it becomes a function (f(x) = x + 2).

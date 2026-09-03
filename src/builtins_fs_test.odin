@@ -1,7 +1,7 @@
 // Tests run natively, never in a WASI build: core:testing pulls in
 // core:log and core:terminal, neither of which compiles for wasm32.
 #+build linux, windows
-package hashedbuild
+package hashed
 
 import "core:fmt"
 import "core:log"
@@ -395,7 +395,7 @@ test_builtin_cache_is_not_searchable :: proc(t: ^testing.T) {
   defer remove_scratch_cache_dir("cache_not_searchable")
 
   // loadfile/symlink/readlink don't accept a Cache as .dir - only createfile
-  // does. There's no way to look an entry back up by name from HashedBuild
+  // does. There's no way to look an entry back up by name from Hashed
   // source, only to write new content in.
   _, ok, _ := eval_with_builtins(`loadfile { .dir = ctx.cache, .path = "anything" }`, "", nil, "cache_not_searchable")
   testing.expect(t, !ok, "loadfile must not accept ctx.cache as a directory handle")

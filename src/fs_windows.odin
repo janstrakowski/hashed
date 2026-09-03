@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 import "base:runtime"
 import "core:strings"

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HashedBuild terminal</title>
+<title>Hashed terminal</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%3E%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <!-- The interpreter runs in a worker so its REPL can block on stdin, which
@@ -72,7 +72,7 @@
     border-bottom-width: 2px; border-radius: 4px; padding: 1px 4px;
   }
   /* The live editor draws a full-screen TUI, so it gets a real terminal
-     emulator rather than the line-oriented shell above. Hidden until `hb -i`
+     emulator rather than the line-oriented shell above. Hidden until `hl -i`
      asks for it, and xterm.js is only fetched at that point. */
   #tui { display: none; flex: 1; padding: 8px 12px; background: var(--surface); min-height: 0; }
   body.tui #screen, body.tui #inputline { display: none; }
@@ -82,12 +82,12 @@
 <body>
 <header>
   <div>
-    <div class="eyebrow">HashedBuild</div>
+    <div class="eyebrow">Hashed</div>
     <h1>Terminal</h1>
   </div>
   <div class="spacer"></div>
   <a href="index.html">Home</a>
-  <a href="https://github.com/janstrakowski/hashedbuild/blob/main/LANGUAGE.md">Language tour</a>
+  <a href="https://github.com/janstrakowski/hashed/blob/main/LANGUAGE.md">Language tour</a>
   <a href="SPEC.html">Spec</a>
 </header>
 
@@ -106,7 +106,7 @@
 
 <script type="module">
 // The page is the terminal; the interpreter lives in terminal-worker.js. The
-// split is what makes `hb` genuinely interactive: its REPL blocks on stdin,
+// split is what makes `hl` genuinely interactive: its REPL blocks on stdin,
 // and only a worker can block without freezing the tab.
 
 const screen = document.getElementById("screen");
@@ -179,7 +179,7 @@ function onWorkerMessage(event) {
 
     // The program is blocked reading stdin: hand the prompt back so the
     // visitor can answer it. The interpreter has already printed its own
-    // prompt ("hb> ") by this point.
+    // prompt ("hl> ") by this point.
     case "waiting-for-input":
       awaitingInput = true;
       // In raw mode the emulator already has focus and forwards every
@@ -249,7 +249,7 @@ function sendEof() {
 
 // ---- the live editor, on a real terminal emulator ---------------------------
 //
-// `hb -i` draws a full-screen TUI: cursor moves, alternate screen, colour. The
+// `hl -i` draws a full-screen TUI: cursor moves, alternate screen, colour. The
 // line-oriented shell above cannot render that, so it hands over to xterm.js -
 // loaded here, on first use, rather than on every visit for the sake of a
 // feature most visitors never open.
@@ -348,7 +348,7 @@ async function runInteractive(args) {
     + "use Ctrl+Alt+N to step and Ctrl+Alt+Q to quit.\x1b[0m\r\n");
   await new Promise((resolve) => setTimeout(resolve, 900));
 
-  await ask({ type: "hb", args, tui: { columns: term.cols, rows: term.rows } });
+  await ask({ type: "hl", args, tui: { columns: term.cols, rows: term.rows } });
 
   rawMode = false;
   document.body.classList.remove("tui");
@@ -357,21 +357,21 @@ async function runInteractive(args) {
 
 // ---- the shell -------------------------------------------------------------
 
-const HELP = `This is the HashedBuild CLI, compiled to WebAssembly. The filesystem is the
+const HELP = `This is the Hashed CLI, compiled to WebAssembly. The filesystem is the
 repository as it stands, and anything you write to it stays in this browser.
 
-  hb                 the REPL - an expression, then a blank line, ':q' to quit
-  hb <file>          run a program, e.g. hb examples/guard-chain.hb
-  hb -e '<expr>'     evaluate one expression
-  hb -a <file>       print the AST before evaluating
-  hb --help          the interpreter's own usage
+  hl                 the REPL - an expression, then a blank line, ':q' to quit
+  hl <file>          run a program, e.g. hl examples/guard-chain.hl
+  hl -e '<expr>'     evaluate one expression
+  hl -a <file>       print the AST before evaluating
+  hl --help          the interpreter's own usage
   ls [path]          list files
   cat <file>         print a file, e.g. cat SPEC.md
   clear              clear the screen
   reset              restore the repository, discarding anything written
 
 Programs written with createfile land in the filesystem; ctx.cache writes to
-/cache/hashedbuild. Ctrl+D sends end-of-input to a running program.`;
+/cache/hashed. Ctrl+D sends end-of-input to a running program.`;
 
 function tokenize(line) {
   const out = [];
@@ -394,12 +394,12 @@ async function runCommand(line) {
       await ask({ type: "cat", path: args[1] });
       return;
     case "reset": await ask({ type: "reset" }); return;
-    case "hb": {
-      const hbArgs = args.slice(1);
+    case "hl": {
+      const hlArgs = args.slice(1);
       // -i is the flag that means "full-screen TUI"; nothing else in the CLI
       // needs a terminal emulator, so nothing else pays for one.
-      if (hbArgs.some((a) => a === "-i" || a === "--interactive")) await runInteractive(hbArgs);
-      else await ask({ type: "hb", args: hbArgs });
+      if (hlArgs.some((a) => a === "-i" || a === "--interactive")) await runInteractive(hlArgs);
+      else await ask({ type: "hl", args: hlArgs });
       return;
     }
     default: writeLine(`${args[0]}: not a command. Try \`help\`.`, "err");
@@ -476,7 +476,7 @@ screen.addEventListener("mouseup", () => {
 
 // ---- boot ------------------------------------------------------------------
 
-writeLine("HashedBuild — the CLI, compiled to WebAssembly, running here.", "dim");
+writeLine("Hashed — the CLI, compiled to WebAssembly, running here.", "dim");
 
 // Cross-origin isolation is what makes SharedArrayBuffer - and therefore
 // blocking stdin - available at all. coi-serviceworker installs the headers
@@ -484,7 +484,7 @@ writeLine("HashedBuild — the CLI, compiled to WebAssembly, running here.", "di
 // is updating (it leaves "coiReloadedBySelf: updatefound" behind and waits for
 // the *next* load), which would otherwise strand the page on a dead prompt.
 // So retry here too, capped, and say something honest if it never arrives.
-const RETRY_KEY = "hb-isolation-retries";
+const RETRY_KEY = "hl-isolation-retries";
 if (self.crossOriginIsolated) {
   sessionStorage.removeItem(RETRY_KEY);
   startWorker();

@@ -1,23 +1,23 @@
-# HashedBuild
+# Hashed
 
-An Odin implementation of the HashedBuild language. `SPEC.md` is the source of
+An Odin implementation of the Hashed language. `SPEC.md` is the source of
 truth for language behavior — when code and spec disagree, the spec wins, and a
 change to behavior means changing both in the same commit.
 
 ## Build and test
 
 ```sh
-odin build src -out:hb                        # the CLI (the shipped binary, kept current)
+odin build src -out:hl                        # the CLI (the shipped binary, kept current)
 odin test src                                 # full suite
-./hb -e '<expr>'                              # evaluate one expression
-scripts/build_wasi.sh                             # portable WASI -> hb.wasm
-scripts/build_wasi.sh --threads                   # wasi-threads -> hb-threads.wasm
-scripts/build_wasi.sh --threads-web -out:docs/hb.wasm  # what the browser runs
-scripts/wasi_smoke.sh ./hb ./hb.wasm wasmtime     # both targets agree
+./hl -e '<expr>'                              # evaluate one expression
+scripts/build_wasi.sh                             # portable WASI -> hl.wasm
+scripts/build_wasi.sh --threads                   # wasi-threads -> hl-threads.wasm
+scripts/build_wasi.sh --threads-web -out:docs/hl.wasm  # what the browser runs
+scripts/wasi_smoke.sh ./hl ./hl.wasm wasmtime     # both targets agree
 ```
 
-On Windows the same two commands, spelled `-out:hb.exe` and
-`-out:hbtest.exe` — `odin test` otherwise drops `src.exe` in the working
+On Windows the same two commands, spelled `-out:hl.exe` and
+`-out:hltest.exe` — `odin test` otherwise drops `src.exe` in the working
 directory. Linking needs the Windows SDK (Visual Studio Build Tools' C++
 workload); without it Odin stops at `Windows SDK not found.` before compiling.
 `scripts/` is shell, so the WASI targets want Git Bash there. Two local
@@ -25,16 +25,16 @@ environment traps, neither a project problem: **Smart App Control** blocks
 freshly built unsigned binaries with "An Application Control policy has blocked
 this file" (build outside the repo, or just build again), and **`symlink` needs
 Developer Mode** or an elevated shell, without which the symlink round trip and
-`files-symlink.hb` skip themselves with a logged reason rather than failing.
+`files-symlink.hl` skip themselves with a logged reason rather than failing.
 
 **The playground's two artifacts are generated, never committed.**
-`docs/hb.wasm` is the interpreter and `docs/repo-files.json` is the repository
+`docs/hl.wasm` is the interpreter and `docs/repo-files.json` is the repository
 as the terminal's filesystem; both are built by `.github/workflows/pages.yml`
 on the way to deploying, and by CI before the playground tests run. To work on
 the page locally, build them the same way:
 
 ```sh
-scripts/build_wasi.sh --threads-web -out:docs/hb.wasm
+scripts/build_wasi.sh --threads-web -out:docs/hl.wasm
 python3 scripts/build_playground_files.py
 ```
 
@@ -115,7 +115,7 @@ that global, which is why those few lines are assembly and why
 `scripts/build_wasi.sh` compiles and links them rather than `odin build`
 doing everything.
 
-`./hb` is gitignored, not tracked — but it is the binary you and any hand-testing
+`./hl` is gitignored, not tracked — but it is the binary you and any hand-testing
 actually run, so rebuild it as part of every completed feature, not just at the
 end of a session.
 
@@ -182,7 +182,7 @@ nobody outside this repo can discover or run is not finished.
 
 **Every user-visible feature is documented in `LANGUAGE.md`**, the
 feature-by-feature tour of what runs. Each entry carries a snippet the reader
-can paste straight into `./hb -e '…'` and a pointer to the example that
+can paste straight into `./hl -e '…'` and a pointer to the example that
 demonstrates it. Run the snippets before committing them; a doc that lies is
 worse than a missing one.
 
@@ -201,7 +201,7 @@ a failure that can't be caught — say so in the docs rather than writing around
 it.
 
 Three parts of this are mechanical, so they can't rot quietly: every
-`examples/*.hb` is executed by the suite and asserted against its documented
+`examples/*.hl` is executed by the suite and asserted against its documented
 value; `test_every_example_is_covered_by_a_test` fails when an example lands
 without an assertion; and code quoted in `README.md` is compared against the
 example it claims to be (`docs_test.odin`), because it drifted once already.

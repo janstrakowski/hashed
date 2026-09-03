@@ -4,7 +4,7 @@
 // (fs.odin), so the same assertion elsewhere would hold without establishing
 // anything - which is why this file is `#+build linux` rather than a `when`.
 #+build linux
-package hashedbuild
+package hashed
 
 import "core:os"
 import "core:strings"

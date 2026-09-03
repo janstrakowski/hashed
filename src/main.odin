@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 import "core:fmt"
 import "core:os"
@@ -8,9 +8,9 @@ import "core:bufio"
 
 VERSION :: "0.1.0"
 
-USAGE :: `Usage: hb [options] [file]
+USAGE :: `Usage: hl [options] [file]
 
-Runs the given HashedBuild source file, or starts a REPL if none is given.
+Runs the given Hashed source file, or starts a REPL if none is given.
 
 Options:
   -i, --interactive   Start the live editor (requires a terminal)
@@ -42,7 +42,7 @@ Cli_Options :: struct {
   eval_expr: string,
 }
 
-// -h/--version win wherever they appear (`hb -i --help` prints help rather
+// -h/--version win wherever they appear (`hl -i --help` prints help rather
 // than opening the editor), which is what exiting on sight used to do.
 parse_args :: proc(args: []string) -> (opts: Cli_Options, err_msg: string, ok: bool) {
   interactive := false
@@ -107,7 +107,7 @@ main :: proc() {
   case .Help:
     fmt.println(USAGE)
   case .Version:
-    fmt.println("hb", VERSION)
+    fmt.println("hl", VERSION)
   case .Eval:
     eval_once(opts.eval_expr, opts.show_ast, opts.cache_dir)
   case .Editor:
@@ -131,8 +131,8 @@ main :: proc() {
   }
 }
 
-// Runs a HashedBuild source file as a real program, printing the result -
-// `hb <file>`. Every failure here is fatal to the process; eval_source_file
+// Runs a Hashed source file as a real program, printing the result -
+// `hl <file>`. Every failure here is fatal to the process; eval_source_file
 // below is the same work without the printing or the exiting.
 run_file :: proc(path_str: string, show_ast: bool, cache_dir: string) {
   formatted, err_msg, ok := eval_source_file(path_str, show_ast, cache_dir)
@@ -203,7 +203,7 @@ eval_source_file :: proc(path_str: string, show_ast: bool, cache_dir: string) ->
 // piped - unlike the two-pane editor, it needs no raw terminal mode. With
 // `-a`/`--ast`, the AST is printed above the value on every evaluation too.
 run_eval_repl :: proc(show_ast: bool, cache_dir: string) {
-  fmt.println("HashedBuild REPL")
+  fmt.println("Hashed REPL")
   fmt.println("Type an expression, then an empty line to evaluate it. ':q' to quit.")
   fmt.println()
 
@@ -217,7 +217,7 @@ run_eval_repl :: proc(show_ast: bool, cache_dir: string) {
 
   for {
     if strings.builder_len(builder) == 0 {
-      fmt.print("hb> ")
+      fmt.print("hl> ")
     } else {
       fmt.print("... ")
     }

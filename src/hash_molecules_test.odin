@@ -1,6 +1,6 @@
 // Tests run natively, never in a WASI build - see eval_test.odin.
 #+build linux, windows
-package hashedbuild
+package hashed
 
 import "core:strings"
 import "core:testing"

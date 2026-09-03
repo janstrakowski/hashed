@@ -1,11 +1,11 @@
-package hashedbuild
+package hashed
 
 import "core:slice"
 
 // Runtime values (SPEC.md §3/§5/§6). `Bytes` has no literal syntax yet - the
 // only way to produce one today would be a builtin that hands one back, and
 // none currently does - so the Value case exists (§16's createfile accepts
-// one) but is presently unreachable from actual HashedBuild source.
+// one) but is presently unreachable from actual Hashed source.
 
 Nothing_Value :: struct {}
 
@@ -53,7 +53,7 @@ File_Value :: struct {
   // Where this File was actually read from or written to, resolved through
   // /proc/self/fd so it's absolute regardless of how the call named it (§3's
   // display rule). format_value shows it; nothing else does. There's no
-  // builtin that lets HashedBuild source read this field back out, by design
+  // builtin that lets Hashed source read this field back out, by design
   // - a program holds the handle without ever learning where its data lives.
   // Empty only if that resolution failed (see builtins_fs.odin's path_of_fd).
   display_path:       string,

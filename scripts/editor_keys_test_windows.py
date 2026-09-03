@@ -8,7 +8,7 @@ then, because the editor sets ENABLE_VIRTUAL_TERMINAL_INPUT, turns them back
 into escape sequences. Feeding it "\x1b3" would mostly test that round trip.
 
 So this skips the pseudo-console and drives the real one. It allocates a
-console, starts `hb -i` attached to it, and injects genuine KEY_EVENT_RECORDs
+console, starts `hl -i` attached to it, and injects genuine KEY_EVENT_RECORDs
 with WriteConsoleInputW - a virtual key code plus a control-key state, which is
 what a keyboard actually produces. Conhost's own VT-input translation then
 turns those into the escape sequences the editor reads. That translation is
@@ -22,7 +22,7 @@ assertions below compare text on screen rather than ANSI-stripped output. The
 checks are otherwise the same ones the pty test makes, so the two targets
 cannot drift apart.
 
-Usage: python scripts/editor_keys_test_windows.py [path/to/hb.exe]
+Usage: python scripts/editor_keys_test_windows.py [path/to/hl.exe]
 """
 
 import ctypes
@@ -39,9 +39,9 @@ if sys.platform != "win32":
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 u32 = ctypes.WinDLL("user32", use_last_error=True)
 
-HB = os.path.abspath(
+HL = os.path.abspath(
     sys.argv[1] if len(sys.argv) > 1
-    else os.path.join(os.path.dirname(__file__), "..", "hb.exe")
+    else os.path.join(os.path.dirname(__file__), "..", "hl.exe")
 )
 
 KEY_EVENT = 0x0001
@@ -209,7 +209,7 @@ def run(keys, quit_after=True):
     startup.hStdInput = CONIN.value
     startup.hStdOutput = CONOUT.value
     startup.hStdError = CONOUT.value
-    proc = subprocess.Popen([HB, "-i"], startupinfo=startup, close_fds=False)
+    proc = subprocess.Popen([HL, "-i"], startupinfo=startup, close_fds=False)
     time.sleep(1.2)
 
     for key in keys:

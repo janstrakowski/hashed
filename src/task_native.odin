@@ -1,6 +1,6 @@
 #+build linux, windows
 
-package hashedbuild
+package hashed
 
 import "core:thread"
 

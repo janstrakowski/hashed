@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 // The filesystem operations §16's builtins are built from, named once here
 // and implemented per target: fs_linux.odin against core:sys/linux's *at()

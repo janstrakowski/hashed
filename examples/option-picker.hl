@@ -1,4 +1,4 @@
-// Reads choice.txt (relative to this file, not to wherever `hb` was invoked
+// Reads choice.txt (relative to this file, not to wherever `hl` was invoked
 // from), then branches on its exact content: "option A" writes the result
 // starting with "Option A:" followed by optiona.txt's content; "option B"
 // does the analogous thing with optionb.txt; anything else is an

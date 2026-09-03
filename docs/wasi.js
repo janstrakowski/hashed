@@ -1,4 +1,4 @@
-// A WASI preview1 shim, just large enough for hb.wasm: the 21 imports it
+// A WASI preview1 shim, just large enough for hl.wasm: the 21 imports it
 // actually names, no more. Written rather than pulled in because the point of
 // the playground is that the filesystem is *ours* - a plain JS object the page
 // can persist, hand back, and show in a file list.
@@ -152,14 +152,14 @@ class Descriptor {
 
 export class WASI {
   // `args` becomes argv, so args[0] is the program name and args[1..] are what
-  // `hb` parses (a file to run, or -e '<expr>').
+  // `hl` parses (a file to run, or -e '<expr>').
   // `env` becomes the process environment - which is how ctx.cache is aimed:
   // resolve_cache_dir (builtins_fs.odin) reads XDG_CACHE_HOME, so setting it
   // puts the content-addressed store somewhere the visitor can `ls`.
   // `stdin` is an optional reader: a function returning bytes, or null at EOF.
   // Without one, reading stdin is end-of-file, which is what a program run
   // non-interactively should see.
-  constructor({ fs, args = ["hb"], env = {}, stdin = null,
+  constructor({ fs, args = ["hl"], env = {}, stdin = null,
                 onStdout = () => {}, onStderr = () => {} }) {
     this.fs = fs;
     this.args = args;
@@ -560,7 +560,7 @@ export class ExitSignal extends Error {
   }
 }
 
-// Instantiates a fresh module per run. Fresh on purpose: hb is a WASI
+// Instantiates a fresh module per run. Fresh on purpose: hl is a WASI
 // *command* - the host calls _start once and the program ends - so reusing an
 // instance would restart a program whose globals and heap are already spent.
 // Runs a program on this thread, start to finish. Used where there is no need

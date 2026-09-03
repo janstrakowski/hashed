@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 import "core:crypto/hash"
 import "core:encoding/base64"

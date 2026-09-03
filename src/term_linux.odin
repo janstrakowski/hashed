@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 import "core:sys/linux"
 import "core:sys/posix"

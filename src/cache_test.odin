@@ -1,6 +1,6 @@
 // Tests run natively, never in a WASI build - see eval_test.odin.
 #+build linux, windows
-package hashedbuild
+package hashed
 
 import "core:fmt"
 import "core:os"
@@ -93,7 +93,7 @@ test_cached_returns_the_value_and_writes_one_entry :: proc(t: ^testing.T) {
   testing.expect_value(t, len(names), 1)
   if len(names) != 1 do return
   testing.expect(t, strings.has_prefix(names[0], "sha256-"), "an entry is named by its key")
-  testing.expect(t, strings.has_suffix(names[0], ".hb"), "a non-File value is stored as text")
+  testing.expect(t, strings.has_suffix(names[0], ".hl"), "a non-File value is stored as text")
 }
 
 // The one test that distinguishes a cache from a very elaborate way of
@@ -217,7 +217,7 @@ test_cached_file_value_is_stored_as_a_file :: proc(t: ^testing.T) {
   names := entry_names(dir)
   testing.expect_value(t, len(names), 1)
   if len(names) != 1 do return
-  testing.expect(t, !strings.has_suffix(names[0], ".hb"), "a File entry carries no .hb suffix")
+  testing.expect(t, !strings.has_suffix(names[0], ".hl"), "a File entry carries no .hl suffix")
 }
 
 // The same for a directory, which is the case that needs the whole tree copied
@@ -256,7 +256,7 @@ test_cached_directory_value_round_trips :: proc(t: ^testing.T) {
   testing.expect(t, is_dir, "a directory value is stored as a directory")
 }
 
-// Anything else becomes `value.hb`, with each File it holds written out beside
+// Anything else becomes `value.hl`, with each File it holds written out beside
 // it and named by that File's own content hash - the "systematically" half of
 // the layout. A composite with one file in it therefore has exactly two names
 // inside its entry.
@@ -289,10 +289,10 @@ test_cached_composite_holds_its_files_beside_the_text :: proc(t: ^testing.T) {
 
   has_text, has_file := false, false
   for name in inner {
-    if name == "value.hb" do has_text = true
+    if name == "value.hl" do has_text = true
     if strings.has_prefix(name, "sha256-") do has_file = true
   }
-  testing.expect(t, has_text, "the entry holds its value.hb")
+  testing.expect(t, has_text, "the entry holds its value.hl")
   testing.expect(t, has_file, "and the File it refers to, named by content")
 }
 
@@ -397,7 +397,7 @@ test_cached_reports_a_corrupt_entry :: proc(t: ^testing.T) {
   testing.expect_value(t, len(names), 1)
   if len(names) != 1 do return
 
-  value_path := fmt.tprintf("%s/%s/value.hb", dir, names[0])
+  value_path := fmt.tprintf("%s/%s/value.hl", dir, names[0])
   os.remove(value_path)
   _ = os.write_entire_file(value_path, transmute([]u8)string("{ this is not a value"))
 

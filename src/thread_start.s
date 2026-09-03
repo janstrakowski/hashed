@@ -7,7 +7,7 @@
 # start_arg points at a struct whose first field is that thread's stack top.
 
 .globaltype __stack_pointer, i32
-.functype hb_thread_entry (i32, i32) -> ()
+.functype hl_thread_entry (i32, i32) -> ()
 
 .globl wasi_thread_start
 .type wasi_thread_start,@function
@@ -18,5 +18,5 @@ wasi_thread_start:
   global.set __stack_pointer
   local.get 0
   local.get 1
-  call hb_thread_entry
+  call hl_thread_entry
   end_function

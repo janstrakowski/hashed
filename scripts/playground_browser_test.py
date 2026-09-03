@@ -8,7 +8,7 @@ Two halves:
             like a broken interpreter. It used to be exercised under Node; it is
             exercised here instead, in a page, which is the engine it actually
             ships to. The example-by-example comparison against the native build
-            is still the strongest check in it - the values come from ./hb in
+            is still the strongest check in it - the values come from ./hl in
             this process and go into the page as data.
 
   terminal   the shell around the interpreter, the REPL, the live editor, and
@@ -20,7 +20,7 @@ Usage: python3 scripts/playground_browser_test.py [chrome-path]
   WAIT_MS      how long to wait for the page (default 60000)
   THROTTLE     CPU throttling factor, e.g. 2
 
-Needs docs/hb.wasm and docs/repo-files.json built (see CLAUDE.md), a
+Needs docs/hl.wasm and docs/repo-files.json built (see CLAUDE.md), a
 Chrome/Chromium binary, and nothing else - no npm, no package manager.
 Python 3 standard library plus scripts/cdp.py.
 """
@@ -86,7 +86,7 @@ SHIM_HARNESS = """<!doctype html><meta charset="utf-8"><title>shim harness</titl
 <script type="module">
 import { FileSystem, run } from "./wasi.js";
 const enc = new TextEncoder(), dec = new TextDecoder();
-const wasm = new Uint8Array(await (await fetch("./hb.wasm")).arrayBuffer());
+const wasm = new Uint8Array(await (await fetch("./hl.wasm")).arrayBuffer());
 const manifest = await (await fetch("./repo-files.json")).json();
 
 // The same seed the shim test has always used.
@@ -117,29 +117,29 @@ async function invoke(args, fs) {
   return { code, out: out.join("").trim(), err: err.join("").trim() };
 }
 
-window.__hb = {
+window.__hl = {
   // Runs a program, keeping its filesystem around so a caller can look in it
   // or restore a snapshot of it - which is exactly what the page does.
   async evaluate(source, { restore = false, examples = false } = {}) {
-    const fs = restore ? FileSystem.fromSnapshot(window.__hb.last.snapshot())
+    const fs = restore ? FileSystem.fromSnapshot(window.__hl.last.snapshot())
              : examples ? seedExamples() : seeded();
-    fs.writeFile("/main.hb", enc.encode(source));
-    const r = await invoke(["hb", "/main.hb"], fs);
-    window.__hb.last = fs;
+    fs.writeFile("/main.hl", enc.encode(source));
+    const r = await invoke(["hl", "/main.hl"], fs);
+    window.__hl.last = fs;
     return r;
   },
   async args(argv) { return invoke(argv, seeded()); },
   async example(name) {
-    const r = await invoke(["hb", "/examples/" + name], seedExamples());
+    const r = await invoke(["hl", "/examples/" + name], seedExamples());
     return (r.out + "\\n" + r.err).trim();
   },
   fileInSnapshot(name) {
-    const entry = window.__hb.last.snapshot()[name];
+    const entry = window.__hl.last.snapshot()[name];
     if (!entry) return null;
     return { type: entry.type, text: dec.decode(Uint8Array.from(entry.data ?? [])) };
   },
 };
-window.__hbReady = true;
+window.__hlReady = true;
 </script>
 """
 
@@ -186,8 +186,8 @@ def require(path, how):
 
 def main():
     global failures
-    require(os.path.join(DOCS, "hb.wasm"),
-            "scripts/build_wasi.sh --threads-web -out:docs/hb.wasm")
+    require(os.path.join(DOCS, "hl.wasm"),
+            "scripts/build_wasi.sh --threads-web -out:docs/hl.wasm")
     require(os.path.join(DOCS, "repo-files.json"),
             "python3 scripts/build_playground_files.py")
 
@@ -213,11 +213,11 @@ def main():
 def shim_checks(browser):
     page = browser.new_page()
     page.goto(f"http://localhost:{PORT}/__shim__.html")
-    page.wait_for("window.__hbReady === true", "the shim harness to load")
+    page.wait_for("window.__hlReady === true", "the shim harness to load")
     check("the harness is cross-origin isolated", page.evaluate("self.crossOriginIsolated"), True)
 
     def run(source, **opts):
-        return page.evaluate(f"__hb.evaluate({json.dumps(source)}, {json.dumps(opts)})",
+        return page.evaluate(f"__hl.evaluate({json.dumps(source)}, {json.dumps(opts)})",
                              timeout=120)
 
     # --- the language runs at all ---------------------------------------------
@@ -240,14 +240,14 @@ def shim_checks(browser):
           '"optiona.txt"')
 
     # Containment: a sub-path may not climb out of its directory handle (§16).
-    escaped = run('loadfile { .dir = loadfile "/examples", .path = "../main.hb" }')
+    escaped = run('loadfile { .dir = loadfile "/examples", .path = "../main.hl" }')
     check("containment refuses ..", escaped["code"], 1)
     check("containment says why", "escapes its directory" in escaped["err"], True)
 
     # --- writes land in the filesystem the page persists ----------------------
     written = run('createfile { .path = "/out.txt", .content = "written" }')
     check("createfile succeeds", written["code"], 0)
-    entry = page.evaluate('__hb.fileInSnapshot("out.txt")')
+    entry = page.evaluate('__hl.fileInSnapshot("out.txt")')
     check("createfile is visible in the snapshot", (entry or {}).get("type"), "file")
     check("createfile wrote the bytes", (entry or {}).get("text"), "written")
 
@@ -269,7 +269,7 @@ def shim_checks(browser):
     check("async says why", "could not start a thread" in spawnless["err"], True)
 
     # --- the CLI surface the page drives --------------------------------------
-    dash_e = page.evaluate('__hb.args(["hb", "-e", "6 * 7"])')
+    dash_e = page.evaluate('__hl.args(["hl", "-e", "6 * 7"])')
     check("-e evaluates one expression", dash_e["out"], "42")
     check("-e exits cleanly", dash_e["code"], 0)
 
@@ -278,25 +278,25 @@ def shim_checks(browser):
     # Every example, through this shim, against the native build. Bytes can't be
     # compared - Odin's wasm output isn't reproducible run to run (the type
     # section reorders) - so behaviour is the comparison.
-    native_hb = os.path.join(REPO, "hb")
-    if os.path.exists(native_hb):
+    native_hl = os.path.join(REPO, "hl")
+    if os.path.exists(native_hl):
         # Displayed paths differ by construction (checkout vs preopen), and
         # async needs a thread-spawn this harness does not give it - both
         # covered above.
-        skip = {"files-sandboxed.hb", "option-picker.hb",
-                "async-basics.hb", "async-branching.hb", "async-table.hb"}
+        skip = {"files-sandboxed.hl", "option-picker.hl",
+                "async-basics.hl", "async-branching.hl", "async-table.hl"}
         compared = 0
-        for name in sorted(n for n in os.listdir(EXAMPLES) if n.endswith(".hb")):
+        for name in sorted(n for n in os.listdir(EXAMPLES) if n.endswith(".hl")):
             if name in skip:
                 continue
-            native = subprocess.run([native_hb, os.path.join(EXAMPLES, name)],
+            native = subprocess.run([native_hl, os.path.join(EXAMPLES, name)],
                                     capture_output=True, text=True).stdout.strip()
-            through_shim = page.evaluate(f"__hb.example({json.dumps(name)})", timeout=120)
+            through_shim = page.evaluate(f"__hl.example({json.dumps(name)})", timeout=120)
             compared += 1
             check(f"example {name} matches native", through_shim, native)
         check("compared a real number of examples", compared >= 15, True)
     else:
-        print("skip  example comparison (no ./hb built)")
+        print("skip  example comparison (no ./hl built)")
 
     check("no errors from the shim harness", " | ".join(page.problems), "")
     page.close()
@@ -349,28 +349,28 @@ def terminal_checks(browser):
     # The filesystem is the repository, 1:1 - not a curated sample of it.
     type_line("ls")
     check("the repo is there", screen(),
-          lambda t: "/SPEC.md" in t and "/src/eval.odin" in t and "/examples/guard-chain.hb" in t)
-    check("ctx.cache has a home", screen(), lambda t: "/cache/hashedbuild" in t)
+          lambda t: "/SPEC.md" in t and "/src/eval.odin" in t and "/examples/guard-chain.hl" in t)
+    check("ctx.cache has a home", screen(), lambda t: "/cache/hashed" in t)
 
     type_line("cat examples/choice.txt")
     check("cat prints a file", screen(), lambda t: "option A" in t)
 
     # Running a program: the real CLI path, argv and all.
-    type_line("hb examples/guard-chain.hb")
+    type_line("hl examples/guard-chain.hl")
     check("a repo example runs", screen(), lambda t: t.rstrip().endswith("5"))
 
-    type_line("hb -e '6 * 7'")
+    type_line("hl -e '6 * 7'")
     check("-e evaluates an expression", screen(), lambda t: t.rstrip().endswith("42"))
 
-    # The REPL, for real: bare `hb` runs the interpreter's own loop, reading
+    # The REPL, for real: bare `hl` runs the interpreter's own loop, reading
     # stdin. The banner and the prompts below come out of the module - if this
     # passes, blocking stdin works.
-    type_line("hb")
-    check("the interpreter's REPL starts", screen(), lambda t: "HashedBuild REPL" in t)
+    type_line("hl")
+    check("the interpreter's REPL starts", screen(), lambda t: "Hashed REPL" in t)
     type_line("1 + 1")
     check("its continuation prompt is the module's", screen(), lambda t: "... " in t)
     type_line("")
-    check("a blank line evaluates the buffer", screen(), lambda t: "hb> 1 + 1\n... \n2\n" in t)
+    check("a blank line evaluates the buffer", screen(), lambda t: "hl> 1 + 1\n... \n2\n" in t)
     type_line('filetext (loadfile "/README.md") |> (#arg == #arg)')
     type_line("")
     check("the REPL can read the repo", screen(), lambda t: "... \ntrue\n" in t)
@@ -381,21 +381,21 @@ def terminal_checks(browser):
     # instance of the module against the same shared memory (wasi-threads), so
     # these are genuinely concurrent - and each one reads a file through the
     # same filesystem, which is what the RPC layer exists for.
-    type_line("hb examples/async-basics.hb")
+    type_line("hl examples/async-basics.hl")
     check("async runs on real threads", screen(),
           lambda t: '"This is the payload for option A.\\nThis is the payload for option B.\\n"' in t)
-    type_line("hb examples/async-table.hb")
+    type_line("hl examples/async-table.hl")
     check("concurrent table entries all resolve", screen(),
           lambda t: '{a: 2, b: 6, c: "This is the payload for option A.\\n"}' in t)
 
     # ctx.cache, which is why /cache exists.
-    type_line("hb -e 'createfile { .dir = ctx.cache, .content = \"cached\" }'")
+    type_line("hl -e 'createfile { .dir = ctx.cache, .content = \"cached\" }'")
     check("ctx.cache writes into /cache", screen(),
-          lambda t: "<file: /cache/hashedbuild/sha256_" in t)
+          lambda t: "<file: /cache/hashed/sha256_" in t)
 
     # Writing a file, and the point of the whole thing: it is still there after
     # a reload, with no server and no database anywhere.
-    type_line("hb -e 'createfile { .path = \"/greeting.txt\", .content = \"written from the browser\" }'")
+    type_line("hl -e 'createfile { .path = \"/greeting.txt\", .content = \"written from the browser\" }'")
     check("createfile reports what it wrote", screen(), lambda t: "<file: /greeting.txt>" in t)
 
     page.reload()
@@ -408,7 +408,7 @@ def terminal_checks(browser):
     check("the cache entry survived too", screen(), lambda t: "sha256_" in t)
 
     # And the language's own rules still hold in there: createfile is exclusive.
-    type_line("hb -e 'createfile { .path = \"/greeting.txt\", .content = \"again\" }'")
+    type_line("hl -e 'createfile { .path = \"/greeting.txt\", .content = \"again\" }'")
     check("a second write fails, exclusively", screen(), lambda t: "Exists" in t)
 
     # History, because a terminal without it is a nuisance.
@@ -426,7 +426,7 @@ def terminal_checks(browser):
 
 
 def editor_checks(page, screen):
-    """`hb -i` is a full-screen TUI: raw keystrokes in, ANSI out, xterm.js
+    """`hl -i` is a full-screen TUI: raw keystrokes in, ANSI out, xterm.js
     rendering it. Nothing else on this page needs an emulator, and until this
     landed the WASI build refused -i outright."""
     tui_rows = lambda: page.evaluate(
@@ -437,11 +437,11 @@ def editor_checks(page, screen):
     page.wait_for("!document.getElementById('entry').disabled", "the prompt")
     page.evaluate("(() => { const e = document.getElementById('entry');"
                   " e.value = ''; e.focus(); return true; })()")
-    page.type_text("hb -i")
+    page.type_text("hl -i")
     page.press("Enter")
     page.wait_for("document.body.classList.contains('tui')", "the editor to open")
     settle(3500)
-    check("the editor draws itself", tui_rows(), lambda t: "HashedBuild live parser" in t)
+    check("the editor draws itself", tui_rows(), lambda t: "Hashed live parser" in t)
     check("its panes are there", tui_rows(),
           lambda t: "source" in t and "ast" in t and "result" in t)
 
@@ -459,7 +459,7 @@ def editor_checks(page, screen):
     page.key_up("Control")
     settle()
     check("the examples picker lists the repo", tui_rows(),
-          lambda t: "select an example" in t and "guard-chain.hb" in t)
+          lambda t: "select an example" in t and "guard-chain.hl" in t)
     page.type_text("guard")
     settle(800)
     page.press("Enter")
@@ -527,7 +527,7 @@ def stale_filesystem_checks(page, screen, type_line, booted):
     because nothing ever re-seeded it. Here that state is planted deliberately."""
     page.evaluate("""(async () => {
       const db = await new Promise((resolve, reject) => {
-        const req = indexedDB.open("hashedbuild-playground", 1);
+        const req = indexedDB.open("hashed-playground", 1);
         req.onupgradeneeded = () => req.result.createObjectStore("state");
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
@@ -539,8 +539,8 @@ def stale_filesystem_checks(page, screen, type_line, booted):
       // An old seed: no examples at all, one file of the visitor's own, and a
       // version that no longer matches the manifest.
       const stale = { ...current, seedVersion: "from-an-older-visit", files: {
-        "tour.hb": { type: "file", data: [...new TextEncoder().encode("1 + 1\\n")] },
-        "mine.hb": { type: "file", data: [...new TextEncoder().encode("42\\n")] },
+        "tour.hl": { type: "file", data: [...new TextEncoder().encode("1 + 1\\n")] },
+        "mine.hl": { type: "file", data: [...new TextEncoder().encode("42\\n")] },
       } };
       await new Promise((resolve, reject) => {
         const tx = db.transaction("state", "readwrite");
@@ -555,8 +555,8 @@ def stale_filesystem_checks(page, screen, type_line, booted):
     booted()
     check("a stale filesystem is refreshed", screen(), lambda t: "repository was updated" in t)
     type_line("ls examples")
-    check("the examples are back", screen(), lambda t: "/examples/guard-chain.hb" in t)
-    type_line("cat mine.hb")
+    check("the examples are back", screen(), lambda t: "/examples/guard-chain.hl" in t)
+    type_line("cat mine.hl")
     check("a file of the visitor's own survives the refresh", screen(), lambda t: "42" in t)
 
     # And with nothing stale, a restore says nothing about updating.

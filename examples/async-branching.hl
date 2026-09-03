@@ -10,7 +10,7 @@
 // write to an unused name *outside* the async wouldn't give anything a
 // reason to wait for it before the program exits.
 //
-// Run this (`hb examples/async-branching.hb`), then `ls examples/branch-*
+// Run this (`hl examples/async-branching.hl`), then `ls examples/branch-*
 // .marker` - you'll find one from every branch that was ever walked, not
 // just the one whose value came out on top. (Delete them before re-running -
 // createfile is exclusive, SPEC.md §16.) Evaluates to "medium" (score = 55:

@@ -1,12 +1,12 @@
-package hashedbuild
+package hashed
 
 import "core:fmt"
 import "core:math"
 import "core:strconv"
 import "core:strings"
 
-// The text a `cached` entry's `value.hb` holds, and the reader that turns it
-// back into a Value. This is the "subset of HB" half of §15's on-disk layout -
+// The text a `cached` entry's `value.hl` holds, and the reader that turns it
+// back into a Value. This is the "subset of HL" half of §15's on-disk layout -
 // see cache_store.odin for the layout itself.
 //
 // **It is written to be read.** A cache directory is something a person opens
@@ -15,10 +15,10 @@ import "core:strings"
 //
 //   { .name = "libz", .version = 3, .built = true, .src = file "sha256-Ab3_", .out = dir "sha256-9xQ1" }
 //
-// **A separate reader, not `import`.** Everything above is HashedBuild syntax
+// **A separate reader, not `import`.** Everything above is Hashed syntax
 // as it stands - `true`, `bytes`, `file` and `dir` are ordinary identifiers,
 // and `file "sha256-Ab3_"` is an ordinary call - but none of those names are
-// *bound* to anything, so HashedBuild's own evaluator could not read this back
+// *bound* to anything, so Hashed's own evaluator could not read this back
 // even though its parser can read the shape. Reading it here instead is also
 // what keeps a cache entry from being able to run anything: this parser
 // accepts literals and nothing else, so a tampered-with entry is a parse
@@ -42,8 +42,8 @@ import "core:strings"
 // this is not required for correctness; it is what stops a deeply shared value
 // from being written out exponentially.
 //
-// The one spelling that goes beyond HashedBuild's own grammar is `\xNN` inside
-// a string, for bytes that have no other escape (HashedBuild's lexer knows
+// The one spelling that goes beyond Hashed's own grammar is `\xNN` inside
+// a string, for bytes that have no other escape (Hashed's lexer knows
 // `\n`, `\t`, `\r`, `\"` and `\\`, and stops a string at a newline). Utf8
 // values can hold such bytes, so the format needs a way to write them.
 //
@@ -154,7 +154,7 @@ write_value :: proc(b: ^strings.Builder, v: Value, w: ^Write_Ctx) -> string {
     for entry, i in av.entries {
       if i > 0 do strings.write_string(b, ",")
       strings.write_string(b, " ")
-      // `.name = v` is the readable form, and exact: in HashedBuild it means
+      // `.name = v` is the readable form, and exact: in Hashed it means
       // the literal Utf8 key "name". Anything else needs the general
       // `[key] = v` form, since a key can be any value at all.
       if key, is_str := entry.key.(string); is_str && is_identifier_shaped(key) {
@@ -207,10 +207,10 @@ write_value :: proc(b: ^strings.Builder, v: Value, w: ^Write_Ctx) -> string {
 // (hash.odin encodes the IEEE bits), so `cached` would hand back a value that
 // isn't the one it stored.
 //
-// The result is also shaped as a HashedBuild Float literal, which is stricter
+// The result is also shaped as a Hashed Float literal, which is stricter
 // than strconv's output: a digit is required on both sides of the `.` (§3), so
 // a mantissa without one gets ".0" appended, and an exponent's redundant "+"
-// goes. `inf`/`-inf`/`nan` are spelled as the bare names HashedBuild has no
+// goes. `inf`/`-inf`/`nan` are spelled as the bare names Hashed has no
 // literal for - the reader below knows them; nothing else does.
 @(private = "file")
 write_float :: proc(b: ^strings.Builder, f: f64) {
@@ -239,7 +239,7 @@ write_float :: proc(b: ^strings.Builder, f: f64) {
 
 @(private = "file")
 write_float_literal :: proc(b: ^strings.Builder, text: string) {
-  // strconv writes a leading '+' on a positive number here; HashedBuild's
+  // strconv writes a leading '+' on a positive number here; Hashed's
   // grammar has no unary '+', so it goes.
   t := text
   if len(t) > 0 && t[0] == '+' do t = t[1:]
@@ -274,7 +274,7 @@ write_quoted :: proc(b: ^strings.Builder, data: []u8) {
       // Anything else printable goes through as itself, so a path or a name
       // reads as a path or a name. The rest - control bytes, and NUL, which
       // would end the string as far as any C-shaped reader is concerned - gets
-      // the one escape this format has that HashedBuild's does not.
+      // the one escape this format has that Hashed's does not.
       if c < 0x20 || c == 0x7f {
         hex := HEX
         strings.write_string(b, "\\x")

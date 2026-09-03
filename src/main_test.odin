@@ -1,7 +1,7 @@
 // Tests run natively, never in a WASI build: core:testing pulls in
 // core:log and core:terminal, neither of which compiles for wasm32.
 #+build linux, windows
-package hashedbuild
+package hashed
 
 import "core:strings"
 import "core:testing"
@@ -21,20 +21,20 @@ test_parse_args_defaults_to_repl :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_args_file_and_ast_flag :: proc(t: ^testing.T) {
-  opts, _, ok := parse_args([]string{"prog.hb"})
+  opts, _, ok := parse_args([]string{"prog.hl"})
   testing.expect(t, ok)
   testing.expect_value(t, opts.mode, Cli_Mode.File)
-  testing.expect_value(t, opts.file_path, "prog.hb")
+  testing.expect_value(t, opts.file_path, "prog.hl")
 
-  with_ast, _, ok2 := parse_args([]string{"-a", "prog.hb"})
+  with_ast, _, ok2 := parse_args([]string{"-a", "prog.hl"})
   testing.expect(t, ok2)
   testing.expect_value(t, with_ast.mode, Cli_Mode.File)
   testing.expect_value(t, with_ast.show_ast, true)
 
   // A second positional is ignored rather than being an error.
-  two_files, _, ok3 := parse_args([]string{"first.hb", "second.hb"})
+  two_files, _, ok3 := parse_args([]string{"first.hl", "second.hl"})
   testing.expect(t, ok3)
-  testing.expect_value(t, two_files.file_path, "first.hb")
+  testing.expect_value(t, two_files.file_path, "first.hl")
 }
 
 @(test)
@@ -68,11 +68,11 @@ test_parse_args_flags_needing_an_argument_reject_a_missing_one :: proc(t: ^testi
 
 @(test)
 test_parse_args_cache_dir :: proc(t: ^testing.T) {
-  opts, _, ok := parse_args([]string{"--cache-dir", "/tmp/hbcache", "prog.hb"})
+  opts, _, ok := parse_args([]string{"--cache-dir", "/tmp/hlcache", "prog.hl"})
   testing.expect(t, ok)
-  testing.expect_value(t, opts.cache_dir, "/tmp/hbcache")
+  testing.expect_value(t, opts.cache_dir, "/tmp/hlcache")
   testing.expect_value(t, opts.mode, Cli_Mode.File)
-  testing.expect_value(t, opts.file_path, "prog.hb")
+  testing.expect_value(t, opts.file_path, "prog.hl")
 }
 
 @(test)
@@ -84,7 +84,7 @@ test_parse_args_rejects_unknown_option :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_args_help_and_version_win_over_other_flags :: proc(t: ^testing.T) {
-  for args in ([][]string{{"-h"}, {"--help"}, {"-i", "--help"}, {"--help", "prog.hb"}}) {
+  for args in ([][]string{{"-h"}, {"--help"}, {"-i", "--help"}, {"--help", "prog.hl"}}) {
     opts, _, ok := parse_args(args)
     testing.expect(t, ok)
     testing.expect_value(t, opts.mode, Cli_Mode.Help)
@@ -101,7 +101,7 @@ test_parse_args_eval_cannot_combine_with_editor_or_file :: proc(t: ^testing.T) {
   testing.expect(t, !editor_ok, "-e and -i are mutually exclusive")
   testing.expect(t, strings.contains(editor_err, "interactive"))
 
-  _, file_err, file_ok := parse_args([]string{"-e", "1", "prog.hb"})
+  _, file_err, file_ok := parse_args([]string{"-e", "1", "prog.hl"})
   testing.expect(t, !file_ok, "-e and a file argument are mutually exclusive")
   testing.expect(t, strings.contains(file_err, "file"))
 }

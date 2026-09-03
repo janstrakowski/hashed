@@ -1,5 +1,5 @@
 // Hashing a value that reaches itself (SPEC.md §6/§10). `let rec` can build a
-// Table that contains itself (see examples/cyclic-data.hb), and every value is
+// Table that contains itself (see examples/cyclic-data.hl), and every value is
 // hashable - including that one.
 //
 // It cannot be hashed the way everything else is. An ordinary digest is a fold

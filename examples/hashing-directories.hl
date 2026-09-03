@@ -20,7 +20,7 @@
 // a `File` is an immutable handle (§3) and the digest is fixed once read.
 //
 // There are no boolean literals, so "false" is spelled `1 > 2` here, the same
-// way examples/comparison-and-logic.hb spells it.
+// way examples/comparison-and-logic.hl spells it.
 //
 // Evaluates to { a_tree_is_not_its_file: true, one_tree_is_one_value: true,
 //                reading_twice_agrees: true }.

@@ -1,4 +1,4 @@
-package hashedbuild
+package hashed
 
 import "core:crypto/hash"
 import "core:encoding/base64"
@@ -26,7 +26,7 @@ import "core:unicode/utf8"
 
 // ---- root context / global env ------------------------------------------------
 
-// The context every real HashedBuild program starts with (SPEC.md §9):
+// The context every real Hashed program starts with (SPEC.md §9):
 // io is granted by default at the root; `withctx` narrows it for a sub-scope.
 // `cache_dir_override` is the CLI's `--cache-dir`, if given; "" means resolve
 // the XDG-default location instead (see resolve_cache_dir).
@@ -43,27 +43,27 @@ make_root_context :: proc(cache_dir_override: string = "") -> Value {
   return ctx_table
 }
 
-// XDG Base Directory spec: $XDG_CACHE_HOME/hashedbuild, falling back to
-// $HOME/.cache/hashedbuild if XDG_CACHE_HOME isn't set (or is empty).
+// XDG Base Directory spec: $XDG_CACHE_HOME/hashed, falling back to
+// $HOME/.cache/hashed if XDG_CACHE_HOME isn't set (or is empty).
 //
-// On Windows the fallback is %LOCALAPPDATA%\hashedbuild instead - the place
+// On Windows the fallback is %LOCALAPPDATA%\hashed instead - the place
 // Windows keeps regenerable per-user data, which is the role $HOME/.cache
 // plays elsewhere. $HOME is normally unset there, so the XDG fallback would
-// otherwise land on "/.cache/hashedbuild", i.e. the root of whichever drive
+// otherwise land on "/.cache/hashed", i.e. the root of whichever drive
 // happened to be current. XDG_CACHE_HOME still wins when it is set, on every
 // target, so the documented override behaves the same wherever a program runs.
 @(private = "file")
 resolve_cache_dir :: proc(override: string) -> string {
   if override != "" do return override
   if xdg := os.get_env_alloc("XDG_CACHE_HOME", context.temp_allocator); xdg != "" {
-    return strings.concatenate({to_forward_slashes(xdg), "/hashedbuild"})
+    return strings.concatenate({to_forward_slashes(xdg), "/hashed"})
   }
   when WINDOWS_PATHS {
     if local := os.get_env_alloc("LOCALAPPDATA", context.temp_allocator); local != "" {
-      return strings.concatenate({to_forward_slashes(local), "/hashedbuild"})
+      return strings.concatenate({to_forward_slashes(local), "/hashed"})
     }
   }
-  return strings.concatenate({os.get_env_alloc("HOME", context.temp_allocator), "/.cache/hashedbuild"})
+  return strings.concatenate({os.get_env_alloc("HOME", context.temp_allocator), "/.cache/hashed"})
 }
 
 // `name` is what the builtin hashes as (hash_function.odin): a native has no

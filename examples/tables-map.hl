@@ -6,7 +6,7 @@
 //
 // Reading a key that isn't there is a hard failure, not `nothing`. Asking
 // whether a key exists is `is { .key as x }` instead - see
-// table-destructuring.hb. Evaluates to
+// table-destructuring.hl. Evaluates to
 // { name: "xz", version: "5.8.4", sha256: "abc123" }.
 let computed_key "sha256";
   let pkg {

@@ -202,7 +202,7 @@ build_page :: proc(lede_html: string, sections: []Section, date_str: string) -> 
 	}
 
 	strings.write_string(&b, "</main>\n</div>\n")
-	strings.write_string(&b, "<footer class=\"spec-footer\"><div class=\"masthead-inner\">HashedBuild &mdash; a living draft, not a finalized specification. Regenerate with <code>odin run tools/spec-html -- SPEC.md SPEC.html</code>.</div></footer>\n")
+	strings.write_string(&b, "<footer class=\"spec-footer\"><div class=\"masthead-inner\">Hashed &mdash; a living draft, not a finalized specification. Regenerate with <code>odin run tools/spec-html -- SPEC.md SPEC.html</code>.</div></footer>\n")
 	strings.write_string(&b, "</div>\n")
 
 	strings.write_string(&b, PAGE_SCRIPT)
@@ -214,7 +214,7 @@ PAGE_HEAD :: `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HashedBuild Spec</title>
+<title>Hashed Spec</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fragment+Mono:ital@0;1&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&display=swap');
 

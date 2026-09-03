@@ -1,7 +1,7 @@
 // Tests run natively, never in a WASI build: core:testing pulls in
 // core:log and core:terminal, neither of which compiles for wasm32.
 #+build linux, windows
-package hashedbuild
+package hashed
 
 import "core:fmt"
 import "core:log"
@@ -9,7 +9,7 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 
-// Every examples/*.hb runs the way `hb <file>` runs it (eval_source_file,
+// Every examples/*.hl runs the way `hl <file>` runs it (eval_source_file,
 // main.odin) and is asserted against the value its own header comment
 // documents. This is the only end-to-end coverage in the suite - parser,
 // evaluator, async, and the filesystem builtins all at once - and it keeps
@@ -29,50 +29,50 @@ Example_Case :: struct {
 
 @(private = "file")
 EXAMPLE_CASES := []Example_Case{
-  {"arithmetic.hb", "{int_div: 3, float_div: 3.5, remainder: 1, precedence: 14, negation: -3}"},
-  {"async-basics.hb", `"This is the payload for option A.\nThis is the payload for option B.\n"`},
-  {"async-branching.hb", `"medium"`},
-  {"async-table.hb", `{a: 2, b: 6, c: "This is the payload for option A.\n"}`},
-  {"cached.hb", "{answer: 42, asking_again_agrees: true, per_argument: {small: 2, large: 11}, file_survives_the_round_trip: true, a_cycle_survives_too: true}"},
-  {"check-and-invariants.hb", "100"},
-  {"comparison-and-logic.hb", "{ordered: true, both: true, either: true, mixed: false}"},
-  {"context-permissions.hb", "{ambient: {io: nothing}, io_denied: {}, replaced: {}, still_ambient: {io: nothing}}"},
-  {"cyclic-data.hb", `{round_trip: "Alice", mutual: true, second_hop: "Carol", reordered: 3, same_shape: true}`},
-  {"files-symlink.hb", `"optiona.txt"`},
-  {"functions.hb", "121"},
-  {"functions-and-holes.hb", "{section: 11, explicit: 49, nested: 507, stored: 42, asserted: 9}"},
-  {"guard-chain.hb", "5"},
-  {"hashing.hb", `{text: "Ar9oHTBiuRDqs+ZdbYD2daaU7RcvIDTJNB3UICNP92A=", file: "ZT6vBQgoXEojRYd890EDlZWhUF/uGfXa+C9BNGBykI0=", key_order_is_irrelevant: true, same_content_same_file: true, integer_is_not_float: false}`},
+  {"arithmetic.hl", "{int_div: 3, float_div: 3.5, remainder: 1, precedence: 14, negation: -3}"},
+  {"async-basics.hl", `"This is the payload for option A.\nThis is the payload for option B.\n"`},
+  {"async-branching.hl", `"medium"`},
+  {"async-table.hl", `{a: 2, b: 6, c: "This is the payload for option A.\n"}`},
+  {"cached.hl", "{answer: 42, asking_again_agrees: true, per_argument: {small: 2, large: 11}, file_survives_the_round_trip: true, a_cycle_survives_too: true}"},
+  {"check-and-invariants.hl", "100"},
+  {"comparison-and-logic.hl", "{ordered: true, both: true, either: true, mixed: false}"},
+  {"context-permissions.hl", "{ambient: {io: nothing}, io_denied: {}, replaced: {}, still_ambient: {io: nothing}}"},
+  {"cyclic-data.hl", `{round_trip: "Alice", mutual: true, second_hop: "Carol", reordered: 3, same_shape: true}`},
+  {"files-symlink.hl", `"optiona.txt"`},
+  {"functions.hl", "121"},
+  {"functions-and-holes.hl", "{section: 11, explicit: 49, nested: 507, stored: 42, asserted: 9}"},
+  {"guard-chain.hl", "5"},
+  {"hashing.hl", `{text: "Ar9oHTBiuRDqs+ZdbYD2daaU7RcvIDTJNB3UICNP92A=", file: "ZT6vBQgoXEojRYd890EDlZWhUF/uGfXa+C9BNGBykI0=", key_order_is_irrelevant: true, same_content_same_file: true, integer_is_not_float: false}`},
   // The three hashing examples assert properties rather than digests, on
   // purpose. A directory's digest changes as examples are added to the tree,
   // and a closure's includes its body's own source text - so a literal here
   // would be a value that went stale the next time someone added an example or
   // reformatted the one it came from.
-  {"hashing-cyclic.hb", "{a_cycle_hashes: true, equal_cycles_hash_alike: true, shape_still_matters: true, either_end_agrees: true}"},
-  {"hashing-directories.hb", "{a_tree_is_not_its_file: true, one_tree_is_one_value: true, reading_twice_agrees: true}"},
-  {"hashing-functions.hb", "{same_body_same_hash: true, different_body_differs: true, captures_count: true, neighbours_do_not: true, builtins_hash_by_what_they_are: true, a_builtin_carries_its_argument: true}"},
-  {"numeric-literals.hb", "{hex: 42, octal: 42, binary: 42, grouped: 1000000, exponent: 1500, bases_agree: true}"},
-  {"nothing-and-empty.hb", "{unit: nothing, zero_table: {}, present_case: 42, empty_case: -1, same: false}"},
-  {"optional.hb", "42"},
-  {"recursion.hb", "{fact: 3628800, fib: 55, even: 1, odd: 0}"},
-  {"recursion-anonymous.hb", "{fact: 120, countdown: 15}"},
-  {"sequence-pattern.hb", "30"},
-  {"strings.hb", `{joined: "hello, world", escaped: "quoted \"inline\", tabbed\tand broken\n", same: true}`},
-  {"table-and-concat.hb", `{archive: "https://example.com/x.tar.gz", sha256: "def456"}`},
-  {"table-destructuring.hb", `{name: "xz", digest: "abc123", has_url: false}`},
-  {"tables-map.hb", `{name: "xz", sha256: "abc123", version: "5.8.4"}`},
-  {"tables-sequence.hb", "{second: 20, sum: 60, merged: {2: 20, 3: 30, 1: 99}}"},
-  {"variant.hb", "42"},
-  {"variants-dynamic.hb", `{literal: 42, computed: "green", tested: 42, other_tag: "not err"}`},
+  {"hashing-cyclic.hl", "{a_cycle_hashes: true, equal_cycles_hash_alike: true, shape_still_matters: true, either_end_agrees: true}"},
+  {"hashing-directories.hl", "{a_tree_is_not_its_file: true, one_tree_is_one_value: true, reading_twice_agrees: true}"},
+  {"hashing-functions.hl", "{same_body_same_hash: true, different_body_differs: true, captures_count: true, neighbours_do_not: true, builtins_hash_by_what_they_are: true, a_builtin_carries_its_argument: true}"},
+  {"numeric-literals.hl", "{hex: 42, octal: 42, binary: 42, grouped: 1000000, exponent: 1500, bases_agree: true}"},
+  {"nothing-and-empty.hl", "{unit: nothing, zero_table: {}, present_case: 42, empty_case: -1, same: false}"},
+  {"optional.hl", "42"},
+  {"recursion.hl", "{fact: 3628800, fib: 55, even: 1, odd: 0}"},
+  {"recursion-anonymous.hl", "{fact: 120, countdown: 15}"},
+  {"sequence-pattern.hl", "30"},
+  {"strings.hl", `{joined: "hello, world", escaped: "quoted \"inline\", tabbed\tand broken\n", same: true}`},
+  {"table-and-concat.hl", `{archive: "https://example.com/x.tar.gz", sha256: "def456"}`},
+  {"table-destructuring.hl", `{name: "xz", digest: "abc123", has_url: false}`},
+  {"tables-map.hl", `{name: "xz", sha256: "abc123", version: "5.8.4"}`},
+  {"tables-sequence.hl", "{second: 20, sum: 60, merged: {2: 20, 3: 30, 1: 99}}"},
+  {"variant.hl", "42"},
+  {"variants-dynamic.hl", `{literal: 42, computed: "green", tested: 42, other_tag: "not err"}`},
 }
 
 // Examples whose result is machine-specific (a cache path, a checkout path)
 // can't be a fixed string, so they get their own tests below. Listed here so
 // the coverage check counts them as covered rather than missing.
 @(private = "file")
-EXAMPLES_WITH_THEIR_OWN_TEST := []string{"option-picker.hb", "files-sandboxed.hb"}
+EXAMPLES_WITH_THEIR_OWN_TEST := []string{"option-picker.hl", "files-sandboxed.hl"}
 
-// examples/link-to-optiona is committed as a symlink, and files-symlink.hb
+// examples/link-to-optiona is committed as a symlink, and files-symlink.hl
 // reads its target. Git only materialises it as a real symlink where it can:
 // on Windows that needs core.symlinks, which needs the same privilege
 // creating a symlink does, and without it git writes an ordinary file holding
@@ -104,7 +104,7 @@ test_examples_evaluate_to_their_documented_values :: proc(t: ^testing.T) {
 
   has_symlinks := repo_has_real_symlinks()
   for c in EXAMPLE_CASES {
-    if c.file == "files-symlink.hb" && !has_symlinks {
+    if c.file == "files-symlink.hl" && !has_symlinks {
       log.infof(
         "skipping %s: examples/link-to-optiona is a plain file in this checkout, not a "+
         "symlink - clone with core.symlinks=true (and the privilege for it) to cover it",
@@ -127,7 +127,7 @@ test_example_option_picker_writes_into_the_cache :: proc(t: ^testing.T) {
   cache := fmt.tprintf("%s/.examples_test_picker_cache", repo_root())
   defer remove_dir_and_entries(cache)
 
-  path := fmt.tprintf("%s/examples/option-picker.hb", repo_root())
+  path := fmt.tprintf("%s/examples/option-picker.hl", repo_root())
   formatted, err_msg, ok := eval_source_file(path, false, cache)
   testing.expect(t, ok, err_msg)
   if !ok do return
@@ -150,7 +150,7 @@ test_example_option_picker_writes_into_the_cache :: proc(t: ^testing.T) {
 // checkout location - fixed only relative to the repo.
 @(test)
 test_example_files_sandboxed_displays_real_paths :: proc(t: ^testing.T) {
-  path := fmt.tprintf("%s/examples/files-sandboxed.hb", repo_root())
+  path := fmt.tprintf("%s/examples/files-sandboxed.hl", repo_root())
   formatted, err_msg, ok := eval_source_file(path, false, "")
   testing.expect(t, ok, err_msg)
   if !ok do return
@@ -166,7 +166,7 @@ test_example_files_sandboxed_displays_real_paths :: proc(t: ^testing.T) {
 }
 
 // A new example with no assertion is worse than no example: it looks like
-// coverage and isn't. Adding examples/foo.hb without listing it above fails
+// coverage and isn't. Adding examples/foo.hl without listing it above fails
 // here rather than passing quietly.
 @(test)
 test_every_example_is_covered_by_a_test :: proc(t: ^testing.T) {
@@ -176,13 +176,13 @@ test_every_example_is_covered_by_a_test :: proc(t: ^testing.T) {
 
   found := 0
   for name in read_dir_names(fmt.tprintf("%s/examples", repo_root())) {
-    if !strings.has_suffix(name, ".hb") do continue
+    if !strings.has_suffix(name, ".hl") do continue
     found += 1
     testing.expect(t, name in covered, fmt.tprintf("examples/%s has no test - add it to examples_test.odin", name))
   }
   // Guards the guard: an empty or unreadable directory would otherwise make
   // this test vacuously pass.
-  testing.expect(t, found >= len(EXAMPLE_CASES), "found fewer .hb examples than there are cases")
+  testing.expect(t, found >= len(EXAMPLE_CASES), "found fewer .hl examples than there are cases")
 }
 
 @(private = "file")
@@ -197,7 +197,7 @@ read_dir_names :: proc(dir: string) -> []string {
 }
 
 // Recursive, because a `cached` entry (§15) is a directory: a value that is
-// not a File is stored as `sha256-<key>.hb/value.hb`, and a directory value as
+// not a File is stored as `sha256-<key>.hl/value.hl`, and a directory value as
 // the tree itself. os.remove won't take a non-empty directory, so a one-level
 // sweep would leave the scratch cache behind for the next run to trip over.
 //
