@@ -47,8 +47,16 @@ let link_task = {
 9. [Extending the Language](#extending-the-language)
 
 ## Syntax
-### *Whitespaces* and *Comments*
-A ***whitespace*** is one or more [Unicode](unicode.org) whitespace characters.
+### Charset and Encodings
+**The charset of the language is [Unicode](unicode.org);** the source is a sequence of [Unicode](unicode.org) characters only.
+In this specification, also, very often the concept of *classes* from [Unicode](unicode.org) is brought up, so 
+if you are not familiar with it, check it out.
+
+The language is not tied to any specific encoding: it is defined as sequence of characters, which are one level of abstraction
+higher than encoding.
+Nevertheless, **we require the parsers to accept the input at least in [UTF-8](unicode.org/versions/latest/core-spec/chapter-3/#G7404).**
+### Grammar Definition
+A ***whitespace*** 
 
 A ***comment*** can be either a *single-line comment* or a *multiple-line comment*. A ***single-line comment*** is denoted by 
 `//`, then zero or more of any [Unicode](unicode.org) characters, and it ends before any [Unicode](unicode.org) line break.
