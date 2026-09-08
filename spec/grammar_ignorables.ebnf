@@ -1,0 +1,6 @@
+(* This grammar specification defines the ignorables. *)
+Ignorable := ? Unicode Pattern_White_Space codepoint ? | Comment
+Comment := Single-Line Comment | Line-Agnostic Comment
+Single-Line Comment := "//", { ? any Unicode codepoint except Unicode Line_Break={BK, CR, LF or NL} ? }
+Line-Agnostic Comment := "/*", { ? any Unicode codepoint except the sequence */ unless the sequence is prefixed
+  with an odd number of * }, "*/"
