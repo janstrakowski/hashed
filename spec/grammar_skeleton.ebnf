@@ -5,6 +5,7 @@
 Source := { Program Attribute Directive }, Root Expression
 
 Identifier := ? Unicode XID_START character ? { ? Unicode XID_CONTINUE character ? }
+(* ^^^ EXTRA SPECIFICATION: in contexts where keywords can collide with indentifiers, keywords win. *)
 Decimal Digit := ? as the name suggests ?
 Binary Digit := ? as the name suggests ?
 Octal Digit := ? as the name suggests ?
@@ -25,7 +26,7 @@ Hexadecimal Integer Literal := "0x", { Hexadecimal Digit }
 (* ^^^ EXTRA SPECIFICATION: a warning if there is no digit *)
 Octal Integer Literal := "0o", { Octal Digit }
 (* ^^^ EXTRA SPECIFICATION: a warning if there is no digit *)
-Binary Integer Literal := "0b", { Binary Integer Literal }
+Binary Integer Literal := "0b", { Binary Digit }
 (* ^^^ EXTRA SPECIFICATION: a warning if there is no digit *)
 
 Float Literal := Decimal Float Literal | Binary Float Literal
@@ -36,9 +37,10 @@ Binary Float Literal := Binary Digit, { Binary Digit }, ".", Binary Digit, { Bin
 
 String Literal := Standard String Literal | Line-Formatting String Literal
 Standard String Literal := [ String Interpolation Marker ], '"', { String Literal Codepoint | String Interpolation }, '"'
-(* ^^^ EXTRA SPECIFICATION 1: String Interpolation exists only if String Interpolation Marker is present. *)
-Line-Formatting String Literal := [ String Interpolation Marker ], '"""', { String Literal Codepoint | '"' | '""' | String Interpolation }, '"""'
 (* ^^^ EXTRA SPECIFICATION: String Interpolation exists only if String Interpolation Marker is present. *)
+Line-Formatting String Literal := [ String Interpolation Marker ], '"""', { String Literal Codepoint | String Interpolation }, '"""'
+(* ^^^ EXTRA SPECIFICATION 1: String Interpolation exists only if String Interpolation Marker is present. *)
+(* ^^^ EXTRA SPECIFICATION 2: the string is ended with """ but " and "" may appear in it. *)
 String Interpolation Marker := "$"
 String Literal Codepoint := As-Is Codepoint | Escape Sequence
 As-Is Codepoint := ? Any printable Unicode character, except " and \ ?
