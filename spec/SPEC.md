@@ -149,7 +149,7 @@ Table Pattern Entry := ( "[", Expression, "]" | ".", Identifier | "_" ), [ "matc
 ### Ignorables
 The ignorables are exceptional constructs not mentioned in the first definition, because they are supposed to appear "anywhere"
 in the grammar. 
-"anywhere" here means before, after or in between all constructs except the literals and they underlying hierachies, except again 
+"anywhere" here means zero or more of *Ignorable* constructs before, after or in between all constructs except the literals and they underlying hierachies, except again 
 in the expression of the string interpolation.
 #### EBNF Definition
 ```ebnf
