@@ -51,39 +51,114 @@ let link_task = {
 - ***The definition of a concept***
 
 ## Syntax
-### Specification Conventions
-The *source* grammar construct is the entrypoint of the grammar. 
-It is the source file or any string being parsed.
+### EBNF Conceputal Definition
+```ebnf
+(* This grammar specification is conceptual, to try to imagine the grammar.
+   For the complete, machine-readable one ambiguity resolution (some constructs taking precedence over the other) and
+   ignorables (whitespaces and comments) are needed. *)
 
-When specifing a grammar construct, unless said otherwise, *ignorable constructs* can appear after the specified construct.
-*Ignorable costructs* can also appear in the very beginning of the source.
-Ignorable constructs are: *a whitespace* or *a comment*; i.e. one or more of them (may be mixed).
+Source := { Program Attribute Directive }, Root Expression
 
-### Grammar Definition
-A ***whitespace*** — one or more of Unicode `White_Space` characters.
+Identifier := ? Unicode XID_START character ? { ? Unicode XID_CONTINUE character ? }
+(* ^^^ EXTRA SPECIFICATION: in contexts where keywords can collide with indentifiers, keywords win. *)
+Decimal Digit := ? as the name suggests ?
+Binary Digit := ? as the name suggests ?
+Octal Digit := ? as the name suggests ?
+Hexadecimal Digit := ? a hexadecimal digit — both uppercase and lowercase letters allowed ?
 
-A ***comment***: either a *single-line comment* or *line-agnostic comment*.
-A ***single-line comment*** — `//`, zero or more of any Unicode characters except `Line_Break={BK or CR or LF or NL}`.
-A ***line-agnostic comment*** — `/*`, zero or more of any characters except the `*/` sequence, unless `*/` is a part of
-`\*/`.
+Program Attribute Directive := "#", Program Attribute Name, { Program Attribute Value }, ";"
+Program Attribute Name := Identifier
+Program Attribute Value := Literal
+Root Expression := Expression
 
-An ***identifier*** — one `XID_START` Unicode character and zero or more `XID_CONTINUE` Unicode characters.
-Whether it can be followed by a whitespace is left to define to the parent constructs.
+Expression := Literal | Parameter Reference | Operation
+Literal := Integer Literal | Float Literal | String Literal
+Parameter Reference := Identifier
 
-A ***source*** — zero or more *program attribute directives* and an *expression* (and an *expression* specifically in this place is called
-***the root expression***).
+Integer Literal := Decimal Integer Literal | Hexadecimal Integer Literal | Octal Integer Literal | Binary Integer Literal
+Decimal Integer Literal := Decimal Digit, { Decimal Digit }
+Hexadecimal Integer Literal := "0x", { Hexadecimal Digit }
+(* ^^^ EXTRA SPECIFICATION: a warning if there is no digit *)
+Octal Integer Literal := "0o", { Octal Digit }
+(* ^^^ EXTRA SPECIFICATION: a warning if there is no digit *)
+Binary Integer Literal := "0b", { Binary Digit }
+(* ^^^ EXTRA SPECIFICATION: a warning if there is no digit *)
 
-A ***program attribute directive*** (***PAD***) — `#`, an *identifier* (in this place – ***program attribute name***), zero or more *literals* (here 
-***program attribute values***), 
-and ';'.
+Float Literal := Decimal Float Literal | Binary Float Literal
+Decimal Float Literal := Decimal Digit, { Decimal Digit }, ".", Decimal Digit, { Decimal Digit }, [("e" | "E"), [ "-" ], { Decimal Digit } ]
+(* ^^^ EXTRA SPECIFICATION: a warning if there is no digit in the exponent part *)
+Binary Float Literal := Binary Digit, { Binary Digit }, ".", Binary Digit, { Binary Digit }, [( "e" | "E" ), [ "-" ], { Binary Digit }]
+(* ^^^ EXTRA SPECIFICATION: a warning if there is no digit in the exponent part *)
 
-An ***expression*** — either: a *literal*, an *identifier* (here a ***parameter reference***), or an *operation*.
-A ***literal*** — either: an *integer*, a *float* or a *string*.
-An ***operation*** either: a *table constructor*, 
+String Literal := Standard String Literal | Line-Formatting String Literal
+Standard String Literal := [ String Interpolation Marker ], '"', { String Literal Codepoint | String Interpolation }, '"'
+(* ^^^ EXTRA SPECIFICATION: String Interpolation exists only if String Interpolation Marker is present. *)
+Line-Formatting String Literal := [ String Interpolation Marker ], '"""', { String Literal Codepoint | String Interpolation }, '"""'
+(* ^^^ EXTRA SPECIFICATION 1: String Interpolation exists only if String Interpolation Marker is present. *)
+(* ^^^ EXTRA SPECIFICATION 2: this string can contain " (As-Is codepoint excludes them) only not three in the row. *)
+String Interpolation Marker := "$"
+String Literal Codepoint := As-Is Codepoint | Escape Sequence
+As-Is Codepoint := ? Any printable Unicode character, except " and \ ?
+Escape Sequence := Short Escape Sequence | 2-Byte Escape Sequence | 4-Byte Escape Sequence
+Short Escape Sequence := "\'" | '\"' | "\?" | "\\" | "\a" | "\b" | "\f" | "\n" | "\r" | "\t" | "\v" | "\0"
+2-Byte Escape Sequence := "\u", Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit
+4-Byte Escape Sequence := "\U", Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit,
+  Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit
+String Interpolation := "${", Expression, "}"
+(* ^^^ EXTRA SPECIFICATION: String Interpolation does not exist if ${ is preceded by an odd number of $. *)
 
-### PADs (Program Attribute Directives)
-Before the *root expression*, there may be zero or more *program attribute directives* (PADs).
-They are a `#` succeeded by 
-```hashed
-#Attribute-Name val1 val2 valN ;
+Operation := Table Constructor | Map Application | Binary Interfix Operator | Unary Operator | Let | Then | Matches
+Table Constructor := "{", Table Constructor Entry, { ",", Table Constructor Entry }, [ "," ], "}"
+Table Constructor Entry := Position-Based Table Constructor Entry | Key-Value Table Constructor Entry
+Position-Based Table Constructor Entry := Expression
+Key-Value Table Constructor Entry := ("[", Expression, "]" | ".", Identifier ), ":", Expression
+Map Application := Expression, ( ".", Identifier | "[", Expression, "]" )
+
+Binary Interfix Operator := String Concatenation | Binary Arithmetic Operator | Comparison Operator | Binary Logical Operator
+String Concatenation := Expression, "++", Expression
+
+Binary Arithmetic Operator := Multiplication Operator | Division Operator | Modulo Operator | Addition Operator | Subtraction Operator
+Multiplication Operator := Expression, "*", Expression
+Division Operator := Expression, "/", Expression
+Modulo Operator := Expression, "%", Expression
+Addition Operator := Expression, "+", Expression
+Subtraction Operator := Expression, "-", Expression
+
+Comparison Operator := Equality Operator | Less Than Operator | Greater Than Operator | Less Than Or Equal Operator | Greater Than Or Equal Operator
+Equality Operator := Expression, "==", Expression
+Less Than Operator := Expression, "<", Expression
+Greater Than Operator := Expression, ">", Expression
+Less Than Or Equal Operator := Expression, "<=", Expression
+Greater Than Or Equal Operator := Expression, ">=", Expression
+
+Binary Logical Operator := Conjunction Operator | Disjunction Operator
+Conjunction Operator := Expression, "&&", Expression
+Disjunction Operator := Expression, "||", Expression
+
+Unary Operator := Arithmetic Negation | Logical Negation
+Arithmetic Negation := "-", Expression
+Logical Negation := "!", Expression
+
+Let := "let", [ "rec" ], Identifier, "=", Expression, ";", Expression
+Then := Expression, "then", Expression
+Matches := Expression, "matches", Table Pattern
+
+Table Pattern := "{", Table Pattern Entry, { ",", Table Pattern Entry }, [ "," ], "}"
+Table Pattern Entry := ( "[", Expression, "]" | ".", Identifier | "_" ), [ "matches", Table Pattern ], [ "let", Identifier ]
 ```
+### Ignorables
+The ignorables are exceptional constructs not mentioned in the first definition, because they are supposed to appear "anywhere"
+in the grammar. 
+"anywhere" here means before, after or in between all constructs except the literals and they underlying hierachies, except again 
+in the expression of the string interpolation.
+#### EBNF Definition
+```ebnf
+(* This grammar specification defines the ignorables. *)
+Ignorable := ? Unicode Pattern_White_Space codepoint ? | Comment
+Comment := Single-Line Comment | Line-Agnostic Comment
+Single-Line Comment := "//", { ? any Unicode codepoint except Unicode Line_Break={BK, CR, LF or NL} ? }
+Line-Agnostic Comment := "/*", { ? any Unicode codepoint except the sequence */ unless the sequence is prefixed
+  with an odd number of * }, "*/"
+```
+### Ambigouity Resolution
+TODO.
