@@ -1,3 +1,7 @@
+(* This grammar specification is conceptual, to try to imagine the grammar.
+   For the complete, machine-readable one ambiguity resolution (some constructs taking precedence over the other) and
+   ignorables (whitespaces and comments) are needed. *)
+
 Source := { Program Attribute Directive }, Root Expression
 
 Identifier := ? Unicode XID_START character ? { ? Unicode XID_CONTINUE character ? }
@@ -12,40 +16,43 @@ Program Attribute Value := Literal
 Root Expression := Expression
 
 Expression := Literal | Parameter Reference | Operation
+Literal := Integer Literal | Float Literal | String Literal
 Parameter Reference := Identifier
 
-Literal := Integer Literal | Float Integer | String Literal
-Integer Literal := Decimal Integer Literal, Hexadecimal Integer Literal, Octal Integer Literal
+Integer Literal := Decimal Integer Literal | Hexadecimal Integer Literal | Octal Integer Literal | Binary Integer Literal
 Decimal Integer Literal := Decimal Digit, { Decimal Digit }
 Hexadecimal Integer Literal := "0x", { Hexadecimal Digit }
 (* ^^^ EXTRA SPECIFICATION: a warning if there is no digit *)
 Octal Integer Literal := "0o", { Octal Digit }
 (* ^^^ EXTRA SPECIFICATION: a warning if there is no digit *)
-Float Integer := Decimal Float Literal | Binary Float Literal
-Decimal Float Literal := Decimal Digit, { Decimal Digit }, ".", Decimal Digit, { Decimal Digit }, [("e" | "E"), { Decimal Digit } ]
+Binary Integer Literal := "0b", { Binary Integer Literal }
+(* ^^^ EXTRA SPECIFICATION: a warning if there is no digit *)
+
+Float Literal := Decimal Float Literal | Binary Float Literal
+Decimal Float Literal := Decimal Digit, { Decimal Digit }, ".", Decimal Digit, { Decimal Digit }, [("e" | "E"), [ "-" ], { Decimal Digit } ]
 (* ^^^ EXTRA SPECIFICATION: a warning if there is no digit in the exponent part *)
-Binary Float Literal := Binary Digit, { Binary Digit }, ".", Binary Digit, { Binary Digit }, [( "e" | "E" ), { Binary Digit }]
+Binary Float Literal := Binary Digit, { Binary Digit }, ".", Binary Digit, { Binary Digit }, [( "e" | "E" ), [ "-" ], { Binary Digit }]
 (* ^^^ EXTRA SPECIFICATION: a warning if there is no digit in the exponent part *)
 
-String Literal := Standard String Literal, Line-Formatting String Literal
+String Literal := Standard String Literal | Line-Formatting String Literal
 Standard String Literal := [ String Interpolation Marker ], '"', { String Literal Codepoint | String Interpolation }, '"'
 (* ^^^ EXTRA SPECIFICATION 1: String Interpolation exists only if String Interpolation Marker is present. *)
 Line-Formatting String Literal := [ String Interpolation Marker ], '"""', { String Literal Codepoint | '"' | '""' | String Interpolation }, '"""'
 (* ^^^ EXTRA SPECIFICATION: String Interpolation exists only if String Interpolation Marker is present. *)
 String Interpolation Marker := "$"
 String Literal Codepoint := As-Is Codepoint | Escape Sequence
-As-Is Codepoint := ? Any printable Unicode character, except " ?
+As-Is Codepoint := ? Any printable Unicode character, except " and \ ?
 Escape Sequence := Short Escape Sequence | 2-Byte Escape Sequence | 4-Byte Escape Sequence
 Short Escape Sequence := "\'" | '\"' | "\?" | "\\" | "\a" | "\b" | "\f" | "\n" | "\r" | "\t" | "\v" | "\0"
 2-Byte Escape Sequence := "\u", Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit
 4-Byte Escape Sequence := "\U", Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit,
   Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit
 String Interpolation := "${", Expression, "}"
-(* ^^^ EXTRA SPECIFICATION: String Interpolation does not exist immediately after $ — no $${ *)
+(* ^^^ EXTRA SPECIFICATION: String Interpolation does not exist if ${ is preceded by an odd number of $. *)
 
 Operation := Table Constructor | Map Application | Binary Interfix Operator | Unary Operator | Let | Then | Matches
 Table Constructor := "{", Table Constructor Entry, { ",", Table Constructor Entry }, [ "," ], "}"
-Table Costructor Entry := Position-Based Table Constructor Entry | Key-Value Table Constructor Entry
+Table Constructor Entry := Position-Based Table Constructor Entry | Key-Value Table Constructor Entry
 Position-Based Table Constructor Entry := Expression
 Key-Value Table Constructor Entry := ("[", Expression, "]" | ".", Identifier ), ":", Expression
 Map Application := Expression, ( ".", Identifier | "[", Expression, "]" )
@@ -53,14 +60,14 @@ Map Application := Expression, ( ".", Identifier | "[", Expression, "]" )
 Binary Interfix Operator := String Concatenation | Binary Arithmetic Operator | Comparison Operator | Binary Logical Operator
 String Concatenation := Expression, "++", Expression
 
-Binary Arithmetic Operator := Multiplication Operator, Division Operator, Modulo Operator, Addition Operator, Subtraction Operator
+Binary Arithmetic Operator := Multiplication Operator | Division Operator | Modulo Operator | Addition Operator | Subtraction Operator
 Multiplication Operator := Expression, "*", Expression
 Division Operator := Expression, "/", Expression
 Modulo Operator := Expression, "%", Expression
 Addition Operator := Expression, "+", Expression
 Subtraction Operator := Expression, "-", Expression
 
-Comparison Operator := Equality Operator, Less Than Operator, Greater Than Operator, Less Than Or Equal Operator, Greater Than Or Equal Operator
+Comparison Operator := Equality Operator | Less Than Operator | Greater Than Operator | Less Than Or Equal Operator | Greater Than Or Equal Operator
 Equality Operator := Expression, "==", Expression
 Less Than Operator := Expression, "<", Expression
 Greater Than Operator := Expression, ">", Expression
@@ -80,5 +87,4 @@ Then := Expression, "then", Expression
 Matches := Expression, "matches", Table Pattern
 
 Table Pattern := "{", Table Pattern Entry, { ",", Table Pattern Entry }, [ "," ], "}"
-Table Pattern Entry := Key-Value Table Pattern Entry
-Key-Value Table Pattern Entry := ( "[", Expression, "]" | ".", Identifier | "_" ), [ "matches", Table Pattern ], [ "let", Identifier ]
+Table Pattern Entry := ( "[", Expression, "]" | ".", Identifier | "_" ), [ "matches", Table Pattern ], [ "let", Identifier ]
