@@ -40,7 +40,7 @@ Standard String Literal := [ String Interpolation Marker ], '"', { String Litera
 (* ^^^ EXTRA SPECIFICATION: String Interpolation exists only if String Interpolation Marker is present. *)
 Line-Formatting String Literal := [ String Interpolation Marker ], '"""', { String Literal Codepoint | String Interpolation }, '"""'
 (* ^^^ EXTRA SPECIFICATION 1: String Interpolation exists only if String Interpolation Marker is present. *)
-(* ^^^ EXTRA SPECIFICATION 2: the string is ended with """ but " and "" may appear in it. *)
+(* ^^^ EXTRA SPECIFICATION 2: this string can contain " (As-Is codepoint excludes them) only not three in the row. *)
 String Interpolation Marker := "$"
 String Literal Codepoint := As-Is Codepoint | Escape Sequence
 As-Is Codepoint := ? Any printable Unicode character, except " and \ ?
