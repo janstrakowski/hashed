@@ -46,39 +46,40 @@ let link_task = {
 8. [Conventions](#conventions)
 9. [Extending the Language](#extending-the-language)
 
+## Typographical Conventions
+- *a reference of a concept*
+- ***The definition of a concept***
+
 ## Syntax
-### Charset and Encodings
-**The charset of the language is [Unicode](unicode.org);** the source is a sequence of [Unicode](unicode.org) characters only.
-In this specification, also, very often the concept of *classes* from [Unicode](unicode.org) is brought up, so 
-if you are not familiar with it, check it out.
+### Specification Conventions
+The *source* grammar construct is the entrypoint of the grammar. 
+It is the source file or any string being parsed.
 
-The language is not tied to any specific encoding: it is defined as sequence of characters, which are one level of abstraction
-higher than encoding.
-Nevertheless, **we require the parsers to accept the input at least in [UTF-8](unicode.org/versions/latest/core-spec/chapter-3/#G7404).**
+When specifing a grammar construct, unless said otherwise, *ignorable constructs* can appear after the specified construct.
+*Ignorable costructs* can also appear in the very beginning of the source.
+Ignorable constructs are: *a whitespace* or *a comment*; i.e. one or more of them (may be mixed).
+
 ### Grammar Definition
-A ***whitespace*** 
+A ***whitespace*** — one or more of Unicode `White_Space` characters.
 
-A ***comment*** can be either a *single-line comment* or a *multiple-line comment*. A ***single-line comment*** is denoted by 
-`//`, then zero or more of any [Unicode](unicode.org) characters, and it ends before any [Unicode](unicode.org) line break.
-A ***mulitple-line comment*** starts with `/*`, contains any [Unicode](unicode.org) characters and ends with `*/`.
+A ***comment***: either a *single-line comment* or *line-agnostic comment*.
+A ***single-line comment*** — `//`, zero or more of any Unicode characters except `Line_Break={BK or CR or LF or NL}`.
+A ***line-agnostic comment*** — `/*`, zero or more of any characters except the `*/` sequence, unless `*/` is a part of
+`\*/`.
 
-In this specification, unless stated otherwise, zero or more *whitespaces* or comments are allowed in between parts of an
-expression and in between adjacent expressions. I.e. informally, whitespaces and comments can be put anywhere in the language.
+An ***identifier*** — one `XID_START` Unicode character and zero or more `XID_CONTINUE` Unicode characters.
+Whether it can be followed by a whitespace is left to define to the parent constructs.
 
-### *Identifiers*
-An ***identifier*** is one `ID_START` class [Unicode](unicode.org) character, followed by zero or more `ID_CONTINUE` class characters.
+A ***source*** — zero or more *program attribute directives* and an *expression* (and an *expression* specifically in this place is called
+***the root expression***).
 
-### Source Unit (File)
-The biggest piece of *Hashed* code; the root of the syntax tree.
-A file is a source unit but it can be really any piece of code that is passed to the *Hashed* parser (stdin, or CLI argument for example).
+A ***program attribute directive*** (***PAD***) — `#`, an *identifier* (in this place – ***program attribute name***), zero or more *literals* (here 
+***program attribute values***), 
+and ';'.
 
-#### *Root Expression*
-The source unit boils down to the *root expression*: a source unit is treated as a one (big or not) expression.
-For example
-```hashed
-1 + 2
-```
-may be a source unit on its own.
+An ***expression*** — either: a *literal*, an *identifier* (here a ***parameter reference***), or an *operation*.
+A ***literal*** — either: an *integer*, a *float* or a *string*.
+An ***operation*** either: a *table constructor*, 
 
 ### PADs (Program Attribute Directives)
 Before the *root expression*, there may be zero or more *program attribute directives* (PADs).
