@@ -16,10 +16,10 @@ sudo pacman -S cmark
 From the repo root:
 
 ```sh
-odin run tools/spec-html -- spec/SPEC.md SPEC.html
+odin run tools/spec-html -- SPEC.md SPEC.html
 ```
 
-Both arguments are optional and default to `spec/SPEC.md` → `SPEC.html` in the current directory, so a bare `odin run tools/spec-html` also works from the repo root.
+Both arguments are optional and default to `SPEC.md` → `SPEC.html` in the current directory, so a bare `odin run tools/spec-html` also works from the repo root.
 
 `SPEC.html` is generated output (gitignored) — regenerate it any time `SPEC.md` changes; nothing else needs updating.
 
@@ -36,5 +36,5 @@ Everything else (paragraphs, lists, `code` spans, fenced code blocks, **bold**/*
 
 ## Caveats to know before editing SPEC.md
 
-- **Two TODOs need a blank line between them**, not just a bare `>` continuation — `>` alone joins them into one blockquote (one paragraph each), and only the first paragraph's `TODO:` prefix gets recognized/stripped. If a TODO's callout looks wrong or the rendered TODO count doesn't match `grep -c '^> TODO:' spec/SPEC.md`, this is the first thing to check.
+- **Two TODOs need a blank line between them**, not just a bare `>` continuation — `>` alone joins them into one blockquote (one paragraph each), and only the first paragraph's `TODO:` prefix gets recognized/stripped. If a TODO's callout looks wrong or the rendered TODO count doesn't match `grep -c '^> TODO:' SPEC.md`, this is the first thing to check.
 - **A `> TODO:` nested inside a list item** (indented under a numbered/bulleted list) will render as a plain nested `<blockquote>`, not a `.todo` callout — the generator only special-cases top-level blockquotes within a section. Keep TODOs at the top level of a section, not indented inside a list.

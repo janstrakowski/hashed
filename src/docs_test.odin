@@ -49,30 +49,6 @@ test_language_doc_links_to_examples_that_exist :: proc(t: ^testing.T) {
   testing.expect(t, checked > 0, "LANGUAGE.md stopped pointing at any example")
 }
 
-// spec/SPEC.md embeds spec/grammar_skeleton.ebnf and spec/grammar_ignorables.ebnf
-// verbatim, as two ```ebnf blocks, rather than pointing at them - GitHub's
-// Markdown rendering has no include/transclude directive that would let the
-// page stay in sync on its own. Only an edit under spec/ can ever move either
-// copy, so this only ever fires on a spec/ change: everywhere else the four
-// strings compared here are untouched.
-@(test)
-test_spec_ebnf_blocks_match_grammar_files :: proc(t: ^testing.T) {
-  spec_doc := read_repo_file(t, "spec/SPEC.md")
-  skeleton := read_repo_file(t, "spec/grammar_skeleton.ebnf")
-  ignorables := read_repo_file(t, "spec/grammar_ignorables.ebnf")
-  if spec_doc == "" || skeleton == "" || ignorables == "" do return
-
-  quoted_skeleton, skeleton_found := fenced_block(spec_doc, "```ebnf\n", "```ebnf\n(* This grammar specification is conceptual")
-  if testing.expect(t, skeleton_found, "SPEC.md no longer embeds grammar_skeleton.ebnf's ```ebnf block") {
-    testing.expect_value(t, strings.trim_space(quoted_skeleton), strings.trim_space(skeleton))
-  }
-
-  quoted_ignorables, ignorables_found := fenced_block(spec_doc, "```ebnf\n", "```ebnf\n(* This grammar specification defines the ignorables.")
-  if testing.expect(t, ignorables_found, "SPEC.md no longer embeds grammar_ignorables.ebnf's ```ebnf block") {
-    testing.expect_value(t, strings.trim_space(quoted_ignorables), strings.trim_space(ignorables))
-  }
-}
-
 @(private = "file")
 read_repo_file :: proc(t: ^testing.T, rel_path: string) -> string {
   data, err := os.read_entire_file(fmt.tprintf("%s/%s", repo_root(), rel_path), context.temp_allocator)

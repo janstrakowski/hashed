@@ -722,7 +722,7 @@ is this CLI, compiled to WebAssembly and running in your own tab, with the
 repository as its filesystem — the same files you would have after cloning:
 
 ```
-$ ls                          the repo: src/, examples/, spec/, …
+$ ls                          the repo: src/, examples/, SPEC.md, …
 $ cat examples/guard-chain.hb
 $ hb examples/guard-chain.hb  run it
 $ hb -e '1 + 2 * 3'           evaluate an expression
@@ -775,4 +775,4 @@ imports plus the marshalling that carries them between threads.
 - **[GETTING_STARTED.md](GETTING_STARTED.md)** — installing, the REPL, the live
   editor, and the debugger.
 - **[examples/](examples/)** — every snippet above, as a runnable file.
-- **[SPEC.md](spec/SPEC.md)** — the full design, including the parts not yet built.
+- **[SPEC.md](SPEC.md)** — the full design, including the parts not yet built.

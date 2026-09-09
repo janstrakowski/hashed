@@ -10,7 +10,7 @@ package main
 // Requires the system `cmark` library (Arch: `pacman -S cmark`).
 //
 // Usage: odin run tools/spec-html -- [input.md] [output.html]
-//        defaults to spec/SPEC.md -> SPEC.html in the current directory.
+//        defaults to SPEC.md -> SPEC.html in the current directory.
 
 import "core:fmt"
 import "core:os"
@@ -24,7 +24,7 @@ Section :: struct {
 }
 
 main :: proc() {
-	in_path := "spec/SPEC.md"
+	in_path := "SPEC.md"
 	out_path := "SPEC.html"
 	if len(os.args) > 1 do in_path = os.args[1]
 	if len(os.args) > 2 do out_path = os.args[2]
@@ -202,7 +202,7 @@ build_page :: proc(lede_html: string, sections: []Section, date_str: string) -> 
 	}
 
 	strings.write_string(&b, "</main>\n</div>\n")
-	strings.write_string(&b, "<footer class=\"spec-footer\"><div class=\"masthead-inner\">HashedBuild &mdash; a living draft, not a finalized specification. Regenerate with <code>odin run tools/spec-html -- spec/SPEC.md SPEC.html</code>.</div></footer>\n")
+	strings.write_string(&b, "<footer class=\"spec-footer\"><div class=\"masthead-inner\">HashedBuild &mdash; a living draft, not a finalized specification. Regenerate with <code>odin run tools/spec-html -- SPEC.md SPEC.html</code>.</div></footer>\n")
 	strings.write_string(&b, "</div>\n")
 
 	strings.write_string(&b, PAGE_SCRIPT)

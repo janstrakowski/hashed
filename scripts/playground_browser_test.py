@@ -349,7 +349,7 @@ def terminal_checks(browser):
     # The filesystem is the repository, 1:1 - not a curated sample of it.
     type_line("ls")
     check("the repo is there", screen(),
-          lambda t: "/spec/SPEC.md" in t and "/src/eval.odin" in t and "/examples/guard-chain.hb" in t)
+          lambda t: "/SPEC.md" in t and "/src/eval.odin" in t and "/examples/guard-chain.hb" in t)
     check("ctx.cache has a home", screen(), lambda t: "/cache/hashedbuild" in t)
 
     type_line("cat examples/choice.txt")
