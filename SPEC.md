@@ -6,23 +6,23 @@
 let srcdir = dirmember { dir, "src" };
 let c_filenames = dirmembers srcdir map #.name map extractfext # filter # == ".c";
 let c_tasks = c_filenames map {
- name = #,
- executor = func ccomp.compiletoobj (dirmember {srcdir, # /* the arg of the map function */}),
+ name : #,
+ executor : func ccomp.compiletoobj (dirmember {srcdir, # /* the arg of the map function */}),
  // Let's assume "complitetoobj" produces the object file in the directory of its argument.
 };
 let compile_task = {
- name = "compile",
+ name : "compile",
  // No executor
- dependencies = {
+ dependencies : {
    ...c_filenames,
  },
 };
 let link_task = {
- name = "link",
- dependencies = {
+ name : "link",
+ dependencies : {
   compile_task.name,
  },
- executor = func ccomp.linkobjfiles {{ ... c_filenames map stripfext () map concat ".o" }, outfile = ensure_dirs "/bin/program" },
+ executor : func ccomp.linkobjfiles {{ ... c_filenames map stripfext # map # ++ ".o" }, outfile : ensure_dirs "/bin/program" },
  // "ensure_dirs" is a builtin that creates the parent directories for the argument path.
 };
 {
@@ -57,7 +57,8 @@ let link_task = {
 Source := { Program Attribute Directive }, Root Expression
 
 Identifier := ? Unicode XID_START character ? { ? Unicode XID_CONTINUE character ? }
-(* ^^^ EXTRA SPECIFICATION: in contexts where keywords can collide with indentifiers, keywords win. *)
+(* ^^^ EXTRA SPECIFICATION: if a keyword collides with an identifier, the keyword takes precedence but if it doesn't it is
+ still an identifier *)
 Decimal Digit := ? as the name suggests ?
 Binary Digit := ? as the name suggests ?
 Octal Digit := ? as the name suggests ?
@@ -107,7 +108,8 @@ Short Escape Sequence := "\'" | '\"' | "\?" | "\\" | "\a" | "\b" | "\f" | "\n" |
 String Interpolation := "${", Expression, "}"
 (* ^^^ EXTRA SPECIFICATION: String Interpolation does not exist if ${ is preceded by an odd number of $. *)
 
-Operation := Function Application | Table Constructor | Map Application | Binary Interfix Operator | Unary Operator | Let | Then | Matches
+Operation := Function Application | Func | Table Constructor | Map Application | Binary Interfix Operator | Unary Operator | Let | Then | Matches
+Func := "func", Expression
 Function Application := Expression, Expression
 Map Application := Expression, ( ".", Identifier | "[", Expression, "]" )
 
@@ -117,7 +119,7 @@ Position-Based Table Constructor Entry := Expression
 Key-Value Table Constructor Entry := ("[", Expression, "]" | ".", Identifier ), ":", Expression
 Expansion Table Constructor Entry := "...", Expression
 
-Binary Interfix Operator := Pipe Operator | Map Operator | String Operator | String Concatenation | Binary Arithmetic Operator | Comparison Operator | Binary Logical Operator
+Binary Interfix Operator := Pipe Operator | Map Operator | Filter Operator | String Concatenation | Binary Arithmetic Operator | Comparison Operator | Binary Logical Operator
 Pipe Operator := Expression, "|>", Expression
 String Concatenation := Expression, "++", Expression
 
@@ -151,7 +153,7 @@ Let := "let", [ "rec" ], Identifier, "=", Expression, ";", Expression
 Then := Expression, "then", Expression
 Matches := Expression, "matches", Table Pattern
 
-Table Pattern := "{", Table Pattern Entry, { ",", (Table Pattern Entry | Anything-Else Table Pattern Marker) }, [ "," ], "}"
+Table Pattern := "{", ( Table Pattern Entry | Anything-Else Marker ), { ",", (Table Pattern Entry | Anything-Else Table Pattern Marker) }, [ "," ], "}"
 Table Pattern Entry := ( "[", Expression, "]" | ".", Identifier | "_" ), [ "matches", Table Pattern ], [ "let", Identifier ]
 Anything-Else Table Pattern Marker := "..."
 ```
@@ -176,14 +178,14 @@ Line-Agnostic Comment := "/*", { ? any Unicode codepoint except the sequence */ 
 |----|------|
 | 1 | Map Application |
 | 2 | Function Application |
-| 3 | Pipe Operator, Map Operator, Filter Operator |
-| 4 | String Concatenation |
-| 5 | Multiplication, Division, Modulo |
-| 6 | Addition, Subtraction, Arithmetic Negation |
-| 7 | Logical Negation |
-| 8 | Comparison |
-| 9 | Conjunction |
-| 10 | Disjunction |
+| 3 | String Concatenation |
+| 4 | Multiplication, Division, Modulo |
+| 5 | Addition, Subtraction, Arithmetic Negation |
+| 6 | Logical Negation |
+| 7 | Comparison |
+| 8 | Conjunction |
+| 9 | Disjunction |
+| 10 | Pipe Operator, Map Operator, Filter Operator |
 #### Juxtaposition Function Application
 The *Function Application* is juxtaposition, which brings a lot of ambigouity to the grammar, because every adjacent constructs can be intrepreted as juxaposition.
 The solution is to allow juxtaposition only for the 2 highest levels — *Map Application* (`.`) and *Function Application* itself.
