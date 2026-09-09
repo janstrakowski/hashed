@@ -126,8 +126,9 @@ Modulo Operator := Expression, "%", Expression
 Addition Operator := Expression, "+", Expression
 Subtraction Operator := Expression, "-", Expression
 
-Comparison Operator := Equality Operator | Less Than Operator | Greater Than Operator | Less Than Or Equal Operator | Greater Than Or Equal Operator
+Comparison Operator := Equality Operator | Inequality Operator | Less Than Operator | Greater Than Operator | Less Than Or Equal Operator | Greater Than Or Equal Operator
 Equality Operator := Expression, "==", Expression
+Inequality Operator := Expression, "!=", Expression
 Less Than Operator := Expression, "<", Expression
 Greater Than Operator := Expression, ">", Expression
 Less Than Or Equal Operator := Expression, "<=", Expression
