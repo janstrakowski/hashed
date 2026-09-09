@@ -192,3 +192,22 @@ be neither side of the *Function Application*.
 #### Arithmetic Negation
 The Arithmetic Negation occurs only in the beginning of an addition/subtraction series (e.g. `-1 + 2 - 3`).
 Then it binds only to the first term (`-1`).
+
+## Data Representation
+### Data Types
+#### Primitive Data Types
+- *Integer* — an integer between $$-2^{63}$$ and $$2^{63}-1$$.
+- *Float* — a double-precision floating point number.
+- *Byte String* — a string of raw bytes.
+- *UTF8 String* — a piece of UTF-8 encoded text.
+#### Complex Data Types
+- *Function* — a function takes two values, returns two values and can produce IO-related side-effects.
+  It takes an explicit argument and an implicit context value and produces an explicit result and an implicit context value.
+  All four values are just *Data Types* like any other: the context ones only are required to be of a specific structure
+  by the evaluators.
+- *Table* — an associative array of values to values.
+### Data Structure Representation
+Data structures are represented using *Tables*. 
+Product types are tables with the field names as strings as the keys.
+Sum types are tables with one key, and depending on what is the key, the subtype is determined.
+Tuples and Arrays are represented as tables, where the keys are consecutive *Integers* beginning from **1**.
