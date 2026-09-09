@@ -206,6 +206,9 @@ Then it binds only to the first term (`-1`).
   All four values are just *Data Types* like any other: the context ones only are required to be of a specific structure
   by the evaluators.
 - *Table* — an associative array of values to values.
+### Boolean Representation
+Booleans are represented with *Integers*.
+`0` means false, and anything else — true.
 ### Data Structure Representation
 Data structures are represented using *Tables*. 
 Product types are tables with the field names as strings as the keys.
@@ -223,8 +226,20 @@ Function is a value, and a value is not tied to the expression hierarchy: for ex
 reference, and be defined entirely elsewhere in the source or in a different source piece imported to the current one.
 When a *function* is applied, the evaluation jumps to its definition, and returns afterwards. 
 If the *function* is built in, then it is evaluated internally.
-## Parameter Reference Resolution
-TODO.
+### Parameters
+An expression can be just an identifier (e.g. `abc`), then it refers to a named parameter `abc`.
+Actually, it is a syntax sugar for `ctx.params.abc`, and `ctx` is a special parameter reference that
+points to the context value passed to every function.
+
+On the other hand, when a name is created (`let`, `matches` patterns), then the appropriate values are
+assigned to `ctx.params`. `ctx.params` is actually a table as the notation suggests. The newly-assigned values 
+shadow the previous.
+### Control Flow Expression
+There are expressions `then` and `else` and they are called *control flow expressions*.
+`<expr1> then <expr2>` evaluates to *expr2* if *expr1* evaluates to `1`.
+If *expr1* is *false*, then an *control flow exception* is raised and the control is handled to the parent expression.
+If the parent expression is `<expr1> else <expr2>`, it evaluates to *expr2*.
+If the parent expression is not `else`, then the exception is turned into an unrecoverable error.
 
 ## Mechanics
 TODO.
