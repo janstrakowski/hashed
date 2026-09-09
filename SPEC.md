@@ -8,7 +8,7 @@ let c_filenames = dirmembers srcdir map #.name map extractfext # filter # == ".c
 let c_tasks = c_filenames map {
  .name : #,
  .executor : func ccomp.compiletoobj (dirmember {srcdir, # /* the arg of the map function */}),
- // Let's assume "complitetoobj" produces the object file in the directory of its argument.
+ // Let's assume "compiletoobj" produces the object file in the directory of its argument.
 };
 let compile_task = {
  .name : "compile",
@@ -48,7 +48,7 @@ let link_task = {
 - ***The definition of a concept***
 
 ## Syntax
-### EBNF Conceputal Definition
+### EBNF Conceptual Definition
 ```ebnf
 (* This grammar specification is conceptual, to try to imagine the grammar.
    For the complete, machine-readable one ambiguity resolution (some constructs taking precedence over the other) and
@@ -96,7 +96,7 @@ Standard String Literal := [ String Interpolation Marker ], '"', { String Litera
 (* ^^^ EXTRA SPECIFICATION 2: Here the ending " takes precedence over " in String Literal Codepoint *)
 Line-Formatting String Literal := [ String Interpolation Marker ], '"""', { String Literal Codepoint | String Interpolation }, '"""'
 (* ^^^ EXTRA SPECIFICATION 1: String Interpolation exists only if String Interpolation Marker is present. *)
-(* ^^^ EXTRA SPECIFICATION 2: here """ takes precedence over three consequent " String Literal Codepoints *)
+(* ^^^ EXTRA SPECIFICATION 2: here """ takes precedence over three consecutive " String Literal Codepoints *)
 String Interpolation Marker := "$"
 String Literal Codepoint := As-Is Codepoint | Escape Sequence
 As-Is Codepoint := ? Any printable Unicode character, except \ ?
@@ -154,7 +154,7 @@ Then := Expression, "then", Expression
 Matches := Expression, "matches", Table Pattern
 Else := Expression, "else", Expression
 
-Table Pattern := "{", ( Table Pattern Entry | Anything-Else Marker ), { ",", (Table Pattern Entry | Anything-Else Table Pattern Marker) }, [ "," ], "}"
+Table Pattern := "{", ( Table Pattern Entry | Anything-Else Table Pattern Marker ), { ",", (Table Pattern Entry | Anything-Else Table Pattern Marker) }, [ "," ], "}"
 Table Pattern Entry := ( "[", Expression, "]" | ".", Identifier | "_" ), [ "matches", Table Pattern ], [ "let", Identifier ]
 Anything-Else Table Pattern Marker := "..."
 ```
@@ -162,7 +162,7 @@ Anything-Else Table Pattern Marker := "..."
 The ignorables are exceptional constructs not mentioned in the first definition, because they are supposed to appear "anywhere"
 in the grammar. 
 "anywhere" here means zero or more of *Ignorable* constructs before, after or in between all constructs except the literals, parameter references and the identifiers,
-and they underlying hierachies, except again in the expression of the string interpolation.
+and their underlying hierarchies, except again in the expression of the string interpolation.
 #### EBNF Definition
 ```ebnf
 (* This grammar specification defines the ignorables. *)
@@ -172,7 +172,7 @@ Single-Line Comment := "//", { ? any Unicode codepoint except Unicode Line_Break
 Line-Agnostic Comment := "/*", { ? any Unicode codepoint except the sequence */ unless the sequence is prefixed
   with an odd number of * }, "*/"
 ```
-### Ambigouity Resolution
+### Ambiguity Resolution
 #### Operator Precedence
 (the higher rows win over the lower; all left-associative)
 | No. | Operations |
@@ -189,9 +189,9 @@ Line-Agnostic Comment := "/*", { ? any Unicode codepoint except the sequence */ 
 | 10 | Pipe Operator, Map Operator, Filter Operator, Func |
 | 11 | Let, Then, Matches, Else |
 #### Juxtaposition Function Application
-The *Function Application* is juxtaposition, which brings a lot of ambigouity to the grammar, because every adjacent constructs can be intrepreted as juxaposition.
+The *Function Application* is juxtaposition, which brings a lot of ambiguity to the grammar, because every adjacent construct can be interpreted as juxtaposition.
 The solution is to restrict the *Function Application* right-hand-side and left-hand-side to levels 1 and 2: 2+ level constructs can 
 be neither side of the *Function Application*.
 #### Arithmetic Negation
-The Arithmetic Negation occurs only in the beggining of an addition/subtraction series (e.i. e.x. `-1 + 2 - 3`).
+The Arithmetic Negation occurs only in the beginning of an addition/subtraction series (e.g. `-1 + 2 - 3`).
 Then it binds only to the first term (`-1`).
