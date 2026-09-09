@@ -6,23 +6,23 @@
 let srcdir = dirmember { dir, "src" };
 let c_filenames = dirmembers srcdir map #.name map extractfext # filter # == ".c";
 let c_tasks = c_filenames map {
- name : #,
- executor : func ccomp.compiletoobj (dirmember {srcdir, # /* the arg of the map function */}),
+ .name : #,
+ .executor : func ccomp.compiletoobj (dirmember {srcdir, # /* the arg of the map function */}),
  // Let's assume "complitetoobj" produces the object file in the directory of its argument.
 };
 let compile_task = {
- name : "compile",
+ .name : "compile",
  // No executor
- dependencies : {
+ .dependencies : {
    ...c_filenames,
  },
 };
 let link_task = {
- name : "link",
- dependencies : {
+ .name : "link",
+ .dependencies : {
   compile_task.name,
  },
- executor : func ccomp.linkobjfiles {{ ... c_filenames map stripfext # map # ++ ".o" }, outfile : ensure_dirs "/bin/program" },
+ .executor : func ccomp.linkobjfiles {{ ... c_filenames map stripfext # map # ++ ".o" }, outfile : ensure_dirs "/bin/program" },
  // "ensure_dirs" is a builtin that creates the parent directories for the argument path.
 };
 {
