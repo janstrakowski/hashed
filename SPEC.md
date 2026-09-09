@@ -145,8 +145,8 @@ Unary Operator := Arithmetic Negation | Logical Negation
 Arithmetic Negation := "-", Expression
 Logical Negation := "!", Expression
 
-Let := "let", Identifier, "=", Expression, ";", Expression
-Then := Expression, "then", Expression
+Let := [ "func" ], "let", Identifier, "=", Expression, ";", Expression
+Then := [ "func" ], Expression, "then", Expression
 Matches := Expression, "matches", Table Pattern
 Else := Expression, "else", Expression
 
@@ -227,6 +227,7 @@ reference, and be defined entirely elsewhere in the source or in a different sou
 When a *function* is applied, the evaluation jumps to its definition, and returns afterwards. 
 If the *function* is built in, then it is evaluated internally.
 ### Parameters
+#### Named Parameters
 An expression can be just an identifier (e.g. `abc`), then it refers to a named parameter `abc`.
 Actually, it is a syntax sugar for `ctx.params.abc`, and `ctx` is a special parameter reference that
 points to the context value passed to every function.
@@ -234,13 +235,22 @@ points to the context value passed to every function.
 On the other hand, when a name is created (`let`, `matches` patterns), then the appropriate values are
 assigned to `ctx.params`. `ctx.params` is actually a table as the notation suggests. The newly-assigned values 
 shadow the previous.
+#### Implicit Parameters
+Inside a `func` you can refer to the argument without giving it a name with `#` (e.g. `#.field1`).
+When you are in a nested function, you can still refer to the argument of the outer `func` with
+`#<n>` where `n` is the level.
+1 is the current level — just as plain `#`, and the consecutive numbers are the consecutive outer
+`func`s.
 ### Control Flow Expression
 There are expressions `then` and `else` and they are called *control flow expressions*.
 `<expr1> then <expr2>` evaluates to *expr2* if *expr1* evaluates to *true*.
-If *expr1* is *false*, then an *control flow exception* is raised and the control is handled to the parent expression.
+If *expr1* is *false*, then an *control flow exception* is raised and the control is handed to the parent expression.
 If the parent expression is `<expr1> else <expr2>`, it evaluates to *expr2*.
 If the parent expression is not `else`, then the exception is turned into an unrecoverable error.
 
+Besides evaluating a specific branch based on the given condition, `<expr1> then <expr2>` also transmits already established 
+parameters in *expr1* to *expr2*. 
+This results in `matches { .a let b } then <expr>`, transmitting the 'b' named parameter to the *expr*.
 ## Mechanics
 TODO.
 ## Standalone Programs
