@@ -152,6 +152,7 @@ Logical Negation := "!", Expression
 Let := "let", [ "rec" ], Identifier, "=", Expression, ";", Expression
 Then := Expression, "then", Expression
 Matches := Expression, "matches", Table Pattern
+Else := Expression, "else", Expression
 
 Table Pattern := "{", ( Table Pattern Entry | Anything-Else Marker ), { ",", (Table Pattern Entry | Anything-Else Table Pattern Marker) }, [ "," ], "}"
 Table Pattern Entry := ( "[", Expression, "]" | ".", Identifier | "_" ), [ "matches", Table Pattern ], [ "let", Identifier ]
@@ -185,9 +186,12 @@ Line-Agnostic Comment := "/*", { ? any Unicode codepoint except the sequence */ 
 | 7 | Comparison |
 | 8 | Conjunction |
 | 9 | Disjunction |
-| 10 | Pipe Operator, Map Operator, Filter Operator |
+| 10 | Pipe Operator, Map Operator, Filter Operator, Func |
+| 11 | Let, Then, Matches, Else |
 #### Juxtaposition Function Application
 The *Function Application* is juxtaposition, which brings a lot of ambigouity to the grammar, because every adjacent constructs can be intrepreted as juxaposition.
-The solution is to allow juxtaposition only for the 2 highest levels — *Map Application* (`.`) and *Function Application* itself.
-To be more precise, it is just if you bound first the *Map Application* (for example `a.b c.d` is bound `(a.b) (c.d)`), and then bound the resulting adjecent groups
-in left-associative manner (the example becomes `Function Application (a.b, c.d)`; another example `a.b c.d e.f` becomes `Function Application (Function Application (a.b, c.d), e.f)`.
+The solution is to restrict the *Function Application* right-hand-side and left-hand-side to levels 1 and 2: 2+ level constructs can 
+be neither side of the *Function Application*.
+#### Arithmetic Negation
+The Arithmetic Negation occurs only in the beggining of an addition/subtraction series (e.i. e.x. `-1 + 2 - 3`).
+Then it binds only to the first term (`-1`).
