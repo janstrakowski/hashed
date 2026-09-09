@@ -2,15 +2,12 @@
 ## Example Program
 ```hashed
 // build.hl (in the codebase's root directory)
-is { ..., dir, ccomp};
-// "<expression> is <pattern>; <expression>" is normally pattern-maching for the first expression but when in an expression
-// something is omitted (for example instead of `1+2`, `+2`) then it becomes a function (f(x) = x + 2).
-// So is { ..., dir} tells us that the whole program is a function that gives us a struct with a "dir" field.
+# matches { ..., dir, ccomp};
 let srcdir = dirmember { dir, "src" };
-let c_filenames = (dirmembers srcdir) map (.name) map (extractfext ()) filter (== ".c");
+let c_filenames = dirmembers srcdir map #.name map extractfext # filter # == ".c";
 let c_tasks = c_filenames map {
- name = #arg,
- executor = func ccomp.compiletoobj (dirmember {srcdir, #arg2 /* the arg of the map function */}),
+ name = #,
+ executor = func ccomp.compiletoobj (dirmember {srcdir, # /* the arg of the map function */}),
  // Let's assume "complitetoobj" produces the object file in the directory of its argument.
 };
 let compile_task = {
@@ -73,7 +70,9 @@ Root Expression := Expression
 
 Expression := Literal | Parameter Reference | Operation | "(", Expression, ")"
 Literal := Integer Literal | Float Literal | String Literal
-Parameter Reference := Identifier
+
+Parameter Reference := Identifier | Implied Parameter Reference
+Implied Parameter Reference := "#", { Decimal Digit }
 
 Integer Literal := Decimal Integer Literal | Hexadecimal Integer Literal | Octal Integer Literal | Binary Integer Literal
 Decimal Integer Literal := Decimal Digit, { Decimal Digit }
@@ -92,13 +91,14 @@ Binary Float Literal := Binary Digit, { Binary Digit }, ".", Binary Digit, { Bin
 
 String Literal := Standard String Literal | Line-Formatting String Literal
 Standard String Literal := [ String Interpolation Marker ], '"', { String Literal Codepoint | String Interpolation }, '"'
-(* ^^^ EXTRA SPECIFICATION: String Interpolation exists only if String Interpolation Marker is present. *)
+(* ^^^ EXTRA SPECIFICATION 1: String Interpolation exists only if String Interpolation Marker is present. *)
+(* ^^^ EXTRA SPECIFICATION 2: Here the ending " takes precedence over " in String Literal Codepoint *)
 Line-Formatting String Literal := [ String Interpolation Marker ], '"""', { String Literal Codepoint | String Interpolation }, '"""'
 (* ^^^ EXTRA SPECIFICATION 1: String Interpolation exists only if String Interpolation Marker is present. *)
-(* ^^^ EXTRA SPECIFICATION 2: this string can contain " (As-Is codepoint excludes them) only not three in the row. *)
+(* ^^^ EXTRA SPECIFICATION 2: here """ takes precedence over three consequent " String Literal Codepoints *)
 String Interpolation Marker := "$"
 String Literal Codepoint := As-Is Codepoint | Escape Sequence
-As-Is Codepoint := ? Any printable Unicode character, except " and \ ?
+As-Is Codepoint := ? Any printable Unicode character, except \ ?
 Escape Sequence := Short Escape Sequence | 2-Byte Escape Sequence | 4-Byte Escape Sequence
 Short Escape Sequence := "\'" | '\"' | "\?" | "\\" | "\a" | "\b" | "\f" | "\n" | "\r" | "\t" | "\v" | "\0"
 2-Byte Escape Sequence := "\u", Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit, Hexadecimal Digit
@@ -109,15 +109,20 @@ String Interpolation := "${", Expression, "}"
 
 Operation := Function Application | Table Constructor | Map Application | Binary Interfix Operator | Unary Operator | Let | Then | Matches
 Function Application := Expression, Expression
-Table Constructor := "{", Table Constructor Entry, { ",", Table Constructor Entry }, [ "," ], "}"
-Table Constructor Entry := Position-Based Table Constructor Entry | Key-Value Table Constructor Entry
-Position-Based Table Constructor Entry := Expression
-Key-Value Table Constructor Entry := ("[", Expression, "]" | ".", Identifier ), ":", Expression
 Map Application := Expression, ( ".", Identifier | "[", Expression, "]" )
 
-Binary Interfix Operator := Pipe Operator | String Concatenation | Binary Arithmetic Operator | Comparison Operator | Binary Logical Operator
+Table Constructor := "{", Table Constructor Entry, { ",", Table Constructor Entry }, [ "," ], "}"
+Table Constructor Entry := Position-Based Table Constructor Entry | Key-Value Table Constructor Entry | Expansion Table Constructor Entry
+Position-Based Table Constructor Entry := Expression
+Key-Value Table Constructor Entry := ("[", Expression, "]" | ".", Identifier ), ":", Expression
+Expansion Table Constructor Entry := "...", Expression
+
+Binary Interfix Operator := Pipe Operator | Map Operator | String Operator | String Concatenation | Binary Arithmetic Operator | Comparison Operator | Binary Logical Operator
 Pipe Operator := Expression, "|>", Expression
 String Concatenation := Expression, "++", Expression
+
+Map Operator := Expression, "map", Expression
+Filter Operator := Expression, "filter", Expression
 
 Binary Arithmetic Operator := Multiplication Operator | Division Operator | Modulo Operator | Addition Operator | Subtraction Operator
 Multiplication Operator := Expression, "*", Expression
@@ -146,13 +151,14 @@ Let := "let", [ "rec" ], Identifier, "=", Expression, ";", Expression
 Then := Expression, "then", Expression
 Matches := Expression, "matches", Table Pattern
 
-Table Pattern := "{", Table Pattern Entry, { ",", Table Pattern Entry }, [ "," ], "}"
+Table Pattern := "{", Table Pattern Entry, { ",", (Table Pattern Entry | Anything-Else Table Pattern Marker) }, [ "," ], "}"
 Table Pattern Entry := ( "[", Expression, "]" | ".", Identifier | "_" ), [ "matches", Table Pattern ], [ "let", Identifier ]
+Anything-Else Table Pattern Marker := "..."
 ```
 ### Ignorables
 The ignorables are exceptional constructs not mentioned in the first definition, because they are supposed to appear "anywhere"
 in the grammar. 
-"anywhere" here means zero or more of *Ignorable* constructs before, after or in between all constructs except the literals and the identifiers,
+"anywhere" here means zero or more of *Ignorable* constructs before, after or in between all constructs except the literals, parameter references and the identifiers,
 and they underlying hierachies, except again in the expression of the string interpolation.
 #### EBNF Definition
 ```ebnf
@@ -164,13 +170,13 @@ Line-Agnostic Comment := "/*", { ? any Unicode codepoint except the sequence */ 
   with an odd number of * }, "*/"
 ```
 ### Ambigouity Resolution
-#### Operation Precedence
+#### Operator Precedence
 (the higher rows win over the lower; all left-associative)
 | No. | Operations |
 |----|------|
 | 1 | Map Application |
 | 2 | Function Application |
-| 3 | Pipe Operator |
+| 3 | Pipe Operator, Map Operator, Filter Operator |
 | 4 | String Concatenation |
 | 5 | Multiplication, Division, Modulo |
 | 6 | Addition, Subtraction, Arithmetic Negation |
