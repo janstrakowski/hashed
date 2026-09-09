@@ -187,7 +187,8 @@ Line-Agnostic Comment := "/*", { ? any Unicode codepoint except the sequence */ 
 | 8 | Conjunction |
 | 9 | Disjunction |
 | 10 | Pipe Operator, Map Operator, Filter Operator |
-| 11 | Func, Let, Then, Matches, Else |
+| 11 | Let, Then, Matches, Else |
+| 12 | Func |
 #### Juxtaposition Function Application
 The *Function Application* is juxtaposition, which brings a lot of ambiguity to the grammar, because every adjacent construct can be interpreted as juxtaposition.
 The solution is to restrict the *Function Application* right-hand-side and left-hand-side to levels 1 and 2: 2+ level constructs can 
