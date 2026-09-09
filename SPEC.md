@@ -224,10 +224,9 @@ reference, and be defined entirely elsewhere in the source or in a different sou
 When a *function* is applied, the evaluation jumps to its definition, and returns afterwards. 
 If the *function* is built in, then it is evaluated internally.
 ### Let Rec
-The `let rec` constructs makes the value that is being currently evaluated accesible yet during its evaluation.
-It accomplishes it by sharing a value to the evaluation outside but the function to the value to the ongoing evaluation. 
-That way, when this function is applied, the evaluation jumps to its definition, creating recursion.
-
+The `let rec <name> = <expr1>; <expr 2>` allows `name` to be accessible in `expr1` and not in `expr2` only.
+It accomplishes that by exporting `name` in `expr1` not as a value, but as a function to one.
+The function can be called, which creates recursion.
 ## Parameter Reference Resolution
 TODO.
 
