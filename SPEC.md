@@ -145,7 +145,7 @@ Unary Operator := Arithmetic Negation | Logical Negation
 Arithmetic Negation := "-", Expression
 Logical Negation := "!", Expression
 
-Let := "let", [ "rec" ], Identifier, "=", Expression, ";", Expression
+Let := "let", Identifier, "=", Expression, ";", Expression
 Then := Expression, "then", Expression
 Matches := Expression, "matches", Table Pattern
 Else := Expression, "else", Expression
@@ -223,11 +223,6 @@ Function is a value, and a value is not tied to the expression hierarchy: for ex
 reference, and be defined entirely elsewhere in the source or in a different source piece imported to the current one.
 When a *function* is applied, the evaluation jumps to its definition, and returns afterwards. 
 If the *function* is built in, then it is evaluated internally.
-### Let Rec
-The `let rec <name> = <expr1>; <expr 2>` allows `name` to be accessible in `expr1` and not only in `expr2` as a standard `let` would.
-It accomplishes that by exporting `name` in `expr1` not as the final value, which does not exist yet; but as a function that produces it.
-The function can be called, which creates recursion.
-The function ignores the argument and inherits the context from the place it is being called.
 ## Parameter Reference Resolution
 TODO.
 
