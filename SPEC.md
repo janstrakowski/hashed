@@ -43,10 +43,6 @@ let link_task = {
 8. [Conventions](#conventions)
 9. [Extending the Language](#extending-the-language)
 
-## Typographical Conventions
-- *a reference of a concept*
-- ***The definition of a concept***
-
 ## Syntax
 ### EBNF Conceptual Definition
 ```ebnf
