@@ -71,7 +71,7 @@ Program Attribute Name := Identifier
 Program Attribute Value := Literal
 Root Expression := Expression
 
-Expression := Literal | Parameter Reference | Operation
+Expression := Literal | Parameter Reference | Operation | "(", Expression, ")"
 Literal := Integer Literal | Float Literal | String Literal
 Parameter Reference := Identifier
 
@@ -107,14 +107,16 @@ Short Escape Sequence := "\'" | '\"' | "\?" | "\\" | "\a" | "\b" | "\f" | "\n" |
 String Interpolation := "${", Expression, "}"
 (* ^^^ EXTRA SPECIFICATION: String Interpolation does not exist if ${ is preceded by an odd number of $. *)
 
-Operation := Table Constructor | Map Application | Binary Interfix Operator | Unary Operator | Let | Then | Matches
+Operation := Function Application | Table Constructor | Map Application | Binary Interfix Operator | Unary Operator | Let | Then | Matches
+Function Application := Expression, Expression
 Table Constructor := "{", Table Constructor Entry, { ",", Table Constructor Entry }, [ "," ], "}"
 Table Constructor Entry := Position-Based Table Constructor Entry | Key-Value Table Constructor Entry
 Position-Based Table Constructor Entry := Expression
 Key-Value Table Constructor Entry := ("[", Expression, "]" | ".", Identifier ), ":", Expression
 Map Application := Expression, ( ".", Identifier | "[", Expression, "]" )
 
-Binary Interfix Operator := String Concatenation | Binary Arithmetic Operator | Comparison Operator | Binary Logical Operator
+Binary Interfix Operator := Pipe Operator | String Concatenation | Binary Arithmetic Operator | Comparison Operator | Binary Logical Operator
+Pipe Operator := Expression, "|>", Expression
 String Concatenation := Expression, "++", Expression
 
 Binary Arithmetic Operator := Multiplication Operator | Division Operator | Modulo Operator | Addition Operator | Subtraction Operator
@@ -161,4 +163,22 @@ Line-Agnostic Comment := "/*", { ? any Unicode codepoint except the sequence */ 
   with an odd number of * }, "*/"
 ```
 ### Ambigouity Resolution
-TODO.
+#### Operation Precedence
+(the higher rows win over the lower; all left-associative)
+| No. | Operations |
+|----|------|
+| 1 | Map Application |
+| 2 | Function Application |
+| 3 | Pipe Operator |
+| 4 | String Concatenation |
+| 5 | Multiplication, Division, Modulo |
+| 6 | Addition, Subtraction, Arithmetic Negation |
+| 7 | Comparison |
+| 8 | Logical Negation |
+| 9 | Conjunction |
+| 10 | Disjunction |
+#### Juxtaposition Function Application
+The *Function Application* is juxtaposition, which brings a lot of ambigouity to the grammar, because every adjacent constructs can be intrepreted as juxaposition.
+The solution is to allow juxtaposition only for the 2 highest levels — *Map Application* (`.`) and *Function Application* itself.
+To be more precise, it is just if you bound first the *Map Application* (for example `a.b c.d` is bound `(a.b) (c.d)`), and then bound the resulting adjecent groups
+in left-associative manner (the example becomes `Function Application (a.b, c.d)`; another example `a.b c.d e.f` becomes `Function Application (Function Application (a.b, c.d), e.f)`.
