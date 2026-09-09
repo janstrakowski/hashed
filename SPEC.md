@@ -211,3 +211,29 @@ Data structures are represented using *Tables*.
 Product types are tables with the field names as strings as the keys.
 Sum types are tables with one key, and depending on what is the key, the subtype is determined.
 Tuples and Arrays are represented as tables, where the keys are consecutive *Integers* beginning from **1**.
+
+## Evaluation
+The evaluation is done by exploring the expression hierarchy and sequentially reducing the lowest 
+expressions into their evaluations. 
+For the expressions on the same level (siblings), the evaluation takes place in the order of the text flow.
+Moreover in *Logical Operators*, when evaluating according to the text flow the final value is already determined,
+the evaluation of the other siblings is omitted.
+### Functions
+Function is a value, and a value is not tied to the expression hierarchy: for example a function can stand behind a parameter
+reference, and be defined entirely elsewhere in the source or in a different source piece imported to the current one.
+When a *function* is applied, the evaluation jumps to its definition, and returns afterwards. 
+If the *function* is built in, then it is evaluated internally.
+### Let Rec
+The `let rec` constructs makes the value that is being currently evaluated accesible yet during its evaluation.
+It accomplishes it by sharing a value to the evaluation outside but the function to the value to the ongoing evaluation. 
+That way, when this function is applied, the evaluation jumps to its definition, creating recursion.
+
+## Parameter Reference Resolution
+TODO.
+
+## Mechanics
+TODO.
+## Standalone Programs
+TODO.
+## CLI
+TODO.
