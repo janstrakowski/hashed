@@ -4,6 +4,14 @@ An Odin implementation of the HashedBuild language. `SPEC.md` is the source of
 truth for language behavior — when code and spec disagree, the spec wins, and a
 change to behavior means changing both in the same commit.
 
+## Before reviewing a branch
+
+A local checkout can be behind its remote tracking branch with no warning —
+`git status` reports "up to date" only against what was last fetched. Before
+reviewing code, docs, or `SPEC.md` on any branch (this one included), run
+`git fetch` and diff local `HEAD` against the remote tracking branch first.
+Trust whatever branch and commit the GUI/PR view shows over local state.
+
 ## Build and test
 
 ```sh
