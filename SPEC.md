@@ -34,7 +34,7 @@ let link_task = {
 ## Table of Contents
 0. [Example Program](#example-program)
 1. [Syntax](#syntax)
-2. [Data Types](#data-types)
+2. [Data Representation](#data-representation)
 3. [Names](#names)
 4. [Execution Model](#execution-model)
 5. [Builtins](#builtins)
