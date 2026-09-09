@@ -236,7 +236,7 @@ assigned to `ctx.params`. `ctx.params` is actually a table as the notation sugge
 shadow the previous.
 ### Control Flow Expression
 There are expressions `then` and `else` and they are called *control flow expressions*.
-`<expr1> then <expr2>` evaluates to *expr2* if *expr1* evaluates to `1`.
+`<expr1> then <expr2>` evaluates to *expr2* if *expr1* evaluates to *true*.
 If *expr1* is *false*, then an *control flow exception* is raised and the control is handled to the parent expression.
 If the parent expression is `<expr1> else <expr2>`, it evaluates to *expr2*.
 If the parent expression is not `else`, then the exception is turned into an unrecoverable error.
