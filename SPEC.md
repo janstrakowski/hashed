@@ -173,8 +173,8 @@ Line-Agnostic Comment := "/*", { ? any Unicode codepoint except the sequence */ 
 | 4 | String Concatenation |
 | 5 | Multiplication, Division, Modulo |
 | 6 | Addition, Subtraction, Arithmetic Negation |
-| 7 | Comparison |
-| 8 | Logical Negation |
+| 7 | Logical Negation |
+| 8 | Comparison |
 | 9 | Conjunction |
 | 10 | Disjunction |
 #### Juxtaposition Function Application
