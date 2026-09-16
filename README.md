@@ -1,2 +1,1 @@
-# hashed
-A cross-platform functional* programming language for DevOPs.
+See it on https://codeberg.org/Jan_Aleksander_Strakowski/hashed/.
